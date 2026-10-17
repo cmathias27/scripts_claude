@@ -13,14 +13,22 @@
 #  - La migration tourne en arriere-plan : fermer la session SSH ne
 #    l'arrete pas. Relancer une migration reprend la ou elle en etait
 #    (les fichiers deja presents et identiques sont sautes).
-#  - Les originaux restent sur le Synology (copie, jamais deplacement).
+#  - Par defaut les originaux restent sur le Synology. Option par
+#    migration : apres le transfert, chaque fichier est controle dans
+#    oCIS (empreinte SHA1/MD5, ou relecture complete si oCIS n'en
+#    fournit pas) et seul l'original dont la copie est identique est
+#    supprime du Synology. Liste des fichiers supprimes gardee dans
+#    /root/.migre-ocis/supprimes-*.txt
+#  - Memoire : rclone est limite (GOMEMLIMIT), sans HTTP/2 ni tampon de
+#    lecture, et repasse a 1 transfert apres un manque de memoire.
+#    Sa consommation est relevee et ecrite dans le journal.
 # =====================================================================
 set -o pipefail
 
 HA_HOST="192.168.1.222"                         # Home Assistant, vide = pas de notification
 HA_WEBHOOK="nas-c09f382daf2d01deb430abbd"
-TRANSFERS=4                                     # fichiers envoyes en parallele
-CHECKERS=8
+TRANSFERS=2                                     # fichiers envoyes en parallele (1 apres un manque de memoire)
+CHECKERS=4
 AUTO_REPRISE=5                                  # relances automatiques si rclone s'arrete
 DEFAULT_LOCAL="https://192.168.1.53:9200"       # oCIS sur l'hote Docker, en direct (sans Cloudflare)
 
@@ -40,6 +48,17 @@ B="\e[1m"; V="\e[32m"; J="\e[33m"; R="\e[31m"; G="\e[90m"; N="\e[0m"
 die()  { echo -e "${R}ERREUR : $*${N}"; exit 1; }
 hsize() { awk -v b="$1" 'BEGIN{split("o Ko Mo Go To",u);i=1;while(b>=1024&&i<5){b/=1024;i++};printf (i==1?"%d %s":"%.1f %s"),b,u[i]}'; }
 pause() { read -r -p "Entree pour continuer..." _; }
+safe()  { printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'; }
+mem_info() {
+  awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} /^SwapTotal:/{st=$2} /^SwapFree:/{sf=$2}
+       END{printf "RAM disponible %d / %d Mo, swap utilise %d Mo", a/1024, t/1024, (st-sf)/1024}' /proc/meminfo
+}
+go_mem_limit() {  # limite douce de memoire pour rclone : 1/5 de la RAM, entre 128 et 512 Mo
+  local kb mib; kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+  mib=$(( ${kb:-2000000} / 1024 / 5 ))
+  [ "$mib" -gt 512 ] && mib=512; [ "$mib" -lt 128 ] && mib=128
+  echo "${mib}MiB"
+}
 
 [ "$(id -u)" -eq 0 ] || die "lance le script avec sudo :  sudo bash $0"
 mkdir -p "$STATE" "$BIN"; chmod 700 "$STATE"
@@ -346,15 +365,33 @@ add_task() {
   echo "  (Entree) directement a la racine de l'espace"
   echo "  ou tape le nom d'un sous-dossier (ex : $SRC_LABEL)"
   read -r -p "Sous-dossier : " sub; sub="${sub#/}"; sub="${sub%/}"
-  printf '%s|%s|%s|%s|%s|%s|%s\n' "$SRC_DIR" "$SRC_LABEL" "$SP_ID" "$SP_NAME" "$SP_DAV" "$sub" "${total:-0}" >> "$QUEUE"
-  echo -e "${V}Ajoute a la file d'attente : $SRC_LABEL -> $SP_NAME${sub:+/$sub}${N}"
+  echo
+  echo "Apres le transfert :"
+  echo "  1) Garder les originaux sur le Synology (copie)"
+  echo "  2) Controler chaque fichier dans oCIS, puis SUPPRIMER l'original du Synology"
+  local m del=non
+  read -r -p "Choix [1] : " m
+  if [ "${m:-1}" = 2 ]; then
+    echo
+    echo -e "${J}Seuls les fichiers dont la copie dans oCIS est controlee identique (empreinte)"
+    echo -e "sont supprimes. Un fichier absent, different ou modifie entre-temps est garde.${N}"
+    if [[ "$SRC_DIR" == */homes/*/Drive* ]]; then
+      echo -e "${R}C'est un « Mon Drive » : les ordinateurs synchronises avec Synology Drive"
+      echo -e "supprimeront aussi ces fichiers chez eux. Installe d'abord le client oCIS.${N}"
+    fi
+    read -r -p "Tape SUPPRIMER pour confirmer : " c
+    if [ "$c" = SUPPRIMER ]; then del=oui; else echo "Annule : les originaux seront gardes."; fi
+  fi
+  printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$SRC_DIR" "$SRC_LABEL" "$SP_ID" "$SP_NAME" "$SP_DAV" "$sub" "${total:-0}" "$del" >> "$QUEUE"
+  echo -e "${V}Ajoute a la file d'attente : $SRC_LABEL -> $SP_NAME${sub:+/$sub}$( [ $del = oui ] && echo " (+ suppression des originaux)")${N}"
 }
 
 show_queue() {
   [ -s "$QUEUE" ] || { echo -e "  ${G}(file d'attente vide)${N}"; return; }
-  local i=1 s l id n dav sub t
-  while IFS='|' read -r s l id n dav sub t; do
-    printf "  %2d) %-18s -> %-25s %10s\n" "$i" "$l" "$n${sub:+/$sub}" "$(hsize "$t")"; i=$((i+1))
+  local i=1 s l id n dav sub t del
+  while IFS='|' read -r s l id n dav sub t del; do
+    printf "  %2d) %-18s -> %-25s %10s%s\n" "$i" "$l" "$n${sub:+/$sub}" "$(hsize "$t")" \
+      "$( [ "$del" = oui ] && echo -e "  ${R}+ suppression des originaux${N}")"; i=$((i+1))
   done < "$QUEUE"
 }
 
@@ -373,7 +410,8 @@ start() {
   read -r -p "Lancer ? [O/n] : " go
   [[ "${go:-o}" =~ ^[oOyY] ]] || return
   cp "$QUEUE" "$STATE/lot"; : > "$QUEUE"
-  [ -s "$LOGF" ] && mv -f "$LOGF" "$LOGF.precedent"; : > "$LOGF"; rm -f "$STATE/code" "$STATE/etape"
+  [ -s "$LOGF" ] && mv -f "$LOGF" "$LOGF.precedent"; : > "$LOGF"
+  rm -f "$STATE/code" "$STATE/etape" "$STATE/resultats" "$STATE/rss"   # resultats d'un suivi precedent interrompu
   printf 'NB=%s\nDEBUT=%s\n' "$(wc -l < "$STATE/lot")" "$(date +%s)" > "$RUN"
   nohup setsid bash "$SELF" _worker >/dev/null 2>&1 &
   echo "PID=$!" >> "$RUN"
@@ -381,41 +419,119 @@ start() {
   follow
 }
 
+# Lance rclone en arriere-plan, releve sa memoire (Mo) toutes les 3 s, renvoie son code.
+# La sortie d'erreur (traces de plantage, parfois enormes) va dans un fichier a part ;
+# seules les premieres lignes sont recopiees dans le journal.
+run_rclone() {
+  local pid rss max=0 rc
+  GOGC=50 GOMEMLIMIT="$MEMLIM" rclone "$@" < /dev/null 2>"$STATE/rclone-err.log" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null && ! grep -q '^State:.*Z' "/proc/$pid/status" 2>/dev/null; do
+    rss=$(awk '/^VmRSS:/{print int($2/1024)}' "/proc/$pid/status" 2>/dev/null)
+    if [ -n "$rss" ]; then [ "$rss" -gt "$max" ] && max=$rss; echo "$rss $max" > "$STATE/rss"; fi
+    sleep 3
+  done
+  wait "$pid"; rc=$?
+  RSS_MAX=$max; rm -f "$STATE/rss"
+  [ -s "$STATE/rclone-err.log" ] && head -n 15 "$STATE/rclone-err.log" | sed 's/^/    stderr: /' >> "$LOGF"
+  return $rc
+}
+
+cnt() { [ -s "$1" ] && grep -c '' "$1" || echo 0; }
+
+# Controle dans oCIS les fichiers de <source> puis supprime du Synology ceux dont la
+# copie est identique. Renvoie 0 si tout est controle et supprime, 1 sinon. -> VERIF_MSG
+verify_and_delete() {
+  local s="$1" sub="$2" lab="$3" d crc nok ndiff nmiss nerr
+  d="$STATE/verif-$(safe "$lab")"; rm -rf "$d"; mkdir -p "$d"
+  check_run() {
+    rm -f "$d/ok" "$d/diff" "$d/absent" "$d/err"; : > "$d/check.log"
+    run_rclone check "$s" "ocis:$sub" --one-way "${EXCL[@]}" "${RCLONE_K[@]}" \
+      --checkers 2 --buffer-size 0 --disable-http2 \
+      --match "$d/ok" --differ "$d/diff" --missing-on-dst "$d/absent" --error "$d/err" \
+      --stats 5s --stats-log-level NOTICE --log-level NOTICE --log-file "$d/check.log" "$@"
+  }
+  echo "PHASE=verification" >> "$STATE/etape"
+  echo "=== [$i] controle des fichiers dans oCIS (empreintes)" >> "$LOGF"
+  check_run; crc=$?
+  if grep -qiE 'no common hash|could not be checked' "$d/check.log"; then
+    # oCIS n'a pas fourni d'empreinte pour tout : comparaison octet par octet
+    echo "=== [$i] empreintes incompletes cote oCIS : controle par relecture complete depuis oCIS" >> "$LOGF"
+    echo "PHASE=relecture" >> "$STATE/etape"
+    check_run --download; crc=$?
+  fi
+  grep -E 'ERROR|NOTICE: .*(differ|not found|match)' "$d/check.log" | tail -n 20 >> "$LOGF"
+  nok=$(cnt "$d/ok"); ndiff=$(cnt "$d/diff"); nmiss=$(cnt "$d/absent"); nerr=$(cnt "$d/err")
+  echo "=== [$i] controle : $nok identique(s), $ndiff different(s), $nmiss absent(s) d'oCIS, $nerr erreur(s) (code $crc)" >> "$LOGF"
+
+  if [ "$nok" -gt 0 ]; then
+    echo "PHASE=suppression" >> "$STATE/etape"
+    cp "$d/ok" "$STATE/supprimes-$(date +%Y%m%d-%H%M%S)-$(safe "$lab").txt"
+    echo "=== [$i] suppression de $nok original(aux) controle(s) dans $s" >> "$LOGF"
+    rclone delete "$s" --files-from-raw "$d/ok" --log-file "$LOGF" --log-level NOTICE < /dev/null
+    # vignettes Synology (@eaDir) des fichiers supprimes, puis dossiers devenus vides
+    find "$s" -type d -name '@eaDir' -prune 2>/dev/null | while IFS= read -r ea; do
+      for th in "$ea"/*; do [ -e "$th" ] && [ ! -e "${ea%/@eaDir}/${th##*/}" ] && rm -rf "$th"; done
+      rmdir "$ea" 2>/dev/null
+    done
+    find "$s" -mindepth 1 -depth -type d -empty ! -name '.SynologyWorkingDirectory' -delete 2>/dev/null
+  fi
+
+  if [ "$ndiff" -eq 0 ] && [ "$nmiss" -eq 0 ] && [ "$nerr" -eq 0 ] && [ "$crc" -eq 0 ]; then
+    VERIF_MSG="$nok fichier(s) controle(s) dans oCIS et supprime(s) du Synology"
+    return 0
+  fi
+  VERIF_MSG="$nok controle(s) et supprime(s) ; gardes sur le Synology : $ndiff different(s), $nmiss absent(s) d'oCIS, $nerr erreur(s)"
+  [ "$ndiff$nmiss$nerr" = 000 ] && VERIF_MSG="$VERIF_MSG, controle interrompu (code $crc)"
+  VERIF_MSG="$VERIF_MSG — listes dans $d"
+  return 1
+}
+
 worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
   load_conf
-  local obs i=0 ok=0 ko=0 s l id n dav sub t rc url
+  local obs i=0 ok=0 ko=0 s l id n dav sub t del rc st
   obs=$(rclone obscure "$OCIS_PASS")
-  while IFS='|' read -r s l id n dav sub t; do
-    i=$((i+1))
+  MEMLIM=$(go_mem_limit)
+  {
+    echo "=== $(rclone version 2>/dev/null | head -n 1) · GOMEMLIMIT=$MEMLIM · overcommit=$(cat /proc/sys/vm/overcommit_memory 2>/dev/null)"
+    echo "=== $(mem_info)"
+  } >> "$LOGF"
+  while IFS='|' read -r s l id n dav sub t del; do
+    del="${del:-non}"; i=$((i+1))
     local t0; t0=$(date +%s)
-    printf 'ETAPE=%s\nE_SRC=%q\nE_LABEL=%q\nE_SPACE=%q\nE_TOTAL=%s\n' "$i" "$s" "$l" "$n${sub:+/$sub}" "$t" > "$STATE/etape"
+    printf 'ETAPE=%s\nE_SRC=%q\nE_LABEL=%q\nE_SPACE=%q\nE_TOTAL=%s\nE_DEL=%s\n' "$i" "$s" "$l" "$n${sub:+/$sub}" "$t" "$del" > "$STATE/etape"
     dav=$(to_base "$dav")
-    echo "=== [$i] $s -> $n${sub:+/$sub}  via ${dav%%/dav/*}  ($(date '+%F %T'))" >> "$LOGF"
-    local why="" requeue=1 try=0 retryable sect errs
+    export RCLONE_CONFIG_OCIS_TYPE=webdav RCLONE_CONFIG_OCIS_URL="$dav" RCLONE_CONFIG_OCIS_VENDOR="${OCIS_VENDOR:-owncloud}" \
+           RCLONE_CONFIG_OCIS_USER="$OCIS_USER" RCLONE_CONFIG_OCIS_PASS="$obs"
+    echo "=== [$i] $s -> $n${sub:+/$sub}  via ${dav%%/dav/*}  ($(date '+%F %T'))$( [ "$del" = oui ] && echo "  + suppression des originaux controles")" >> "$LOGF"
+    local why="" requeue=1 try=0 retryable errs err1 off tr=$TRANSFERS ck=$CHECKERS
     while :; do
       try=$((try+1))
+      off=$(stat -c %s "$LOGF" 2>/dev/null || echo 0)
+      : > "$STATE/rclone-err.log"
       if [ ! -d "$s" ]; then
         rc=3; echo "$(date '+%Y/%m/%d %H:%M:%S') ERROR : dossier source introuvable : $s" >> "$LOGF"
       else
-        # Reglages economes en memoire ; la sortie d'erreur de rclone (plantages) va dans le journal
-        GOGC=50 RCLONE_CONFIG_OCIS_TYPE=webdav RCLONE_CONFIG_OCIS_URL="$dav" RCLONE_CONFIG_OCIS_VENDOR="${OCIS_VENDOR:-infinitescale}" \
-        RCLONE_CONFIG_OCIS_USER="$OCIS_USER" RCLONE_CONFIG_OCIS_PASS="$obs" \
-          rclone copy "$s" "ocis:$sub" --create-empty-src-dirs "${EXCL[@]}" "${RCLONE_K[@]}" \
-            --transfers "$TRANSFERS" --checkers "$CHECKERS" --buffer-size 8M --use-mmap \
-            --retries 5 --low-level-retries 20 \
-            --stats 2s --stats-one-line --stats-log-level NOTICE -v --log-file "$LOGF" < /dev/null 2>>"$LOGF"
+        # --buffer-size 0 : pas de tampon de lecture (inutile depuis un disque local)
+        # --disable-http2 : les envois en HTTP/2 font gonfler la memoire de rclone
+        run_rclone copy "$s" "ocis:$sub" --create-empty-src-dirs "${EXCL[@]}" "${RCLONE_K[@]}" \
+          --transfers "$tr" --checkers "$ck" --buffer-size 0 --disable-http2 \
+          --retries 5 --low-level-retries 20 \
+          --stats 2s --stats-one-line --stats-log-level NOTICE --log-level NOTICE --log-file "$LOGF"
         rc=$?
       fi
       [ $rc -eq 0 ] && break
-      # --- cause de l'arret
-      sect=$(awk -v m="=== [$i] " 'index($0,m)==1{f=1;next} f' "$LOGF"); errs=$(grep 'ERROR' <<< "$sect")
-      retryable=1
+      # --- cause de l'arret (uniquement ce qui a ete ecrit pendant cette tentative)
+      errs=$(tail -c +$((off+1)) "$LOGF" | grep -E 'ERROR|CRITICAL' | tail -n 50)
+      err1=$(grep -m1 -E '^(panic|fatal error):' "$STATE/rclone-err.log" 2>/dev/null | cut -c1-90)
+      retryable=1; local mem=0
       if [ $rc -ge 128 ]; then
         why="rclone tue par le systeme (signal $((rc-128)))"
         dmesg 2>/dev/null | grep -iE 'killed process|out of memory|oom' | tail -n 2 | sed 's/^/    dmesg: /' >> "$LOGF"
-        grep -q 'dmesg:.*rclone' <(tail -n 3 "$LOGF") && why="rclone tue par le systeme : memoire insuffisante (OOM)"
-      elif grep -qiE 'out of memory|cannot allocate memory' <<< "$sect"; then why="rclone a manque de memoire"
-      elif grep -qE '^(panic|fatal error):' <<< "$sect"; then why="rclone a plante : $(grep -m1 -E '^(panic|fatal error):' <<< "$sect" | cut -c1-90)"
+        grep -q 'dmesg:.*rclone' <(tail -n 3 "$LOGF") && { why="rclone tue par le systeme : memoire insuffisante (OOM)"; mem=1; }
+      elif grep -qiE 'out of memory|cannot allocate memory' "$STATE/rclone-err.log" 2>/dev/null \
+           || grep -qiE 'out of memory|cannot allocate memory' <<< "$errs"; then why="rclone a manque de memoire"; mem=1
+      elif [ -n "$err1" ]; then why="rclone a plante : $err1"
       elif [ $rc -eq 3 ] || grep -q 'directory not found' <<< "$errs"; then
         why="dossier source introuvable ($s) : retire de la file"; requeue=0; retryable=0
       elif grep -qiE '507|insufficient storage|quota' <<< "$errs"; then why="quota de l'espace atteint (espace plein)"; retryable=0
@@ -423,7 +539,10 @@ worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
       elif grep -qiE 'connection refused|no such host|timeout' <<< "$errs"; then why="oCIS injoignable pendant le transfert"
       elif [ -n "$errs" ]; then why=$(grep -v 'Attempt [0-9]' <<< "$errs" | tail -n 1 | sed -E 's/^.*ERROR : //' | cut -c1-110)
       else why="rclone s'est arrete sans message (code $rc)"; fi
-      echo "=== [$i] arret de rclone : code $rc ($why)" >> "$LOGF"
+      echo "=== [$i] arret de rclone : code $rc ($why) · rclone utilisait jusqu'a ${RSS_MAX:-?} Mo · $(mem_info)" >> "$LOGF"
+      if [ $mem -eq 1 ] && [ "$tr" -gt 1 ]; then
+        tr=1; ck=2; echo "=== [$i] manque de memoire : la suite se fait avec 1 seul fichier a la fois" >> "$LOGF"
+      fi
       # --- reprise automatique : la copie repart la ou elle s'etait arretee
       if [ $retryable -eq 1 ] && [ $try -le $AUTO_REPRISE ]; then
         echo "=== [$i] reprise automatique $try/$AUTO_REPRISE dans 30 s" >> "$LOGF"
@@ -432,12 +551,21 @@ worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
       fi
       break
     done
+    if [ $rc -eq 0 ]; then
+      ok=$((ok+1)); st=OK; requeue=0; why=""; [ $try -gt 1 ] && why="apres $((try-1)) reprise(s) automatique(s)"
+      if [ "$del" = oui ]; then
+        if ! verify_and_delete "$s" "$sub" "$l"; then
+          requeue=1; VERIF_MSG="$VERIF_MSG ; remise en file d'attente"
+        fi
+        why="${why:+$why, }$VERIF_MSG"
+      fi
+    else
+      ko=$((ko+1)); st="ECHEC"; [ $try -gt 1 ] && why="$why, apres $((try-1)) reprise(s)"
+    fi
     local d=$(( ($(date +%s) - t0) / 60 ))
-    if [ $rc -eq 0 ]; then ok=$((ok+1)); st=OK; requeue=0; why=""; [ $try -gt 1 ] && why="apres $((try-1)) reprise(s) automatique(s)"
-    else ko=$((ko+1)); st="ECHEC"; [ $try -gt 1 ] && why="$why, apres $((try-1)) reprise(s)"; fi
     echo "$(date '+%Y-%m-%d %H:%M') | $st${why:+ ($why)} | $s -> $n${sub:+/$sub} | ${d} min" >> "$HIST"
     echo "$i|$st|$l|$n${sub:+/$sub}|$why" >> "$STATE/resultats"
-    [ $requeue -eq 1 ] && echo "$s|$l|$id|$n|$dav|$sub|$t" >> "$QUEUE"   # remis en file pour reprise
+    [ $requeue -eq 1 ] && echo "$s|$l|$id|$n|$dav|$sub|$t|$del" >> "$QUEUE"   # remis en file pour reprise
   done < "$STATE/lot"
   echo "$ok|$ko" > "$STATE/code"
   local msg="$ok migration(s) reussie(s)"; [ $ko -gt 0 ] && msg="$msg, $ko en echec (remise(s) en file d'attente pour reprise)"
@@ -471,10 +599,12 @@ follow() {
   . "$RUN"
   trap 'echo; echo -e "${J}Suivi interrompu : la migration continue en arriere-plan.${N}"; echo "Reprendre le suivi :  sudo bash $SELF suivi"; exit 0' INT
   echo -e "${G}Ctrl+C = arreter le suivi (la migration continue)${N}"
-  local last="" line pct n bar shown=0 shown_rep=""
+  local last="" line pct n bar shown=0 shown_rep="" ram cols
+  cols=$(( $(tput cols 2>/dev/null || echo 100) - 1 ))
+  status() { printf "\r\e[K%s" "${1:0:$cols}"; }   # efface la ligne avant de la reecrire
   while kill -0 "$PID" 2>/dev/null; do
     if [ -f "$STATE/etape" ]; then
-      unset REPRISE; . "$STATE/etape"
+      unset REPRISE PHASE; . "$STATE/etape"
       if [ "$ETAPE" != "$last" ]; then
         shown_rep=""
         [ -n "$last" ] && { echo; show_results; }
@@ -482,14 +612,24 @@ follow() {
         last="$ETAPE"
       fi
       [ -n "${REPRISE:-}" ] && [ "${REPRISE}" != "${shown_rep:-}" ] && { echo; echo -e "   ${J}rclone s'est arrete : reprise automatique ${REPRISE}/$AUTO_REPRISE...${N}"; shown_rep="$REPRISE"; }
-      line=$(tail -n 3000 "$LOGF" 2>/dev/null | awk -v m="=== [$ETAPE] " 'index($0,m)==1{f=1} f && /NOTICE:/{l=$0} END{print l}' | sed 's/.*NOTICE: *//')
-      if [[ "$line" =~ ([0-9]+)% ]]; then
-        pct="${BASH_REMATCH[1]}"; n=$(( pct * 30 / 100 ))
-        bar=$(printf '%*s' "$n" '' | tr ' ' '#')$(printf '%*s' $((30-n)) '' | tr ' ' '.')
-        printf "\r [%s] %-70s" "$bar" "${line:0:70}"
-      else
-        printf "\r Analyse des fichiers..."
-      fi
+      ram=""; [ -f "$STATE/rss" ] && ram=" · RAM rclone $(cut -d' ' -f1 "$STATE/rss") Mo"
+      case "${PHASE:-}" in
+        verification|relecture)
+          line=$(grep 'Checks:' "$STATE/verif-$(safe "$E_LABEL")/check.log" 2>/dev/null | tail -n 1 | sed 's/.*Checks: *//; s/  */ /g')
+          status " $( [ "$PHASE" = relecture ] && echo "Controle par relecture depuis oCIS" || echo "Controle des empreintes dans oCIS") : ${line:-demarrage...}$ram" ;;
+        suppression)
+          status " Suppression des originaux controles sur le Synology..." ;;
+        *)
+          # derniere ligne de stats apres le dernier marqueur "===" (journal sans detail par fichier)
+          line=$(tail -n 60 "$LOGF" 2>/dev/null | awk '/^=== /{l=""} /NOTICE:/{l=$0} END{print l}' | sed 's/.*NOTICE: *//; s/  */ /g')
+          if [[ "$line" =~ ([0-9]+)% ]]; then
+            pct="${BASH_REMATCH[1]}"; n=$(( pct * 30 / 100 ))
+            bar=$(printf '%*s' "$n" '' | tr ' ' '#')$(printf '%*s' $((30-n)) '' | tr ' ' '.')
+            status " [$bar] $line$ram"
+          else
+            status " Comparaison avec ce qui est deja dans oCIS...$ram"
+          fi ;;
+      esac
     fi
     sleep 2
   done
@@ -497,7 +637,7 @@ follow() {
   if [ -f "$STATE/resultats" ]; then
     echo -e "${B}Bilan :${N}"
     while IFS='|' read -r i st l n why; do
-      [ "$st" = OK ] && echo -e "  ${V}OK${N}     $l -> $n" || echo -e "  ${R}ECHEC${N}  $l -> $n : $why"
+      [ "$st" = OK ] && echo -e "  ${V}OK${N}     $l -> $n${why:+ : $why}" || echo -e "  ${R}ECHEC${N}  $l -> $n : $why"
     done < "$STATE/resultats"
     if grep -q ECHEC "$STATE/resultats"; then
       if grep -q 'quota' "$STATE/resultats"; then
