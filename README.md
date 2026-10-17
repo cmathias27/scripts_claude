@@ -192,7 +192,7 @@ NOM|SOURCE|DOSSIER_DRIVE|MODE(sync/copy)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|
 
 - **Auto-installation** dans `/usr/local/bin/nas-backup`, rotation des journaux (`/var/log/nas-backup.log`).
 - **Remote chiffré `gbackup`** (→ `gdrive:NAS-chiffre`) créé à la première sauvegarde chiffrée. S'il existe déjà des mots de passe caméras (`/root/cam-crypt-motsdepasse.txt`), ils sont **réutilisés** — un seul jeu de mots de passe pour tout. Ils sont écrits dans `/root/nas-backup-motsdepasse.txt` et affichés : **à noter hors du NAS**.
-- **Planification** : `/etc/cron.d/nas-backup` est régénéré à chaque modification.
+- **Planification** : `/etc/cron.d/nas-backup` est régénéré à chaque modification. Une seule ligne par horaire : les sauvegardes prévues à la même heure sont lancées **l'une après l'autre** (`run-at`), pas en parallèle — moins de limitations Google Drive, moins de mémoire, journal lisible.
 - **Garde-fous** : avertissement si deux sauvegardes écrivent dans le même dossier Drive ; un verrou (`flock`) empêche de lancer deux fois la même sauvegarde ; alerte si le disque source est démonté.
 - **Modification** : si la destination change, proposition de supprimer l'ancien emplacement et de relancer.
 - **Suppression** : la planification est retirée ; les fichiers du Drive sont conservés sauf confirmation explicite (retaper le nom).
@@ -204,7 +204,8 @@ NOM|SOURCE|DOSSIER_DRIVE|MODE(sync/copy)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|
 | Menu / commande | Effet |
 |---|---|
 | `nas-backup` | Menu : ajouter, modifier, supprimer, lancer une/toutes, restaurer, voir le journal |
-| `nas-backup run <NOM>` | Lancer une sauvegarde (utilisé par cron) |
+| `nas-backup run <NOM>` | Lancer une sauvegarde |
+| `nas-backup run-at <HH:MM>` | Lancer à la suite toutes les sauvegardes de cet horaire (utilisé par cron) |
 | `nas-backup run-all` | Lancer toutes les sauvegardes |
 | `nas-backup list` | Tableau des sauvegardes et de leur dernière exécution |
 

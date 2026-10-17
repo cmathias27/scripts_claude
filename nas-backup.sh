@@ -4,6 +4,7 @@
 #
 #  Lancement interactif (menu)  : nas-backup
 #  Lancer une sauvegarde        : nas-backup run <NOM>
+#  Lancer celles d'un horaire   : nas-backup run-at <HH:MM>   (utilise par cron)
 #  Lancer toutes les sauvegardes: nas-backup run-all
 #  Lister                       : nas-backup list
 #
@@ -121,11 +122,16 @@ gen_cron() {
   {
     echo "# Genere automatiquement par nas-backup - ne pas modifier a la main"
     echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    # Une seule ligne par horaire : les sauvegardes prevues a la meme heure
+    # sont lancees l'une apres l'autre (run-at), pas toutes en meme temps
     local n s sub m e sch r h mi
-    while IFS='|' read -r n s sub m e sch r; do
+    local -A seen=()
+    while IFS='|' read -r n s sub m e sch r || [ -n "$n" ]; do
       [[ -z "$n" || "$n" == \#* || "$sch" == manuel ]] && continue
+      [ -n "${seen[$sch]:-}" ] && continue
+      seen[$sch]=1
       h=${sch%%:*}; mi=${sch##*:}
-      echo "$((10#$mi)) $((10#$h)) * * * root $SELF run $n >/dev/null 2>&1"
+      echo "$((10#$mi)) $((10#$h)) * * * root $SELF run-at $sch >/dev/null 2>&1"
     done < "$JOBS"
   } > "$CRON_FILE"
   chmod 644 "$CRON_FILE"
@@ -364,6 +370,15 @@ run_job_locked() {
     run_job "$1" ) 9>"/run/nas-backup-$1.lock"
 }
 
+run_at() {  # lance l'une apres l'autre les sauvegardes prevues a l'horaire $1 (utilise par cron)
+  local n rc=0
+  for n in $(job_names); do
+    job_get "$n" || continue
+    [ "$J_SCHED" = "$1" ] && { run_job_locked "$n" || rc=1; }
+  done
+  return $rc
+}
+
 run_all() {
   local n rc=0
   for n in $(job_names); do run_job_locked "$n" || rc=1; done
@@ -430,7 +445,8 @@ init
 case "${1:-}" in
   "")       self_install; gen_cron; menu ;;
   run)      [ -n "${2:-}" ] || die "usage : nas-backup run <NOM>"; run_job_locked "$2" ;;
+  run-at)   [ -n "${2:-}" ] || die "usage : nas-backup run-at <HH:MM>"; run_at "$2" ;;
   run-all)  run_all ;;
   list)     list_jobs ;;
-  *)        echo "Usage : nas-backup [run <NOM> | run-all | list]"; exit 1 ;;
+  *)        echo "Usage : nas-backup [run <NOM> | run-at <HH:MM> | run-all | list]"; exit 1 ;;
 esac
