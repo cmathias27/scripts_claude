@@ -63,7 +63,8 @@ init() {
 self_install() {
   local me; me=$(readlink -f "$0")
   if [ "$me" != "$SELF" ]; then
-    install -m 755 "$me" "$SELF"
+    # copie puis mv (atomique) : une sauvegarde deja en cours garde l'ancienne version
+    install -m 755 "$me" "$SELF.new" && mv -f "$SELF.new" "$SELF"
     vert "Script installe dans $SELF : tu pourras le relancer simplement avec la commande 'nas-backup'."
     echo
   fi

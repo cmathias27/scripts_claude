@@ -56,14 +56,14 @@ if [ -f /usr/local/bin/cam-sync.sh ]; then
   [ -d "$CAM_SRC" ] || die "dossier cameras introuvable dans cam-sync.sh ($CAM_SRC)."
 
   # --- synchro temps reel
-  cat > /usr/local/bin/cam-sync.sh <<EOF
+  cat > /usr/local/bin/cam-sync.sh.new <<EOF
 #!/bin/bash
 SRC="$CAM_SRC"
 DEST="$CAM_DEST"
 TR="$TR"
 OPTS=(--retries 5 --log-file /var/log/cam-sync.log --log-level INFO)
 EOF
-  cat >> /usr/local/bin/cam-sync.sh <<'EOF'
+  cat >> /usr/local/bin/cam-sync.sh.new <<'EOF'
 trace() { echo "$(date +%s)|$1|${2:-0}|$3|${4:-1}" >> "$TR"; }   # trace <action> <octets> <ok|echec> [nb]
 
 inotifywait -m -r -q \
@@ -88,17 +88,17 @@ inotifywait -m -r -q \
     esac
 done
 EOF
-  chmod +x /usr/local/bin/cam-sync.sh
+  chmod 755 /usr/local/bin/cam-sync.sh.new
 
   # --- rattrapage periodique (avec alerte Home Assistant si nas-notify est installe)
-  cat > /usr/local/bin/cam-sync-catchup.sh <<EOF
+  cat > /usr/local/bin/cam-sync-catchup.sh.new <<EOF
 #!/bin/bash
 # Rattrapage periodique des cameras : comptage des transferts + alerte Home Assistant
 SRC="$CAM_SRC"
 DEST="$CAM_DEST"
 TR="$TR"
 EOF
-  cat >> /usr/local/bin/cam-sync-catchup.sh <<'EOF'
+  cat >> /usr/local/bin/cam-sync-catchup.sh.new <<'EOF'
 N=/usr/local/bin/nas-notify
 TMP=$(mktemp)
 rclone sync "$SRC" "$DEST" --min-age 2m --exclude '@eaDir/**' --exclude '\#recycle/**' \
@@ -120,7 +120,17 @@ if [ -x "$N" ]; then
 fi
 exit $rc
 EOF
-  chmod 755 /usr/local/bin/cam-sync-catchup.sh
+  chmod 755 /usr/local/bin/cam-sync-catchup.sh.new
+
+  # Remplacement sans perturber les transferts en cours :
+  #  - attend la fin d'un rattrapage en cours (meme verrou que le cron) ;
+  #  - mv = remplacement atomique : un script deja lance garde l'ancienne version.
+  if ! flock -n /run/cam-sync-full.lock true; then
+    jaune "Rattrapage cameras en cours : attente de sa fin avant la mise a jour..."
+  fi
+  flock /run/cam-sync-full.lock sh -c '
+    mv -f /usr/local/bin/cam-sync.sh.new /usr/local/bin/cam-sync.sh
+    mv -f /usr/local/bin/cam-sync-catchup.sh.new /usr/local/bin/cam-sync-catchup.sh'
   CATCHUP_MIN=$(grep -oE '^\*/[0-9]+' /etc/cron.d/cam-sync 2>/dev/null | tr -d '*/'); CATCHUP_MIN="${CATCHUP_MIN:-15}"
   echo "*/$CATCHUP_MIN * * * * root flock -n /run/cam-sync-full.lock /usr/local/bin/cam-sync-catchup.sh >/dev/null 2>&1" > /etc/cron.d/cam-sync
   chmod 644 /etc/cron.d/cam-sync
@@ -135,6 +145,18 @@ $TR {
 }
 EOF
   touch "$TR"
+  # Redemarrage du temps reel entre deux envois (attente max 10 min si une video part)
+  cam_rclone() {
+    local p
+    for p in $(cat /sys/fs/cgroup/system.slice/cam-sync.service/cgroup.procs 2>/dev/null); do
+      [ "$(cat /proc/$p/comm 2>/dev/null)" = rclone ] && return 0
+    done
+    return 1
+  }
+  if cam_rclone; then
+    jaune "Envoi d'une video en cours : attente de la fin avant de redemarrer cam-sync..."
+    for _ in $(seq 600); do cam_rclone || break; sleep 1; done
+  fi
   systemctl restart cam-sync && vert "OK : comptage des transferts cameras (service cam-sync redemarre)" \
                              || rouge "Le service cam-sync ne redemarre pas : journalctl -u cam-sync -n 50"
 else
