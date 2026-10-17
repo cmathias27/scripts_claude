@@ -20,7 +20,7 @@ Tous les scripts sont interactifs, en français, et pensés pour être lancés e
 | [`nas-backup.sh`](#nas-backupsh) | OMV | Gestionnaire de sauvegardes planifiées OMV → Google Drive |
 | [`install-cam-sync.sh`](#install-cam-syncsh) | OMV | Synchro temps réel chiffrée du dossier caméras → Google Drive |
 | [`install-alertes.sh`](#install-alertessh) | OMV | Notifications Home Assistant (échecs, retards, Drive plein…) |
-| [`install-suivi-ha.sh`](#install-suivi-hash) | OMV | Entités Home Assistant (MQTT) décrivant l'état des sauvegardes |
+| [`install-suivi-ha.sh`](#install-suivi-hash) | OMV | Entités Home Assistant (MQTT) : état des sauvegardes et synthèse des transferts (sauvegardes + caméras) |
 
 ## Vue d'ensemble
 
@@ -197,7 +197,8 @@ NOM|SOURCE|DOSSIER_DRIVE|MODE(sync/copy)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|
 - **Modification** : si la destination change, proposition de supprimer l'ancien emplacement et de relancer.
 - **Suppression** : la planification est retirée ; les fichiers du Drive sont conservés sauf confirmation explicite (retaper le nom).
 - **Restauration** : copie du Drive vers un dossier `Restauration/<nom>_<date>` sur le même disque (ou ailleurs ; avertissement si on restaure par-dessus la source).
-- **Intégration** : appelle `nas-notify` (succès / échec avec la dernière erreur rclone) et `nas-ha-status` après chaque exécution, s'ils sont installés.
+- **Intégration** : appelle `nas-notify` (succès avec le résumé « N fichiers envoyés (volume) » / échec avec la dernière erreur rclone) et `nas-ha-status` après chaque exécution, s'ils sont installés.
+- **Suivi des transferts** : pendant une sauvegarde, `nas-ha-status` est relancé toutes les minutes (`HA_LIVE`) pour publier l'avancement dans HA (%, vitesse, reste — en exécution planifiée, rclone écrit ses statistiques toutes les 30 s). À la fin, un bilan est écrit dans `<nom>.bilan.json`.
 
 ### Menu et commandes
 
@@ -211,11 +212,13 @@ NOM|SOURCE|DOSSIER_DRIVE|MODE(sync/copy)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|
 
 ### Paramètres
 
-`GDRIVE`, `CRYPT`, `CRYPT_FOLDER`, `PLAIN_FOLDER`, `DEFAULT_RET` (30 j), `DEFAULT_SCHED` (03:30).
+`GDRIVE`, `CRYPT`, `CRYPT_FOLDER`, `PLAIN_FOLDER`, `DEFAULT_RET` (30 j), `DEFAULT_SCHED` (03:30), `HA_LIVE` (60 s).
 
 ### État
 
 `/var/lib/nas-backup/<nom>.status` (dernière exécution + OK/ECHEC) et `<nom>.lastok` (horodatage du dernier succès), lus par `nas-check` et `nas-ha-status`.
+
+Suivi des transferts : `<nom>.run.log` (journal rclone de la dernière exécution, recopié ensuite dans `/var/log/nas-backup.log`), `<nom>.running` (présent pendant l'exécution) et `<nom>.bilan.json` (fichiers envoyés / nouveaux / remplacés / retirés, volume, durée, erreurs).
 
 ---
 
@@ -271,7 +274,7 @@ Branche les sauvegardes sur **Home Assistant** pour recevoir des notifications s
 
 ### Rattrapage caméras avec alerte
 
-Si `cam-sync` est installé, le cron de rattrapage est remplacé par `/usr/local/bin/cam-sync-catchup.sh`, qui fait le même `rclone sync` mais envoie une alerte critique s'il échoue (et « rétabli » quand ça repart).
+Si `cam-sync` est installé, le cron de rattrapage est remplacé par `/usr/local/bin/cam-sync-catchup.sh`, qui fait le même `rclone sync` mais envoie une alerte critique s'il échoue (et « rétabli » quand ça repart). Si `install-suivi-ha.sh` a déjà installé sa version (alertes + comptage des transferts), elle est conservée.
 
 ### Côté Home Assistant
 
@@ -291,7 +294,10 @@ Publie l'**état de toutes les sauvegardes** dans Home Assistant via **MQTT disc
 
 - Installe `mosquitto-clients` ;
 - demande l'utilisateur/mot de passe MQTT (un utilisateur HA dédié, ex. `nas`), les stocke dans `/root/.config/mosquitto_pub` (`600`) et teste la connexion ;
-- installe `/usr/local/bin/nas-ha-status` (Python) et le lance **toutes les 5 minutes** par cron (il est aussi appelé après chaque sauvegarde et chaque `nas-check`).
+- installe `/usr/local/bin/nas-ha-status` (Python) et le lance **toutes les 5 minutes** par cron (il est aussi appelé après chaque sauvegarde, toutes les minutes pendant une sauvegarde, et après chaque `nas-check`) ;
+- si `cam-sync` est installé, remplace `/usr/local/bin/cam-sync.sh` et `/usr/local/bin/cam-sync-catchup.sh` par des versions qui tracent chaque envoi / suppression dans `/var/lib/nas-backup/cam-transferts.log` (`horodatage|action|octets|ok/echec|nb`, rotation hebdomadaire), puis redémarre `cam-sync`. Le rattrapage garde l'alerte HA. **À relancer après une réinstallation de `install-cam-sync.sh`.**
+
+La connexion MQTT déjà configurée est conservée quand on relance le script.
 
 ### Entités créées
 
@@ -303,12 +309,23 @@ Publie l'**état de toutes les sauvegardes** dans Home Assistant via **MQTT disc
 | Espace Google Drive | sensor (%) | Taux de remplissage ; attributs : Go utilisés / total |
 | Dernière vérification | sensor (timestamp) | Heure du dernier `nas-check` |
 | Synchro caméras | binary_sensor (running) | Si cam-sync est installé |
-| Dernière vidéo envoyée | sensor (timestamp) | Lu dans `/var/log/cam-sync.log` |
-| Sauvegarde `<nom>` | sensor, une par sauvegarde | `OK` / `Échec` / `Jamais lancée` ; attributs : dernière exécution, dernier succès, source, destination, mode, chiffrement, horaire, jours de corbeille |
+| Dernière vidéo envoyée | sensor (timestamp) | Dernier envoi réussi (`cam-transferts.log`) |
+| Vidéos envoyées aujourd'hui | sensor (vidéos) | Remis à zéro à minuit ; attributs : volume du jour, dernière heure (vidéos / volume), suppressions du jour, 7 derniers jours, dernier échec |
+| Volume caméras aujourd'hui | sensor (GB) | Volume envoyé depuis minuit |
+| Échecs d'envoi caméras (jour) | sensor | Envois / suppressions / rattrapages en échec depuis minuit |
+| Sauvegarde en cours | sensor | Nom de la sauvegarde en cours ou `Aucune` ; attributs : progression, transféré / total, vitesse, reste, fichiers envoyés, depuis (min) |
+| Progression de la sauvegarde | sensor (%) | 0 hors sauvegarde |
+| Volume sauvegardé (24 h) | sensor (GB) | Somme des bilans des sauvegardes terminées dans les 24 h |
+| Fichiers sauvegardés (24 h) | sensor (fichiers) | Idem, en nombre de fichiers |
+| Sauvegarde `<nom>` | sensor, une par sauvegarde | `OK` / `Échec` / `En cours` / `Jamais lancée` ; attributs : dernière exécution, dernier succès, source, destination, mode, chiffrement, horaire, jours de corbeille, **bilan du dernier transfert** (date, fichiers envoyés / nouveaux / remplacés / retirés, volume, durée, erreurs) et, pendant l'exécution, `en_cours` |
 
 Les entités passent en *indisponible* si le NAS ne publie plus pendant 20 min, et les entités des sauvegardes supprimées sont retirées automatiquement de HA.
 
-Prérequis : le broker MQTT de HA (`MQTT_HOST`, `MQTT_PORT`) et, pour l'état Google Drive, la version de `install-alertes.sh` qui écrit `health.json`.
+Prérequis : le broker MQTT de HA (`MQTT_HOST`, `MQTT_PORT`), la version de `nas-backup` qui écrit les bilans et, pour l'état Google Drive, la version de `install-alertes.sh` qui écrit `health.json`.
+
+### Carte de tableau de bord
+
+[`carte-transferts-ha.yaml`](carte-transferts-ha.yaml) : carte Markdown de synthèse (sauvegarde en cours, tableau des sauvegardes avec leur dernier transfert, totaux caméras du jour / dernière heure / 7 jours). À coller dans *Modifier le tableau de bord > Ajouter une carte > Manuel*.
 
 ---
 
@@ -318,7 +335,7 @@ Prérequis : le broker MQTT de HA (`MQTT_HOST`, `MQTT_PORT`) et, pour l'état Go
 |---|---|
 | `/usr/local/bin/nas-backup` | nas-backup.sh |
 | `/usr/local/bin/cam-sync.sh`, `/etc/systemd/system/cam-sync.service` | install-cam-sync.sh |
-| `/usr/local/bin/cam-sync-catchup.sh` | install-alertes.sh |
+| `/usr/local/bin/cam-sync-catchup.sh` | install-alertes.sh, remplacé par install-suivi-ha.sh (comptage) |
 | `/usr/local/bin/nas-notify`, `/usr/local/bin/nas-check` | install-alertes.sh |
 | `/usr/local/bin/nas-ha-status` | install-suivi-ha.sh |
 | `/etc/nas-backup/jobs.conf`, `notify.conf` | nas-backup.sh, install-alertes.sh |

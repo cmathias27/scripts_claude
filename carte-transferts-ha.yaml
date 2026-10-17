@@ -1,0 +1,40 @@
+# Carte Home Assistant : synthese des transferts NAS -> Google Drive
+# Tableau de bord > Modifier > Ajouter une carte > Manuel > coller ce contenu
+type: markdown
+title: Transferts NAS → Google Drive
+content: >-
+  {% set en = states('sensor.nas_sauvegarde_en_cours') %}
+  {% if en not in ['Aucune', 'unknown', 'unavailable'] %}
+  {% set d = states.sensor.nas_sauvegarde_en_cours.attributes %}
+  **⏳ En cours : {{ en }}** — {{ d.progression | default('?') }} %
+  ({{ d.transfere | default('…') }} / {{ d.total | default('…') }},
+  {{ d.vitesse | default('…') }}, reste {{ d.reste | default('…') }})
+  · {{ d.fichiers_envoyes | default(0) }} fichiers depuis {{ d.depuis_min | default(0) }} min
+
+  {% endif %}
+
+  ### 💾 Sauvegardes
+  Dernières 24 h : **{{ states('sensor.nas_sauvegardes_fichiers_24h') }} fichiers**
+  · **{{ states('sensor.nas_sauvegardes_volume_24h') }} Go**
+
+
+  | Sauvegarde | État | Dernier envoi | Fichiers | Volume | Durée |
+  |:--|:--|:--|--:|--:|--:|
+  {% for s in states.sensor
+       | selectattr('entity_id', 'match', 'sensor\.nas_sauvegarde_')
+       | selectattr('attributes.horaire', 'defined') %}
+  {%- set a = s.attributes -%}
+  | {{ a.nom }} | {{ {'OK':'✅ OK','Échec':'❌ Échec','En cours':'⏳ En cours'}.get(s.state, s.state) }} | {{ as_timestamp(a.dernier_transfert) | timestamp_custom('%d/%m %H:%M') if a.dernier_transfert else '—' }} | {{ a.fichiers_envoyes if a.fichiers_envoyes is not none else '—' }} | {{ a.volume or '—' }} | {{ (a.duree_min ~ ' min') if a.duree_min is not none else '—' }} |
+  {% endfor %}
+
+
+  ### 📹 Caméras
+  {% set c = states.sensor.nas_cam_videos_jour.attributes if states.sensor.nas_cam_videos_jour else {} %}
+  Aujourd'hui : **{{ states('sensor.nas_cam_videos_jour') }} vidéos** · **{{ c.volume_jour | default('—') }}**
+  · {{ states('sensor.nas_cam_echecs_jour') }} échec(s) · {{ c.suppressions_jour | default(0) }} suppression(s)
+
+  Dernière heure : {{ c.videos_derniere_heure | default(0) }} vidéos ({{ c.volume_derniere_heure | default('—') }})
+  · 7 jours : {{ c.videos_7_jours | default(0) }} vidéos ({{ c.volume_7_jours | default('—') }})
+
+  {% set last = states('sensor.nas_cam_dernier_envoi') %}
+  Dernière vidéo : {{ as_timestamp(last) | timestamp_custom('%d/%m à %H:%M') if last not in ['unknown','unavailable','None'] else '—' }}

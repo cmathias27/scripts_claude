@@ -10,6 +10,9 @@
 #
 #  Prerequis : rclone + remote "gdrive" fonctionnel
 #  Au premier lancement, le script s'installe dans /usr/local/bin/nas-backup
+#
+#  Suivi Home Assistant : bilan de chaque transfert (fichiers, volume,
+#  duree, erreurs) et avancement en direct publies via nas-ha-status.
 # =====================================================================
 set -uo pipefail
 
@@ -22,6 +25,7 @@ DEFAULT_RET=30                   # jours de corbeille par defaut
 DEFAULT_SCHED="03:30"            # horaire par defaut
 CAM_PASS="/root/cam-crypt-motsdepasse.txt"   # mots de passe reutilises si presents
 PASSFILE="/root/nas-backup-motsdepasse.txt"
+HA_LIVE=60                       # avancement publie dans Home Assistant toutes les X secondes
 # ---------------------------------------------------------------------
 
 CONF_DIR="/etc/nas-backup"
@@ -111,7 +115,8 @@ job_save() {
 job_del() {
   local tmp; tmp=$(mktemp)
   grep -v "^$1|" "$JOBS" > "$tmp"; cat "$tmp" > "$JOBS"; rm -f "$tmp"
-  rm -f "$STATE_DIR/$1.status" "$STATE_DIR/$1.lastok" "$STATE_DIR/alertes/job-$1" "$STATE_DIR/alertes/retard-$1"
+  rm -f "$STATE_DIR/$1.status" "$STATE_DIR/$1.lastok" "$STATE_DIR/alertes/job-$1" "$STATE_DIR/alertes/retard-$1" \
+        "$STATE_DIR/$1.bilan.json" "$STATE_DIR/$1.run.log" "$STATE_DIR/$1.running"
 }
 
 dest_of()  { [ "$1" = oui ] && echo "${CRYPT}:$2" || echo "${GDRIVE}:${PLAIN_FOLDER}/$2"; }
@@ -319,12 +324,59 @@ delete_job() {
   fi
 }
 
+# Bilan d'un transfert d'apres son journal rclone -> $STATE_DIR/<nom>.bilan.json
+# Affiche un resume d'une ligne ("12 fichiers envoyes (1.3 Go)")
+bilan() {  # bilan <journal> <debut> <code>
+  python3 - "$1" "$J_SRC" "$STATE_DIR/$J_NAME.bilan.json" "$2" "$3" <<'PY' 2>/dev/null
+import json, os, re, sys, time
+log, src, out = sys.argv[1:4]
+t0, rc = int(sys.argv[4]), int(sys.argv[5])
+act = re.compile(r" INFO\s+: (.+): (Copied \((new|replaced existing)\)|Deleted|Moved \(server-side\))")
+b = {"nouveaux": 0, "remplaces": 0, "retires": 0, "erreurs": 0, "octets": 0}
+try:
+    with open(log, errors="ignore") as f:
+        for line in f:
+            if " ERROR : " in line and "Attempt " not in line:
+                b["erreurs"] += 1
+                continue
+            m = act.search(line)
+            if not m:
+                continue
+            if m.group(2).startswith("Copied"):
+                b["nouveaux" if m.group(3) == "new" else "remplaces"] += 1
+                try:
+                    b["octets"] += os.path.getsize(os.path.join(src, m.group(1)))
+                except OSError:
+                    pass
+            else:
+                b["retires"] += 1          # supprime, ou deplace vers la corbeille
+except OSError:
+    pass
+fin = int(time.time())
+env = b["nouveaux"] + b["remplaces"]
+json.dump({"debut": t0, "fin": fin, "duree_min": round((fin - t0) / 60, 1), "code": rc,
+           "fichiers_envoyes": env, "nouveaux": b["nouveaux"], "remplaces": b["remplaces"],
+           "retires": b["retires"], "erreurs": b["erreurs"], "volume_octets": b["octets"]}, open(out, "w"))
+v = float(b["octets"])
+for u in ("o", "Ko", "Mo", "Go", "To"):
+    if v < 1024 or u == "To":
+        break
+    v /= 1024
+txt = "%d fichier%s envoyé%s (%s)" % (env, "s" if env > 1 else "", "s" if env > 1 else "",
+                                      "%d o" % v if u == "o" else "%.1f %s" % (v, u))
+if b["retires"]:
+    txt += ", %d retiré%s" % (b["retires"], "s" if b["retires"] > 1 else "")
+print(txt)
+PY
+}
+
 run_job() {
   job_get "$1" || { rouge "Sauvegarde '$1' introuvable."; return 1; }
   local dest trash jour rc
   dest=$(dest_of "$J_ENC" "$J_SUB"); trash=$(trash_of "$J_ENC" "$J_NAME"); jour=$(date +%Y-%m-%d_%H%M)
-  local -a opts=("${EXCLUDES[@]}" --log-file "$LOG" --log-level INFO)
-  [ -t 1 ] && opts+=(-P)
+  local runlog="$STATE_DIR/$J_NAME.run.log" runf="$STATE_DIR/$J_NAME.running"
+  local -a opts=("${EXCLUDES[@]}" --log-file "$runlog" --log-level INFO)
+  if [ -t 1 ]; then opts+=(-P); else opts+=(--stats 30s); fi   # --stats : avancement (%) pour Home Assistant
 
   if [ ! -d "$J_SRC" ]; then
     rouge "Source introuvable : $J_SRC"; logl "$J_NAME : ECHEC (source introuvable)"
@@ -337,6 +389,16 @@ run_job() {
   local t0; t0=$(date +%s)
   gras "-> $J_NAME : $(short "$J_SRC")  =>  $dest"
   logl "$J_NAME : debut ($J_MODE) $J_SRC -> $dest"
+
+  # Avancement en direct dans Home Assistant pendant le transfert
+  : > "$runlog"; echo "$$ $t0" > "$runf"
+  ha_status
+  ( while sleep "$HA_LIVE"; do
+      [ -f "$runf" ] && kill -0 $$ 2>/dev/null || exit 0
+      ha_status
+    done ) &
+  local live=$!
+
   if [ "$J_MODE" = sync ]; then
     if [ "${J_RET:-0}" -gt 0 ]; then
       rclone sync "$J_SRC" "$dest" --backup-dir "$trash/$jour" "${opts[@]}"; rc=$?
@@ -349,16 +411,20 @@ run_job() {
     rclone copy "$J_SRC" "$dest" "${opts[@]}"; rc=$?
   fi
 
+  rm -f "$runf"; kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+  cat "$runlog" >> "$LOG"
+  local resume; resume=$(bilan "$runlog" "$t0" "$rc")
+
   local duree=$(( ($(date +%s) - t0) / 60 ))
   if [ "$rc" -eq 0 ]; then
     echo "$(date '+%Y-%m-%d %H:%M') OK" > "$STATE_DIR/$J_NAME.status"
     date +%s > "$STATE_DIR/$J_NAME.lastok"
-    logl "$J_NAME : OK"; vert "OK : $J_NAME"
-    notify succes "job-$J_NAME" "Sauvegarde « $J_NAME »" "Terminée avec succès en ${duree} min."
+    logl "$J_NAME : OK${resume:+ - $resume}"; vert "OK : $J_NAME${resume:+ - $resume}"
+    notify succes "job-$J_NAME" "Sauvegarde « $J_NAME »" "Terminée avec succès en ${duree} min${resume:+ : $resume}."
   else
     echo "$(date '+%Y-%m-%d %H:%M') ECHEC" > "$STATE_DIR/$J_NAME.status"
     logl "$J_NAME : ECHEC (code $rc)"; rouge "ECHEC : $J_NAME (voir $LOG)"
-    local err; err=$(tail -n 300 "$LOG" | grep -E 'ERROR|CRITICAL' | tail -n 1 | sed -E 's/^[0-9\/ :]+//' | cut -c1-200)
+    local err; err=$(grep -E 'ERROR|CRITICAL' "$runlog" | tail -n 1 | sed -E 's/^[0-9\/ :]+//' | cut -c1-200)
     notify critique "job-$J_NAME" "Sauvegarde « $J_NAME » en échec" "Code $rc. ${err:-Voir $LOG sur le NAS.}"
   fi
   ha_status
@@ -405,7 +471,8 @@ restore_job() {
 show_log() {
   tail -n 40 "$LOG"
   echo
-  ask_yn "Suivre en direct (Ctrl+C pour arreter) ?" n && tail -f "$LOG"
+  echo "(pendant une sauvegarde, son detail est dans $STATE_DIR/<NOM>.run.log)"
+  ask_yn "Suivre en direct (Ctrl+C pour arreter) ?" n && tail -f "$LOG" "$STATE_DIR"/*.run.log
 }
 
 menu() {

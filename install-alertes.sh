@@ -166,7 +166,9 @@ chmod 644 /etc/cron.d/nas-check
 vert "OK : verification toutes les heures (nas-check)"
 
 # --------------------------- Rattrapage cameras ----------------------
-if [ -f /usr/local/bin/cam-sync.sh ]; then
+if grep -q 'cam-transferts' /usr/local/bin/cam-sync-catchup.sh 2>/dev/null; then
+  vert "OK : rattrapage cameras deja gere par install-suivi-ha (alertes + comptage), conserve"
+elif [ -f /usr/local/bin/cam-sync.sh ]; then
   CAM_SRC=$(grep -m1 '^SRC=' /usr/local/bin/cam-sync.sh | cut -d'"' -f2)
   cat > /usr/local/bin/cam-sync-catchup.sh <<EOF
 #!/bin/bash
