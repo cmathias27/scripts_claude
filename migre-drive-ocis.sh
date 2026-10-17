@@ -391,8 +391,67 @@ show_queue() {
   local i=1 s l id n dav sub t del
   while IFS='|' read -r s l id n dav sub t del; do
     printf "  %2d) %-18s -> %-25s %10s%s\n" "$i" "$l" "$n${sub:+/$sub}" "$(hsize "$t")" \
-      "$( [ "$del" = oui ] && echo -e "  ${R}+ suppression des originaux${N}")"; i=$((i+1))
+      "$(case "$del" in oui) echo -e "  ${R}+ suppression des originaux${N}";; verif) echo -e "  ${R}controle + suppression (sans transfert)${N}";; esac)"; i=$((i+1))
   done < "$QUEUE"
+}
+
+# Migration deja faite : controle dans oCIS puis suppression des originaux, sans transfert
+add_verif() {
+  local -a past=(); local line c s dst best="" bl=0 nm sub total nbf
+  clear
+  echo -e "${B}== Controler et supprimer les originaux d'une migration deja faite ==${N}"
+  # migrations reussies de l'historique (« source -> espace[/sous-dossier] »), dont la source existe encore
+  mapfile -t past < <(awk -F' [|] ' '$2 ~ /^OK/ {print $3}' "$HIST" 2>/dev/null | awk '!vu[$0]++' |
+                      while IFS= read -r line; do [ -d "${line%% -> *}" ] && echo "$line"; done)
+  if [ ${#past[@]} -gt 0 ]; then
+    echo "Migrations reussies (historique) :"
+    local i=1
+    for line in "${past[@]}"; do printf "  %2d) %s\n" "$i" "$line"; i=$((i+1)); done
+  else
+    echo -e "${G}(aucune migration reussie dans l'historique)${N}"
+  fi
+  echo "   m) Choisir a la main la source et l'espace"
+  read -r -p "Choix (Entree = annuler) : " c
+  if [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#past[@]} ]; then
+    line="${past[$((c-1))]}"; s="${line%% -> *}"; dst="${line#* -> }"
+    if ! list_spaces; then http_hint "$HTTP"; pause; return; fi
+    # espace dont le nom correspond au debut de la destination (le plus long gagne)
+    for line in "${SPACES[@]}"; do
+      IFS="|" read -r _ nm _ _ _ <<< "$line"
+      if { [ "$dst" = "$nm" ] || [[ "$dst" == "$nm/"* ]]; } && [ ${#nm} -gt $bl ]; then best="$line"; bl=${#nm}; fi
+    done
+    [ -n "$best" ] || { echo -e "${R}Espace « ${dst%%/*} » introuvable dans oCIS (renomme, ou compte non membre ?).${N}"; pause; return; }
+    IFS="|" read -r SP_ID SP_NAME SP_DAV _ _ <<< "$best"
+    SRC_DIR="$s"; sub="${dst#"$SP_NAME"}"; sub="${sub#/}"
+    SRC_LABEL="${s##*/}"; [[ "$s" =~ /homes/([^/]+)/Drive$ ]] && SRC_LABEL="${BASH_REMATCH[1]}"
+  elif [[ "$c" =~ ^[mM]$ ]]; then
+    pick_source || return
+    pick_space || return
+    read -r -p "Sous-dossier dans l'espace (Entree = racine) : " sub; sub="${sub#/}"; sub="${sub%/}"
+  else
+    return
+  fi
+  clear
+  echo -e "${B}== Controle et suppression ==${N}"
+  echo "Calcul..."
+  total=$(du -sb --exclude='@eaDir' --exclude='#SynoRecycle' --exclude='.SynologyWorkingDirectory' "$SRC_DIR" 2>/dev/null | cut -f1)
+  nbf=$(find "$SRC_DIR" -type f ! -path '*/@eaDir/*' ! -path '*/#SynoRecycle/*' ! -path '*/.SynologyWorkingDirectory/*' 2>/dev/null | wc -l)
+  echo
+  echo -e "  Synology : ${B}$SRC_DIR${N}  ($(hsize "${total:-0}"), $nbf fichiers)"
+  echo -e "  oCIS     : ${B}$SP_NAME${sub:+/$sub}${N}"
+  echo
+  echo -e "${J}Aucun transfert : chaque fichier du Synology est compare a sa copie dans oCIS"
+  echo -e "(empreinte), et seuls ceux qui sont identiques sont supprimes du Synology."
+  echo -e "Ceux qui sont absents ou differents sont gardes, puis transferes et controles"
+  echo -e "au passage suivant (remis en file d'attente).${N}"
+  if [[ "$SRC_DIR" == */homes/*/Drive* ]]; then
+    echo -e "${R}C'est un « Mon Drive » : les ordinateurs synchronises avec Synology Drive"
+    echo -e "supprimeront aussi ces fichiers chez eux. Installe d'abord le client oCIS.${N}"
+  fi
+  read -r -p "Tape SUPPRIMER pour confirmer : " c
+  [ "$c" = SUPPRIMER ] || { echo "Annule."; sleep 1; return; }
+  printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$SRC_DIR" "$SRC_LABEL" "$SP_ID" "$SP_NAME" "$SP_DAV" "$sub" "${total:-0}" verif >> "$QUEUE"
+  echo -e "${V}Ajoute a la file d'attente : controle et suppression de $SRC_LABEL (lance-la avec le menu 3)${N}"
 }
 
 remove_task() {
@@ -503,7 +562,7 @@ worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
     dav=$(to_base "$dav")
     export RCLONE_CONFIG_OCIS_TYPE=webdav RCLONE_CONFIG_OCIS_URL="$dav" RCLONE_CONFIG_OCIS_VENDOR="${OCIS_VENDOR:-owncloud}" \
            RCLONE_CONFIG_OCIS_USER="$OCIS_USER" RCLONE_CONFIG_OCIS_PASS="$obs"
-    echo "=== [$i] $s -> $n${sub:+/$sub}  via ${dav%%/dav/*}  ($(date '+%F %T'))$( [ "$del" = oui ] && echo "  + suppression des originaux controles")" >> "$LOGF"
+    echo "=== [$i] $s -> $n${sub:+/$sub}  via ${dav%%/dav/*}  ($(date '+%F %T'))$(case "$del" in oui) echo "  + suppression des originaux controles";; verif) echo "  controle + suppression sans transfert";; esac)" >> "$LOGF"
     local why="" requeue=1 try=0 retryable errs err1 off tr=$TRANSFERS ck=$CHECKERS
     while :; do
       try=$((try+1))
@@ -511,6 +570,8 @@ worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
       : > "$STATE/rclone-err.log"
       if [ ! -d "$s" ]; then
         rc=3; echo "$(date '+%Y/%m/%d %H:%M:%S') ERROR : dossier source introuvable : $s" >> "$LOGF"
+      elif [ "$del" = verif ]; then
+        rc=0; echo "=== [$i] migration deja faite : pas de transfert, controle et suppression seulement" >> "$LOGF"
       else
         # --buffer-size 0 : pas de tampon de lecture (inutile depuis un disque local)
         # --disable-http2 : les envois en HTTP/2 font gonfler la memoire de rclone
@@ -553,9 +614,11 @@ worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
     done
     if [ $rc -eq 0 ]; then
       ok=$((ok+1)); st=OK; requeue=0; why=""; [ $try -gt 1 ] && why="apres $((try-1)) reprise(s) automatique(s)"
-      if [ "$del" = oui ]; then
+      if [ "$del" = oui ] || [ "$del" = verif ]; then
         if ! verify_and_delete "$s" "$sub" "$l"; then
           requeue=1; VERIF_MSG="$VERIF_MSG ; remise en file d'attente"
+          # migration deja faite : les fichiers restants seront transferes puis controles
+          [ "$del" = verif ] && { del=oui; VERIF_MSG="$VERIF_MSG (transfert des fichiers restants puis controle)"; }
         fi
         why="${why:+$why, }$VERIF_MSG"
       fi
@@ -700,6 +763,7 @@ while true; do
   echo "  5) Arreter la migration en cours"
   echo "  6) Historique"
   echo "  7) Modifier la connexion oCIS"
+  echo "  8) Controler et supprimer les originaux d'une migration deja faite"
   echo "  0) Quitter"
   read -r -p "Choix : " c
   case "$c" in
@@ -710,6 +774,7 @@ while true; do
     5) stop_run; sleep 2 ;;
     6) clear; tail -n 30 "$HIST" 2>/dev/null || echo "Aucune migration."; pause ;;
     7) setup_conf || pause ;;
+    8) add_verif; sleep 2 ;;
     0|q) exit 0 ;;
   esac
 done
