@@ -162,6 +162,20 @@ Idées en attente, à décider selon l'usage.
 - [ ] **Actions depuis Home Assistant** : boutons MQTT pour lancer une sauvegarde, mettre en pause
       ou reprendre le temps réel (utilisables dans des automatisations).
 
+### Plus tard
+- **Moteur de transfert unique, de n'importe où vers n'importe où** :
+  - Des « points » (dossier sur une machine suivie OMV / Synology / Debian, ou stockage distant :
+    Drive, oCIS, OneDrive…) et des transferts entre deux points : source, destination, mode
+    (copie / miroir / déplacement), chiffrement, ponctuel ou programmé, filtres, limite de débit.
+  - La machine qui exécute est choisie automatiquement : NAS → cloud = NAS source (rclone) ;
+    cloud → NAS = NAS destination (rclone) ; NAS → NAS = NAS source (rsync, plus léger,
+    important pour le Synology à 2 Go) ; cloud → cloud = un NAS au choix.
+  - Un seul écran « Transferts » (file d'attente, suivi, historique, notifications).
+    Les fonctions actuelles deviennent des modèles : « Synology → OMV », « Synology Drive → oCIS »,
+    « oCIS → NAS ».
+  - Identifiants des clouds déposés chiffrés sur la machine qui exécute ; mode déplacement
+    uniquement avec confirmation explicite.
+
 ### Pas pour l'instant
 - Sauvegarde des volumes Docker (arrêt / relance du conteneur pendant la copie).
 - Rétention indépendante des vidéos caméras sur la destination.
