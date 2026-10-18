@@ -8,6 +8,7 @@ on:
       - main
     paths:
       - "nas-manager/**"
+      - "!nas-manager/**/*.md"
       - "nas-backup.sh"
       - "copie-omv.sh"
       - "migre-drive-ocis.sh"
