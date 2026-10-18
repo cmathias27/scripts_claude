@@ -101,6 +101,9 @@ Idées en attente, à décider selon l'usage.
   - **Debian** (nouveau) : même rôle que le script OMV sur un serveur Debian classique
     (chemins de disques libres au lieu de `/srv/dev-disk-by-uuid-*`, pas d'interface OMV).
     OMV étant basé sur Debian, partager le maximum de code entre les deux.
+    Doit fonctionner sur **n'importe quelle distribution de la famille Debian** (Debian, Ubuntu,
+    Raspberry Pi OS…) et toutes les architectures (amd64, arm64, armv7) : objectif, ouvrir l'outil
+    au maximum de machines.
   - Les scripts `install-*.sh` disparaissent : l'installation est faite par l'application.
   - Un numéro de version par script, vérifié et mis à jour par l'application.
   - **Migration automatique** des installations actuelles : reprise de `jobs.conf`, des remotes et
