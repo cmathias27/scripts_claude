@@ -215,6 +215,10 @@ pub struct App {
     pub sources_loaded: bool,
     pub passwords: Option<String>,
     pub key_msg: String,
+    pub fingerprint: Option<crate::extras::Fingerprint>,
+    /// Identite refusee par l'utilisateur : ne plus la redemander automatiquement
+    pub fp_dismissed: [bool; 2],
+    pub show_news: bool,
 }
 
 impl App {
@@ -264,7 +268,19 @@ impl App {
             sources_loaded: false,
             passwords: None,
             key_msg: String::new(),
+            fingerprint: None,
+            fp_dismissed: [false, false],
+            show_news: false,
         };
+        crate::extras::apply_theme(&app.ctx, &app.settings.theme);
+        crate::log::info(&format!("démarrage de NAS Manager {}", crate::extras::VERSION));
+        // Nouveautes affichees apres une mise a jour
+        if app.settings.last_version != crate::extras::VERSION {
+            app.show_news = true;
+            app.settings.last_version = crate::extras::VERSION.to_string();
+            app.edit.last_version = app.settings.last_version.clone();
+            let _ = config::save(&app.settings);
+        }
         // Mots de passe sudo memorises (DPAPI)
         if !app.settings.omv.saved_pass.is_empty() {
             app.omv.pass = secret::unprotect(&app.settings.omv.saved_pass);
@@ -363,8 +379,22 @@ impl App {
         });
     }
 
+    /// Mode lecture seule : refuse l'action (renvoie true si bloquee)
+    pub fn blocked(&mut self) -> bool {
+        if self.settings.read_only {
+            self.toast(false, "Mode lecture seule : action désactivée (Paramètres).".into());
+            true
+        } else {
+            false
+        }
+    }
+
     /// Action dont la sortie s'affiche dans une fenetre ; actualise ensuite l'etat.
     pub fn action_dialog(&mut self, host: HostId, title: &str, script: String, timeout_s: u64) {
+        if self.blocked() {
+            return;
+        }
+        crate::log::info(&format!("action « {title} » sur {}", host.label()));
         let t = title.to_string();
         self.exec(
             host,
@@ -376,13 +406,19 @@ impl App {
                     Ok(o) => {
                         let ok = o.code == 0;
                         let text = o.text();
+                        if !ok {
+                            crate::log::warn(&format!("« {t} » : code {} — {}", o.code, text.lines().last().unwrap_or("")));
+                        }
                         app.output = Some(OutputDialog {
                             title: t,
                             text: if text.is_empty() { "Terminé.".into() } else { text },
                             ok,
                         });
                     }
-                    Err(e) => app.output = Some(OutputDialog { title: t, text: e.to_string(), ok: false }),
+                    Err(e) => {
+                        crate::log::error(&format!("« {t} » : {e}"));
+                        app.output = Some(OutputDialog { title: t, text: e.to_string(), ok: false })
+                    }
                 }
                 app.refresh(host);
             }),
@@ -391,6 +427,11 @@ impl App {
 
     /// Action dont la sortie (courte) s'affiche en notification ; actualise ensuite l'etat.
     pub fn action_toast(&mut self, host: HostId, label: &str, script: String, timeout_s: u64) {
+        if self.blocked() {
+            return;
+        }
+        crate::log::info(&format!("action « {label} » sur {}", host.label()));
+        let lab = label.to_string();
         self.exec(
             host,
             label,
@@ -401,13 +442,19 @@ impl App {
                     Ok(o) => {
                         let text = o.text();
                         let ok = o.code == 0;
+                        if !ok {
+                            crate::log::warn(&format!("« {lab} » : code {} — {}", o.code, text.lines().last().unwrap_or("")));
+                        }
                         if text.lines().count() > 3 {
                             app.output = Some(OutputDialog { title: "Résultat".into(), text, ok });
                         } else {
                             app.toast(ok, if text.is_empty() { "Fait.".into() } else { text });
                         }
                     }
-                    Err(e) => app.toast(false, e.to_string()),
+                    Err(e) => {
+                        crate::log::error(&format!("« {lab} » : {e}"));
+                        app.toast(false, e.to_string())
+                    }
                 }
                 app.refresh(host);
             }),
@@ -430,6 +477,9 @@ impl App {
         typed: Option<&str>,
         action: Box<dyn FnOnce(&mut App)>,
     ) {
+        if self.blocked() {
+            return;
+        }
         self.confirm = Some(Confirm {
             title: title.into(),
             text: text.into(),
@@ -537,6 +587,23 @@ impl App {
                 return;
             }
         }
+        // identite du NAS a confirmer avant toute connexion
+        if !self.ssh.host_known(&cfg) {
+            match host {
+                HostId::Omv => {
+                    self.omv.error = Some(SshError::HostUnknown);
+                    self.omv.last_poll = Some(Instant::now());
+                }
+                HostId::Syno => {
+                    self.syno.error = Some(SshError::HostUnknown);
+                    self.syno.last_poll = Some(Instant::now());
+                }
+            }
+            if !self.fp_dismissed[crate::extras::idx(host)] && self.fingerprint.is_none() {
+                crate::extras::start_fingerprint(self, host, crate::extras::AfterTrust::Nothing);
+            }
+            return;
+        }
         if cfg.sudo && self.pass_of(host).is_none() {
             match host {
                 HostId::Omv => self.omv.error = Some(SshError::SudoPassword),
@@ -609,6 +676,19 @@ impl App {
             Err(e) => Err(e),
         };
         let st_err = parsed.err();
+        let prev = match host {
+            HostId::Omv => self.omv.error.clone(),
+            HostId::Syno => self.syno.error.clone(),
+        };
+        if prev != st_err {
+            match &st_err {
+                Some(e) => crate::log::warn(&format!("{} : {e}", host.label())),
+                None => crate::log::info(&format!("{} : connecté", host.label())),
+            }
+        }
+        if matches!(st_err, Some(SshError::HostUnknown)) && !self.fp_dismissed[crate::extras::idx(host)] {
+            crate::extras::start_fingerprint(self, host, crate::extras::AfterTrust::Nothing);
+        }
         if matches!(st_err, Some(SshError::SudoPassword)) {
             self.forget_pass(host);
             self.ask_sudo(host, true);
@@ -650,13 +730,18 @@ impl App {
             || self.edit.syno.user != self.settings.syno.user
             || self.edit.syno.sudo != self.settings.syno.sudo;
         if omv_changed {
+            crate::ssh::close_session(&self.settings.omv);
             self.edit.omv.saved_pass.clear();
             self.omv = HostState::default();
+            self.fp_dismissed[0] = false;
         }
         if syno_changed {
+            crate::ssh::close_session(&self.settings.syno);
             self.edit.syno.saved_pass.clear();
             self.syno = HostState::default();
+            self.fp_dismissed[1] = false;
         }
+        crate::extras::apply_theme(&self.ctx, &self.edit.theme);
         self.edit.refresh_secs = self.edit.refresh_secs.clamp(2, 300);
         self.settings = self.edit.clone();
         self.ssh = Ssh::new(&self.settings.ssh_bin);
@@ -981,6 +1066,8 @@ impl App {
         crate::pages::job_form_window(self, ctx);
         crate::pages::restore_window(self, ctx);
         crate::pages::passwords_window(self, ctx);
+        crate::extras::fingerprint_window(self, ctx);
+        crate::extras::news_window(self, ctx);
     }
 
     fn toasts_ui(&mut self, ctx: &egui::Context) {
@@ -1029,6 +1116,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.process_messages();
+        crate::extras::shortcuts(self, &ctx);
         self.maybe_poll(HostId::Omv);
         if self.settings.syno.is_set() {
             self.maybe_poll(HostId::Syno);

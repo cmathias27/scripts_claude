@@ -47,25 +47,26 @@ Les menus interactifs des scripts restent identiques : on peut toujours les util
 
 Prérequis côté NAS : `python3` (présent sur OMV et DSM 7).
 
+## Télécharger
+
+Dernière version : <https://github.com/cmathias27/scripts_claude/releases/latest> (fichier `nas-manager.exe`).
+Chaque version a sa page avec ses nouveautés (aussi affichées dans l'application après une mise à jour).
+
 ## Compiler
 
-**Avec GitHub** : pousser le dépôt ; le workflow `.github/workflows/nas-manager.yml` compile sous Windows.
-Le fichier `nas-manager.exe` est dans l'onglet *Actions* > dernier run > *Artifacts*
-(et dans la *Release* « NAS Manager (derniere version) », colonne de droite de la page du depot).
+**Avec GitHub** : à chaque envoi, le workflow `.github/workflows/nas-manager.yml`
+1. teste l'application sous Linux contre un faux OMV et un faux Synology (`tests/faux-nas.sh`) ;
+2. la teste et la compile sous Windows ;
+3. publie la Release `vX.Y.Z` (version de `Cargo.toml`, nouveautés de `CHANGELOG.md`).
 
-**Sur le PC Windows** : installer Rust (<https://rustup.rs>, avec les « Visual Studio Build Tools » proposés),
-puis double-cliquer sur `compiler.bat`, ou :
+Nouvelle version : augmenter `version` dans `Cargo.toml` et ajouter sa section en tête de `CHANGELOG.md`.
 
-```
-cd nas-manager
-cargo build --release
-```
-
-L'exécutable est `target\release\nas-manager.exe` (un seul fichier, rien à installer).
+**Sur le PC Windows** : installer Rust (<https://rustup.rs>), puis `compiler.bat` ou `cargo build --release`.
 
 ## Fichiers de l'application
 
-`%APPDATA%\NasManager\` : `parametres.json`, la clé SSH (`id_ed25519`), `known_hosts`.
+`%APPDATA%\NasManager\` : `parametres.json`, la clé SSH (`id_ed25519`), `known_hosts` (identités confirmées des NAS),
+`journal.log` (journal de l'application).
 Supprimer ce dossier remet l'application à zéro.
 
 ## Tests (développeurs)

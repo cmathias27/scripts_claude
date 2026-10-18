@@ -657,7 +657,7 @@ mod live {
             return;
         }
         let o = run(true, &(install_file(NB_BIN, NAS_BACKUP_SH) + &format!("{NB_BIN} gen-cron && cat /etc/cron.d/nas-backup\n")));
-        assert_eq!(o.code, 0);
+        assert_eq!(o.code, 0, "installation : {}", o.text());
         assert!(o.stdout.contains("run-at 03:30"));
         // nouvelle sauvegarde avec apostrophe et espace dans le chemin
         let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Film's d'été";
@@ -688,6 +688,82 @@ mod live {
         assert_eq!(run(true, &ack_alert("job-Documents; rm -rf /")).code, 0);
         run(true, &show_passwords());
         run(true, &tail_file("/var/log/cam-sync.log", 3));
+        // collecte de l'etat : JSON valide et coherent
+        let o = run(true, OMV_STATUS);
+        let st: crate::model::OmvStatus = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json OMV");
+        assert!(st.erreur.is_none());
+        assert_eq!(st.nb_api, API_VERSION);
+        assert!(st.sauvegardes.iter().any(|j| j.nom == "Photos" && j.dernier_etat.as_deref() == Some("OK")));
+        assert!(st.cameras.installe);
+    }
+
+    #[test]
+    fn live_identity() {
+        if !on() {
+            return;
+        }
+        let s = config::load();
+        let ssh = Ssh::new(&s.ssh_bin);
+        ssh.forget_host(&s.omv).unwrap();
+        assert!(!ssh.host_known(&s.omv));
+        let r = ssh.run(&s.omv, None, "true", Duration::from_secs(10));
+        assert_eq!(r.unwrap_err(), crate::ssh::SshError::HostUnknown);
+        let scan = ssh.scan_host(&s.omv).expect("scan");
+        assert!(scan.fingerprints.iter().any(|f| f.contains("SHA256:")), "{:?}", scan.fingerprints);
+        ssh.trust_host(&s.omv, &scan).unwrap();
+        assert!(ssh.host_known(&s.omv));
+        assert_eq!(run(true, "echo ok").stdout, "ok\n");
+        // une fausse empreinte est refusee
+        let mut bad = scan.clone();
+        bad.entries = vec![format!("[{}]:{} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFake", s.omv.host, s.omv.port)];
+        ssh.trust_host(&s.omv, &bad).unwrap();
+        let r = ssh.run(&s.omv, None, "true", Duration::from_secs(10));
+        assert!(matches!(r, Err(crate::ssh::SshError::HostKeyChanged) | Err(crate::ssh::SshError::Unreachable(_))), "{r:?}");
+        ssh.trust_host(&s.omv, &scan).unwrap();
+        assert_eq!(run(true, "echo ok").stdout, "ok\n");
+    }
+
+    #[test]
+    fn live_session() {
+        if !on() {
+            return;
+        }
+        // meme session reutilisee (meme PID du bash distant)
+        let a = run(true, "echo $PPID");
+        let b = run(true, "echo $PPID");
+        assert_eq!(a.stdout, b.stdout, "la session doit etre reutilisee");
+        // exit et set -e n'arretent pas la session
+        assert_eq!(run(true, "set -e\nfalse\necho jamais").code, 1);
+        assert_eq!(run(true, "exit 7").code, 7);
+        assert_eq!(run(true, "echo $PPID").stdout, a.stdout);
+        // stdout / stderr separes, sans retour a la ligne final
+        let o = run(true, "printf abc; echo err >&2");
+        assert_eq!(o.stdout, "abc\n");
+        assert_eq!(o.stderr, "err\n");
+        // une commande qui lit l'entree standard ne bloque pas la session
+        let o = run(true, "cat; echo apres");
+        assert_eq!(o.stdout, "apres\n");
+        // heredoc et parentheses non equilibrees dans les donnees
+        let o = run(true, "cat <<'EOF'\n) ( __NASMGR_END_x__ 0\nEOF\n");
+        assert_eq!(o.stdout, ") ( __NASMGR_END_x__ 0\n");
+        // sortie volumineuse
+        let o = run(true, "seq 1 200000");
+        assert_eq!(o.stdout.lines().count(), 200000);
+        // appels concurrents (session occupee -> connexion dediee)
+        let hs: Vec<_> = (0..4).map(|i| std::thread::spawn(move || run(true, &format!("sleep 0.3; echo {i}")).stdout)).collect();
+        for (i, h) in hs.into_iter().enumerate() {
+            assert_eq!(h.join().unwrap(), format!("{i}\n"));
+        }
+        // delai depasse : erreur Timeout puis nouvelle session fonctionnelle
+        let s = config::load();
+        let ssh = Ssh::new(&s.ssh_bin);
+        let r = ssh.run(&s.omv, None, "sleep 5", Duration::from_secs(1));
+        assert_eq!(r.unwrap_err(), crate::ssh::SshError::Timeout);
+        assert_eq!(run(true, "echo ok").stdout, "ok\n");
+        // sudo : mot de passe faux detecte
+        let r = ssh.run(&s.syno, Some("mauvais"), "id -un", Duration::from_secs(30));
+        assert_eq!(r.unwrap_err(), crate::ssh::SshError::SudoPassword);
+        assert_eq!(run(false, "id -un").stdout, "root\n");
     }
 
     #[test]
@@ -703,6 +779,11 @@ mod live {
         run(false, &syno_list_dirs(""));
         run(false, &syno_size("/volume1/photo"));
         run(false, &migre_remove(9));
+        let o = run(false, SYNO_STATUS);
+        let st: crate::model::SynoStatus = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json Synology");
+        assert!(st.erreur.is_none());
+        assert!(st.copie.installe && st.migration.installe);
+        assert_eq!(st.migration.config.map(|c| c.utilisateur), Some("migration".to_string()));
     }
 }
 

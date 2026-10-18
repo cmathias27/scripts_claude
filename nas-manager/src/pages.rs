@@ -101,10 +101,15 @@ fn host_banner(app: &mut App, ui: &mut egui::Ui, h: HostId) -> bool {
         HostId::Syno => app.syno.status.is_some(),
     };
     if let Some(e) = app.host_error(h).cloned() {
-        banner(ui, ERR, &format!("{} : {}", h.label(), e));
+        let col = if matches!(e, SshError::HostUnknown | SshError::SudoPassword) { WARN } else { ERR };
+        banner(ui, col, &format!("{} : {}", h.label(), e));
         ui.horizontal(|ui| {
             if ui.button("⟳ Réessayer").clicked() {
                 app.refresh(h);
+            }
+            if matches!(e, SshError::HostUnknown) && ui.button("🔐 Confirmer l'identité du NAS").clicked() {
+                app.fp_dismissed[crate::extras::idx(h)] = false;
+                crate::extras::start_fingerprint(app, h, crate::extras::AfterTrust::Nothing);
             }
             if matches!(e, SshError::KeyRefused | SshError::HostKeyChanged) && ui.button("⚙ Paramètres").clicked() {
                 app.page = Page::Settings;
@@ -241,8 +246,9 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
                 host_chip(app, ui, h);
                 ui.add_space(8.0);
             }
+            crate::extras::read_only_badge(app, ui);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⟳ Actualiser").on_hover_text("Relire l'état des deux NAS").clicked() {
+                if ui.button("⟳ Actualiser").on_hover_text("Relire l'état des deux NAS (F5)").clicked() {
                     app.refresh(HostId::Omv);
                     app.refresh(HostId::Syno);
                 }
@@ -259,6 +265,8 @@ fn host_chip(app: &mut App, ui: &mut egui::Ui, h: HostId) {
     } else if let Some(e) = app.host_error(h) {
         if matches!(e, SshError::SudoPassword) {
             (WARN, format!("{} : mot de passe requis", h.label()), e.to_string())
+        } else if matches!(e, SshError::HostUnknown) {
+            (WARN, format!("{} : identité à confirmer", h.label()), e.to_string())
         } else {
             (ERR, format!("{} : hors ligne", h.label()), e.to_string())
         }
@@ -350,7 +358,9 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(8.0);
-            ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().weak());
+            if ui.link(RichText::new(format!("v{} · Nouveautés", env!("CARGO_PKG_VERSION"))).small()).clicked() {
+                app.show_news = true;
+            }
         });
     });
 }
@@ -1055,7 +1065,7 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
         HostId::Omv => "Disques de l'OMV",
         HostId::Syno => "Dossiers partagés du Synology",
     };
-    let can_mkdir = matches!(purpose, BrowsePurpose::CopyDest | BrowsePurpose::RestoreTarget);
+    let can_mkdir = matches!(purpose, BrowsePurpose::CopyDest | BrowsePurpose::RestoreTarget) && !app.settings.read_only;
     egui::Window::new(RichText::new(format!("Choisir un dossier — {}", host.label())).strong())
         .id(egui::Id::unique("browser"))
         .collapsible(false)
@@ -2276,10 +2286,19 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::TextEdit::singleline(&mut app.edit.ssh_bin).hint_text("ssh (client OpenSSH de Windows)").desired_width(320.0));
         });
     });
+    ui.horizontal(|ui| {
+        ui.label("Thème :");
+        for (v, l) in [("systeme", "Automatique (Windows)"), ("clair", "Clair"), ("sombre", "Sombre")] {
+            ui.radio_value(&mut app.edit.theme, v.to_string(), l);
+        }
+    });
+    ui.checkbox(&mut app.edit.read_only, "Mode lecture seule (consultation uniquement, aucune action sur les NAS)");
     let dirty = app.edit.omv != app.settings.omv
         || app.edit.syno != app.settings.syno
         || app.edit.refresh_secs != app.settings.refresh_secs
-        || app.edit.ssh_bin != app.settings.ssh_bin;
+        || app.edit.ssh_bin != app.settings.ssh_bin
+        || app.edit.theme != app.settings.theme
+        || app.edit.read_only != app.settings.read_only;
     ui.horizontal(|ui| {
         if ui.add_enabled(dirty, egui::Button::new(RichText::new("💾 Enregistrer").color(Color32::WHITE)).fill(INFO)).clicked() {
             save = true;
@@ -2302,7 +2321,9 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
                     if ui.add_enabled(cfg.is_set(), egui::Button::new("Oublier l'identité")).on_hover_text("Après une réinstallation du NAS").clicked() {
                         match app.ssh.forget_host(&cfg) {
                             Ok(()) => {
-                                app.toast(true, "Identité oubliée : elle sera réenregistrée à la prochaine connexion.".into());
+                                crate::log::info(&format!("identité oubliée pour {}", cfg.target()));
+                                app.toast(true, "Identité oubliée : la nouvelle empreinte va être demandée.".into());
+                                app.fp_dismissed[crate::extras::idx(h)] = false;
                                 app.refresh(h);
                             }
                             Err(e) => app.toast(false, e),
@@ -2312,10 +2333,7 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
                         test_connection(app, h);
                     }
                     if ui.add_enabled(cfg.is_set(), egui::Button::new("🔑 Autoriser la clé…")).clicked() {
-                        match app.ssh.open_key_install_console(&cfg) {
-                            Ok(m) => app.output = Some(OutputDialog { title: format!("Autoriser la clé sur le {}", h.label()), text: m, ok: true }),
-                            Err(e) => app.toast(false, e),
-                        }
+                        crate::extras::authorize_key(app, h);
                     }
                 });
             });
@@ -2422,6 +2440,39 @@ L'ancienne version est gardée en .bak. Les copies, migrations et réglages en c
             .small()
             .weak(),
         );
+    });
+    ui.add_space(10.0);
+    maintenance_card(app, ui);
+}
+
+fn maintenance_card(app: &mut App, ui: &mut egui::Ui) {
+    card(ui, "6. Diagnostic et sauvegarde des paramètres", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("🩺 Exporter un rapport de diagnostic…").on_hover_text("Versions, état des connexions, dernières erreurs — sans aucun mot de passe").clicked() {
+                crate::extras::export_diagnostic(app);
+            }
+            if ui.button("📜 Journal de l'application").clicked() {
+                app.output = Some(OutputDialog {
+                    title: "Journal de l'application".into(),
+                    text: {
+                        let t = crate::log::tail(300);
+                        if t.is_empty() { "(vide)".into() } else { t }
+                    },
+                    ok: true,
+                });
+            }
+            if ui.button("📤 Exporter les paramètres…").clicked() {
+                crate::extras::export_settings(app);
+            }
+            if ui.button("📥 Importer des paramètres…").clicked() {
+                crate::extras::import_settings(app);
+            }
+            if ui.button("✨ Nouveautés").clicked() {
+                app.show_news = true;
+            }
+        });
+        ui.label(RichText::new(format!("Dossier de l'application : {}", crate::config::app_dir().display())).small().weak());
+        ui.label(RichText::new("Raccourcis : F5 actualiser · Ctrl+1 à Ctrl+8 changer de page").small().weak());
     });
 }
 

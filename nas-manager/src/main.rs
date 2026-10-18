@@ -5,7 +5,9 @@
 
 mod app;
 mod config;
+mod extras;
 mod fmt;
+mod log;
 mod model;
 mod pages;
 mod remote;

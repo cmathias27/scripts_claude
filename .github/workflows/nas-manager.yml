@@ -1,5 +1,8 @@
-# Compile l'application Windows NAS Manager (nas-manager.exe)
-# Le .exe est dans la Release « NAS Manager (derniere version) » et dans Actions > Artifacts.
+# Compile l'application Windows NAS Manager (nas-manager.exe).
+# 1. Tests sous Linux contre un faux OMV et un faux Synology (tests/faux-nas.sh)
+# 2. Tests et compilation sous Windows
+# 3. Publication : une Release par version (vX.Y.Z, depuis nas-manager/Cargo.toml),
+#    avec les nouveautes de nas-manager/CHANGELOG.md. Meme version = fichier remplace.
 name: NAS Manager (Windows)
 
 on:
@@ -9,17 +12,52 @@ on:
     paths:
       - "nas-manager/**"
       - "!nas-manager/**/*.md"
+      - "nas-manager/CHANGELOG.md"
       - "nas-backup.sh"
       - "copie-omv.sh"
       - "migre-drive-ocis.sh"
       - ".github/workflows/nas-manager.yml"
+  pull_request:
+    paths:
+      - "nas-manager/**"
+      - "nas-backup.sh"
+      - "copie-omv.sh"
+      - "migre-drive-ocis.sh"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  tests-linux:
+    name: Tests (faux NAS)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nas-manager
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nas-manager
+      - name: Dependances
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync
+      - name: Faux OMV et faux Synology
+        run: sudo bash tests/faux-nas.sh "$RUNNER_TEMP/app"
+      - name: Tests
+        env:
+          NAS_MANAGER_DIR: ${{ runner.temp }}/app
+          NAS_MANAGER_LIVE_TEST: "1"
+          NAS_MANAGER_TEST_SUDO: Secret123
+        run: cargo test --locked -- --test-threads=1
+      - name: Syntaxe des scripts
+        working-directory: .
+        run: for f in nas-backup.sh copie-omv.sh migre-drive-ocis.sh nas-manager/tests/faux-nas.sh; do bash -n "$f"; done
+
   windows:
+    name: Compilation Windows
+    needs: tests-linux
     runs-on: windows-latest
     defaults:
       run:
@@ -30,17 +68,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: nas-manager
+      - name: Tests unitaires
+        run: cargo test --locked
       - name: Compilation
         run: cargo build --release --locked
       - uses: actions/upload-artifact@v4
         with:
           name: nas-manager-windows
           path: nas-manager/target/release/nas-manager.exe
-      - name: Publication (release "derniere-version")
+      - name: Version et nouveautes
+        if: github.event_name != 'pull_request'
+        id: version
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          awk -v v="$v" '/^## /{p=($2==v)} p && !/^## /' CHANGELOG.md > ../notes.md
+          printf '\n---\nTélécharger **nas-manager.exe** ci-dessous, remplacer l’ancien fichier et relancer. Les paramètres sont conservés.\n' >> ../notes.md
+      - name: Publication
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: nas-manager-latest
-          name: NAS Manager (derniere version)
-          body: Application Windows compilee automatiquement depuis la branche main.
+          tag_name: v${{ steps.version.outputs.version }}
+          name: NAS Manager ${{ steps.version.outputs.version }}
+          body_path: notes.md
           make_latest: true
           files: nas-manager/target/release/nas-manager.exe
+      - name: Ancienne version de test renommee en bêta
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view nas-manager-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit nas-manager-latest --repo "$GITHUB_REPOSITORY" --title "NAS Manager 0.9 (bêta)" --prerelease --latest=false
+          fi

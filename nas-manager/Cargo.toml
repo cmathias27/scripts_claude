@@ -1,6 +1,6 @@
 [package]
 name = "nas-manager"
-version = "1.0.0"
+version = "1.0.0-beta.1"
 edition = "2021"
 description = "Suivi et gestion des sauvegardes et synchronisations du NAS (OMV + Synology) sans SSH"
 publish = false
@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rfd = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

@@ -33,6 +33,19 @@ pub struct Settings {
     /// Executable ssh (vide = "ssh" du systeme, Windows : client OpenSSH integre)
     #[serde(default)]
     pub ssh_bin: String,
+    /// "systeme", "clair" ou "sombre"
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Mode lecture seule : aucune action sur les NAS
+    #[serde(default)]
+    pub read_only: bool,
+    /// Derniere version lancee (affichage des nouveautes apres une mise a jour)
+    #[serde(default)]
+    pub last_version: String,
+}
+
+fn default_theme() -> String {
+    "systeme".into()
 }
 
 impl Default for Settings {
@@ -54,6 +67,9 @@ impl Default for Settings {
             },
             refresh_secs: 10,
             ssh_bin: String::new(),
+            theme: default_theme(),
+            read_only: false,
+            last_version: String::new(),
         }
     }
 }
@@ -90,4 +106,20 @@ pub fn save(s: &Settings) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let txt = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
     std::fs::write(settings_path(), txt).map_err(|e| e.to_string())
+}
+
+/// Parametres exportables (sans mot de passe)
+pub fn export_json(s: &Settings) -> String {
+    let mut c = s.clone();
+    c.omv.saved_pass.clear();
+    c.syno.saved_pass.clear();
+    c.last_version.clear();
+    serde_json::to_string_pretty(&c).unwrap_or_default()
+}
+
+pub fn import_json(txt: &str) -> Result<Settings, String> {
+    let mut s: Settings = serde_json::from_str(txt).map_err(|e| format!("fichier invalide : {e}"))?;
+    s.omv.saved_pass.clear();
+    s.syno.saved_pass.clear();
+    Ok(s)
 }
