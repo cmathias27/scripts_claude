@@ -111,6 +111,36 @@ Idées en attente, à décider selon l'usage.
     aujourd'hui entre `install-cam-sync.sh` et `install-alertes.sh`).
   - Tests contre le faux NAS pour les trois scripts (ajouter un faux Debian).
 
+#### Sécurité des données
+- [ ] **Suppressions en temps réel au choix**, réglable par sauvegarde :
+  - **suppression directe** (fonctionnement actuel des caméras) ;
+  - **corbeille de X jours** sur la destination, comme les sauvegardes programmées ;
+  - **copie seule** : rien n'est jamais supprimé sur la destination.
+- [ ] **Détection d'anomalie** : si beaucoup de fichiers sont supprimés ou modifiés en peu de temps
+      (seuil réglable), la synchro se met en pause et une alerte critique est envoyée, au lieu de tout
+      répercuter (protection contre les rançongiciels et les fausses manipulations). Reprise manuelle.
+- [ ] **Sauvegarde de ce qui permet de restaurer** : `rclone.conf`, mots de passe de chiffrement,
+      `jobs.conf` et configuration de l'outil, sauvegardés automatiquement, chiffrés, hors du NAS.
+      Plus un guide « mon NAS est mort, je reconstruis » dans l'aide.
+
+#### Destinations
+- [ ] **Autres destinations que Google Drive** : tout ce que gère rclone (OneDrive, Dropbox,
+      Backblaze B2, S3, autre NAS en SFTP, WebDAV / oCIS…), choisies par sauvegarde,
+      configurées depuis l'application.
+- [ ] **Multi-destinations (3-2-1)** : une même sauvegarde envoyée vers plusieurs supports
+      (ex. Drive + disque USB + autre NAS). **Chiffrement au choix pour chaque destination**,
+      si l'utilisateur le demande.
+
+#### Confort
+- [ ] **Réglages fins du temps réel** : exclusions par dossier, filtre par type de fichier,
+      regroupement des envois d'un fichier modifié en boucle (document en cours d'édition).
+- [ ] **Actions depuis Home Assistant** : boutons MQTT pour lancer une sauvegarde, mettre en pause
+      ou reprendre le temps réel (utilisables dans des automatisations).
+
+### Pas pour l'instant
+- Sauvegarde des volumes Docker (arrêt / relance du conteneur pendant la copie).
+- Rétention indépendante des vidéos caméras sur la destination.
+
 ### Écarté
 - Signature du `.exe` (certificat payant).
 - Installateur MSI / setup : l'application reste un `.exe` unique, sans installation.
