@@ -51,7 +51,7 @@ Prérequis côté NAS : `python3` (présent sur OMV et DSM 7).
 
 **Avec GitHub** : pousser le dépôt ; le workflow `.github/workflows/nas-manager.yml` compile sous Windows.
 Le fichier `nas-manager.exe` est dans l'onglet *Actions* > dernier run > *Artifacts*
-(ou dans une *Release* en poussant un tag `nas-manager-v1.0.0`).
+(et dans la *Release* « NAS Manager (derniere version) », colonne de droite de la page du depot).
 
 **Sur le PC Windows** : installer Rust (<https://rustup.rs>, avec les « Visual Studio Build Tools » proposés),
 puis double-cliquer sur `compiler.bat`, ou :

@@ -1,18 +1,17 @@
 # Compile l'application Windows NAS Manager (nas-manager.exe)
 # Le .exe est telechargeable dans l'onglet Actions > dernier run > Artifacts,
-# et joint a une Release quand on pousse un tag "nas-manager-v*".
 name: NAS Manager (Windows)
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "nas-manager/**"
       - "nas-backup.sh"
       - "copie-omv.sh"
       - "migre-drive-ocis.sh"
       - ".github/workflows/nas-manager.yml"
-    tags:
-      - "nas-manager-v*"
   workflow_dispatch:
 
 permissions:
@@ -36,8 +35,11 @@ jobs:
         with:
           name: nas-manager-windows
           path: nas-manager/target/release/nas-manager.exe
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/nas-manager-v')
+      - name: Publication (release "derniere-version")
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: nas-manager-latest
+          name: NAS Manager (derniere version)
+          body: Application Windows compilee automatiquement depuis la branche main.
+          make_latest: true
           files: nas-manager/target/release/nas-manager.exe
