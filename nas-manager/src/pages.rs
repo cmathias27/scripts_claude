@@ -674,6 +674,7 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
             );
         }
     });
+    verif_planner(app, ui, &s.verif_auto);
     if s.arret_demande && !any_running {
         ui.colored_label(WARN, "Un arrêt a été demandé : les sauvegardes reprendront à leur prochain horaire (ou en les lançant ici).");
     }
@@ -684,14 +685,15 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
         let show = r.etat == "en_cours"
             || r.fin.parse::<i64>().map(|f| fmt::now() - f < 86400).unwrap_or(false);
         if show {
-            card(ui, "⤓ Restauration", |ui| {
+            card(ui, "📥 Restauration", |ui| {
                 let (col, t) = match r.etat.as_str() {
                     "en_cours" => (INFO, "En cours"),
                     "ok" => (OK, "Terminée"),
                     "echec" => (ERR, "Échec"),
                     _ => (WARN, "Interrompue"),
                 };
-                dot_label(ui, col, format!("{t} : « {} » → {}", r.nom, r.cible));
+                let what = if r.element.is_empty() { r.nom.clone() } else { format!("{} / {}", r.nom, r.element) };
+                dot_label(ui, col, format!("{t} : « {what} » → {}", r.cible));
                 if let Some(p) = &r.avancement {
                     progress_bar(ui, p.pct, progress_text(p));
                 } else if r.etat == "en_cours" {
@@ -741,21 +743,19 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         app.action_toast(HostId::Omv, "Simulation", remote::nb_simulate(&name), 30);
                         ui.close();
                     }
-                    if ui.button("⤓ Restaurer…").clicked() {
-                        let base = j
-                            .source
-                            .strip_prefix("/srv/")
-                            .and_then(|r| r.split('/').next())
-                            .map(|d| format!("/srv/{d}"))
-                            .unwrap_or_else(|| {
-                                j.source.rsplit_once('/').map(|(a, _)| a.to_string()).unwrap_or_default()
-                            });
-                        let stamp = chrono::Local::now().format("%Y-%m-%d_%H%M");
-                        app.restore = Some(RestoreState {
-                            job: name.clone(),
-                            source: j.source.clone(),
-                            target: format!("{base}/Restauration/{}_{stamp}", name),
-                        });
+                    if ui.button("📥 Restaurer…").clicked() {
+                        app.restore = Some(RestoreState::new(&name, &j.source, j.mode == "sync" && j.corbeille > 0));
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            j.verification.as_ref().map(|v| v.etat != "en_cours").unwrap_or(true),
+                            egui::Button::new("🛡 Vérifier l'intégrité"),
+                        )
+                        .on_hover_text("Compare chaque fichier du NAS avec sa copie sur le Drive (empreintes, déchiffrement si besoin)")
+                        .clicked()
+                    {
+                        app.action_toast(HostId::Omv, "Vérification", remote::nb_verify(&name), 30);
                         ui.close();
                     }
                     if ui.button("🗑 Supprimer la sauvegarde…").clicked() {
@@ -873,6 +873,9 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
         if let Some(sim) = &j.simulation {
             simulation_box(app, ui, &j.nom, sim);
         }
+        if let Some(v) = &j.verification {
+            verification_box(app, ui, &j.nom, v);
+        }
         if j.mode == "sync" && j.corbeille > 0 {
             ui.label(
                 RichText::new(format!("Fichiers supprimés/modifiés gardés {} jours dans la corbeille du Drive", j.corbeille))
@@ -881,6 +884,134 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
             );
         }
     });
+}
+
+/// Verification automatique de toutes les sauvegardes (jours + heure)
+fn verif_planner(app: &mut App, ui: &mut egui::Ui, current: &str) {
+    let (days, time) = current.split_once(' ').unwrap_or(("", ""));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("🛡 Vérification automatique de l'intégrité :").small());
+        let txt = if days.is_empty() {
+            "désactivée".to_string()
+        } else {
+            fmt::schedule_human(&format!("{time}/{days}"))
+        };
+        ui.label(RichText::new(txt).small().strong());
+        if app.verif_edit.is_none() && ui.small_button("Modifier").clicked() {
+            let mut d = [false; 7];
+            for c in days.chars() {
+                if let Some(n) = c.to_digit(10) {
+                    if (1..=7).contains(&n) {
+                        d[n as usize - 1] = true;
+                    }
+                }
+            }
+            if days.is_empty() {
+                d[6] = true;
+            }
+            app.verif_edit = Some((d, if time.is_empty() { "05:00".into() } else { time.to_string() }));
+        }
+    });
+    let mut action: Option<String> = None;
+    let mut close = false;
+    if let Some((d, t)) = &mut app.verif_edit {
+        ui.horizontal(|ui| {
+            for (i, n) in ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].iter().enumerate() {
+                ui.toggle_value(&mut d[i], *n);
+            }
+            ui.label("à");
+            ui.add(egui::TextEdit::singleline(t).desired_width(55.0));
+            let digits: String = (0..7).filter(|i| d[*i]).map(|i| char::from_digit(i as u32 + 1, 10).unwrap_or('7')).collect();
+            let ok = !digits.is_empty() && crate::sched::valid_sched(&format!("{t}/{digits}"));
+            if ui.add_enabled(ok, egui::Button::new("Enregistrer")).clicked() {
+                action = Some(remote::nb_verify_plan(&digits, t));
+            }
+            if ui.button("Désactiver").clicked() {
+                action = Some(remote::nb_verify_plan("", ""));
+            }
+            if ui.button("Annuler").clicked() {
+                close = true;
+            }
+        });
+        ui.label(RichText::new("Compare chaque fichier du NAS avec le Drive (lit tout le Drive : à prévoir la nuit). Une notification signale les écarts.").small().weak());
+    }
+    if let Some(a) = action {
+        app.verif_edit = None;
+        app.action_toast(HostId::Omv, "Vérification automatique", a, 60);
+    } else if close {
+        app.verif_edit = None;
+    }
+}
+
+fn verification_box(app: &mut App, ui: &mut egui::Ui, name: &str, v: &Verification) {
+    if v.etat != "en_cours" && fmt::now() - v.fin > 30 * 86400 {
+        return;
+    }
+    let col = match v.etat.as_str() {
+        "ok" => OK,
+        "en_cours" => INFO,
+        "ecarts" => WARN,
+        _ => ERR,
+    };
+    egui::Frame::new()
+        .fill(col.gamma_multiply(0.10))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("🛡 Intégrité").strong());
+                match v.etat.as_str() {
+                    "en_cours" => {
+                        ui.spinner();
+                        ui.label("comparaison fichier par fichier avec le Drive…");
+                    }
+                    "ok" => {
+                        ui.label(format!("vérifiée {} : les {} fichiers sont identiques sur le Drive", fmt::ago(v.fin, fmt::now()), v.identiques));
+                    }
+                    "ecarts" => {
+                        let mut parts = Vec::new();
+                        if v.differents > 0 {
+                            parts.push(format!("{} différent(s)", v.differents));
+                        }
+                        if v.manquants > 0 {
+                            parts.push(format!("{} absent(s) du Drive", v.manquants));
+                        }
+                        if v.en_trop > 0 {
+                            parts.push(format!("{} en trop sur le Drive", v.en_trop));
+                        }
+                        if v.erreurs > 0 {
+                            parts.push(format!("{} illisible(s)", v.erreurs));
+                        }
+                        ui.label(format!("{} : {} identiques, {}", fmt::ago(v.fin, fmt::now()), v.identiques, parts.join(", ")));
+                        if ui.small_button("Voir le détail").clicked() {
+                            let n = name.to_string();
+                            let d = format!("/var/lib/nas-backup/{n}.verif.d");
+                            let script = format!(
+                                "for f in differents manquants en-trop erreurs; do [ -s {d}/$f ] || continue; echo \"=== $f\"; head -n 500 {d}/$f; echo; done\n"
+                            );
+                            app.exec(
+                                HostId::Omv,
+                                "Lecture de la vérification",
+                                script,
+                                30,
+                                Box::new(move |app, r| {
+                                    let t = r.map(|o| o.stdout).unwrap_or_else(|e| e.to_string());
+                                    app.output = Some(OutputDialog {
+                                        title: format!("Vérification de « {n} »"),
+                                        text: format!("{t}\nUne nouvelle sauvegarde corrige en général ces écarts (fichiers modifiés ou ajoutés depuis la dernière sauvegarde)."),
+                                        ok: false,
+                                    });
+                                }),
+                            );
+                        }
+                    }
+                    _ => {
+                        ui.colored_label(ERR, "la vérification n'a pas pu aboutir (voir les journaux)");
+                    }
+                }
+            });
+        });
 }
 
 fn simulation_box(app: &mut App, ui: &mut egui::Ui, name: &str, sim: &Simulation) {
@@ -1091,54 +1222,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
 }
 
 pub fn restore_window(app: &mut App, ctx: &egui::Context) {
-    let Some(mut r) = app.restore.take() else { return };
-    let mut open = true;
-    let mut go = false;
-    let mut cancel = false;
-    let mut browse = false;
-    egui::Window::new(RichText::new(format!("Restaurer « {} »", r.job)).strong())
-        .id(egui::Id::unique("restore"))
-        .collapsible(false)
-        .resizable(false)
-        .default_width(560.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .open(&mut open)
-        .show(ctx, |ui| {
-            ui.label("Les fichiers du Drive sont recopiés (déchiffrés si besoin) dans ce dossier de l'OMV :");
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut r.target).desired_width(440.0));
-                if ui.button("📁").clicked() {
-                    browse = true;
-                }
-            });
-            if r.target.trim_end_matches('/') == r.source.trim_end_matches('/') {
-                ui.colored_label(ERR, "⚠ C'est le dossier source : les fichiers locaux seront écrasés par ceux du Drive.");
-            }
-            ui.label(RichText::new("La restauration tourne en arrière-plan ; son avancement s'affiche sur la page Sauvegardes.").small().weak());
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if primary_button(ui, "⤓ Restaurer").clicked() {
-                    go = true;
-                }
-                if ui.button("Annuler").clicked() {
-                    cancel = true;
-                }
-            });
-        });
-    if browse {
-        let start = r.target.rsplit_once('/').map(|(a, _)| a.to_string()).unwrap_or_default();
-        app.restore = Some(r);
-        app.open_browser(HostId::Omv, BrowsePurpose::RestoreTarget, &start);
-        return;
-    }
-    if !open || cancel {
-        return;
-    }
-    if go && !r.target.trim().is_empty() {
-        app.action_toast(HostId::Omv, "Restauration", remote::nb_restore(&r.job, r.target.trim()), 30);
-        return;
-    }
-    app.restore = Some(r);
+    crate::restore::window(app, ctx);
 }
 
 pub fn browser_window(app: &mut App, ctx: &egui::Context) {

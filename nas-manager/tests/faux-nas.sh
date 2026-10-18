@@ -83,6 +83,24 @@ case "$cmd" in
       printf '%s INFO  : \nTransferred:   \t  %d.000 MiB / 4096.000 MiB, %d%%, 68.400 MiB/s, ETA %ds\nTransferred:            %d / 120, %d%%\nElapsed time:        %d.0s\n\n' \
         "$(date '+%Y/%m/%d %H:%M:%S')" $((4096*s/dur)) $pct $((dur-s)) $((120*s/dur)) $pct $s >> "$log"
     done ;;
+  lsjson)
+    p="$1"; t='2026-10-15T03:30:00.000000000+02:00'
+    case "$p" in
+      *_corbeille*/20*) echo "[{\"Path\":\"ancien.txt\",\"Name\":\"ancien.txt\",\"Size\":42,\"ModTime\":\"$t\",\"IsDir\":false}]" ;;
+      *_corbeille*) echo "[{\"Path\":\"2026-10-15_0330\",\"Name\":\"2026-10-15_0330\",\"Size\":-1,\"ModTime\":\"$t\",\"IsDir\":true}]" ;;
+      */2024) echo "[{\"Path\":\"IMG_1.jpg\",\"Name\":\"IMG_1.jpg\",\"Size\":3500000,\"ModTime\":\"$t\",\"IsDir\":false},{\"Path\":\"IMG_2.jpg\",\"Name\":\"IMG_2.jpg\",\"Size\":4100000,\"ModTime\":\"$t\",\"IsDir\":false}]" ;;
+      *) echo "[{\"Path\":\"2024\",\"Name\":\"2024\",\"Size\":-1,\"ModTime\":\"$t\",\"IsDir\":true},{\"Path\":\"notes.txt\",\"Name\":\"notes.txt\",\"Size\":1234,\"ModTime\":\"$t\",\"IsDir\":false}]" ;;
+    esac ;;
+  lsf) n="${1##*/}"; [[ "$n" == *.* ]] && echo "$n" ;;
+  check|cryptcheck)
+    for ((i=0;i<${#args[@]};i++)); do
+      case "${args[$i]}" in
+        --match) printf 'a.jpg\nb.jpg\nc.jpg\n' > "${args[$((i+1))]}" ;;
+        --missing-on-dst) printf 'nouveau.jpg\n' > "${args[$((i+1))]}" ;;
+        --differ|--error|--missing-on-src) : > "${args[$((i+1))]}" ;;
+      esac
+    done
+    exit 1 ;;
   *) exit 0 ;;
 esac
 EOF

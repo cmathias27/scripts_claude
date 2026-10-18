@@ -65,6 +65,19 @@ pub struct Job {
     pub derniere_erreur: Option<String>,
     pub debit: String,
     pub simulation: Option<Simulation>,
+    pub verification: Option<Verification>,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Verification {
+    pub etat: String,
+    pub fin: i64,
+    pub identiques: i64,
+    pub differents: i64,
+    pub manquants: i64,
+    pub en_trop: i64,
+    pub erreurs: i64,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -96,6 +109,7 @@ pub struct Restore {
     pub debut: String,
     pub fin: String,
     pub code: String,
+    pub element: String,
     pub avancement: Option<Progress>,
 }
 
@@ -154,6 +168,8 @@ pub struct OmvStatus {
     pub nb_installe: bool,
     pub nb_api: u32,
     pub arret_demande: bool,
+    /// verification automatique : "JOURS HH:MM" ou vide
+    pub verif_auto: String,
     pub sauvegardes: Vec<Job>,
     pub restauration: Option<Restore>,
     pub cameras: Cameras,

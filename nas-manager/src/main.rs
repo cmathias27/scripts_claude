@@ -14,6 +14,7 @@ mod log;
 mod model;
 mod pages;
 mod remote;
+mod restore;
 mod sched;
 mod secret;
 mod ssh;

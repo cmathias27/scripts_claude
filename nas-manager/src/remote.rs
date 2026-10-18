@@ -162,6 +162,14 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
     j = {"nom": name, "source": src, "dossier": sub, "mode": mode, "chiffre": enc == "oui",
          "horaire": sched, "corbeille": int(ret) if ret.isdigit() else 0,
          "debit": p[7] if len(p) > 7 else "", "source_existe": os.path.isdir(src)}
+    ver = src_vars(f"{S}/{name}.verif.status", ["ETAT", "FIN", "IDENTIQUES", "DIFFERENTS", "MANQUANTS", "EN_TROP", "ERREURS"])
+    if ver:
+        etat = ver["ETAT"]
+        if etat == "en_cours" and rc(f"flock -n /run/nas-backup-verif-{name}.lock true") != 1:
+            etat = "interrompue"
+        iv = lambda k: int(ver[k]) if ver[k].isdigit() else 0
+        j["verification"] = {"etat": etat, "fin": iv("FIN"), "identiques": iv("IDENTIQUES"), "differents": iv("DIFFERENTS"),
+                             "manquants": iv("MANQUANTS"), "en_trop": iv("EN_TROP"), "erreurs": iv("ERREURS")}
     sim = src_vars(f"{S}/{name}.simulation.status", ["ETAT", "DEBUT", "FIN", "ENVOIS", "SUPPRESSIONS", "OCTETS"])
     if sim:
         etat = sim["ETAT"]
@@ -200,11 +208,13 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
             j["derniere_erreur"] = re.sub(r"^[0-9/ :]+", "", errs[-1])[:300]
     jobs.append(j)
 out["sauvegardes"] = jobs
+out["verif_auto"] = rd("/etc/nas-backup/verification")
 
 # ---------------- Restauration ----------------
-r = src_vars(S + "/restauration.status", ["ETAT", "NOM", "CIBLE", "DEBUT", "FIN", "CODE"])
+r = src_vars(S + "/restauration.status", ["ETAT", "NOM", "CIBLE", "DEBUT", "FIN", "CODE", "ELEMENT"])
 if r:
-    rr = {"etat": r["ETAT"], "nom": r["NOM"], "cible": r["CIBLE"], "debut": r["DEBUT"], "fin": r["FIN"], "code": r["CODE"]}
+    rr = {"etat": r["ETAT"], "nom": r["NOM"], "cible": r["CIBLE"], "debut": r["DEBUT"], "fin": r["FIN"], "code": r["CODE"],
+          "element": r["ELEMENT"]}
     if r["ETAT"] == "en_cours":
         if rc("flock -n /run/nas-backup-restauration.lock true") != 1:
             rr["etat"] = "interrompue"
@@ -517,11 +527,37 @@ pub fn nb_delete(name: &str, purge: bool) -> String {
     )
 }
 
-pub fn nb_restore(name: &str, target: &str) -> String {
+pub fn nb_restore(name: &str, target: &str, item: &str, trash: bool) -> String {
+    let what = if item.is_empty() { format!("« {name} »") } else { format!("« {item} »") };
     background(
-        &format!("{NB_BIN} restore {} {}", sq(name), sq(target)),
-        &format!("Restauration de « {name} » lancée vers {target}."),
+        &format!(
+            "{NB_BIN} restore {} {} {} {}",
+            sq(name),
+            sq(target),
+            sq(item),
+            if trash { "corbeille" } else { "''" }
+        ),
+        &format!("Restauration de {what} lancée vers {target}."),
     )
+}
+
+pub fn nb_ls(name: &str, path: &str, trash: bool) -> String {
+    format!("{NB_BIN} ls {} {} {}\n", sq(name), sq(path), if trash { "corbeille" } else { "''" })
+}
+
+pub fn nb_verify(name: &str) -> String {
+    background(
+        &format!("{NB_BIN} verifier {}", sq(name)),
+        &format!("Vérification de « {name} » lancée : le résultat s'affichera sur sa carte."),
+    )
+}
+
+pub fn nb_verify_plan(days: &str, time: &str) -> String {
+    if days.is_empty() {
+        format!("{NB_BIN} verif-plan off 2>&1\n")
+    } else {
+        format!("{NB_BIN} verif-plan {} {} 2>&1\n", sq(days), sq(time))
+    }
 }
 
 pub fn omv_list_backup_sources() -> String {
@@ -825,12 +861,31 @@ mod live {
         run(true, &format!("FAKE_DUR=40 nohup setsid {NB_BIN} run Musique >/dev/null 2>&1 </dev/null &\nsleep 3"));
         let o = run(true, &format!("{NB_BIN} stop Musique 2>&1; cat /var/lib/nas-backup/Musique.status"));
         assert!(o.stdout.contains("ARRETE"), "{}", o.text());
+        // parcours du Drive (dechiffre) et chemin interdit
+        let o = run(true, &nb_ls("Photos", "2024", false));
+        assert!(o.stdout.contains("IMG_2.jpg"), "{}", o.text());
+        assert_ne!(run(true, &nb_ls("Photos", "../../etc", false)).code, 0);
+        let o = run(true, &nb_ls("Photos", "", true));
+        assert!(o.stdout.contains("2026-10-15_0330"));
+        // restauration d'un fichier de la corbeille (en arriere-plan) puis etat
+        run(true, &nb_restore("Photos", "/tmp/restau-test", "2026-10-15_0330/ancien.txt", true));
+        let o = run(true, "for i in $(seq 40); do grep -q 'ETAT=en_cours' /var/lib/nas-backup/restauration.status || break; sleep 1; done; cat /var/lib/nas-backup/restauration.status");
+        assert!(o.stdout.contains("ETAT=ok"), "{}", o.text());
+        // verification d'integrite et planification
+        let o = run(true, &format!("{NB_BIN} verifier Photos 2>&1; cat /var/lib/nas-backup/Photos.verif.status"));
+        assert!(o.stdout.contains("ETAT=ecarts") && o.stdout.contains("MANQUANTS=1") && o.stdout.contains("IDENTIQUES=3"), "{}", o.text());
+        let o = run(true, &(nb_verify_plan("67", "04:45") + "cat /etc/cron.d/nas-backup /etc/nas-backup/verification\n"));
+        assert!(o.stdout.contains("45 4 * * 6,0 root /usr/local/bin/nas-backup verifier-tout"), "{}", o.text());
+        let o = run(true, &(nb_verify_plan("", "") + "cat /etc/cron.d/nas-backup\n"));
+        assert!(!o.stdout.contains("verifier-tout"));
         // collecte de l'etat : JSON valide et coherent
         let o = run(true, OMV_STATUS);
         let st: crate::model::OmvStatus = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json OMV");
         assert!(st.erreur.is_none());
         assert_eq!(st.nb_api, nb_api());
         assert!(st.sauvegardes.iter().any(|j| j.nom == "Photos" && j.dernier_etat.as_deref() == Some("OK")));
+        let v = st.sauvegardes.iter().find(|j| j.nom == "Photos").and_then(|j| j.verification.clone()).expect("verification");
+        assert_eq!((v.etat.as_str(), v.identiques, v.manquants), ("ecarts", 3, 1));
         let sim = st.sauvegardes.iter().find(|j| j.nom == "Musique").and_then(|j| j.simulation.clone()).expect("simulation");
         assert_eq!((sim.envois, sim.suppressions), (2, 1));
         assert!(sim.octets > 1_000_000_000);

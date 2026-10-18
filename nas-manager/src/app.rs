@@ -130,12 +130,7 @@ pub struct JobFormState {
     pub error: String,
 }
 
-#[derive(Clone, Default)]
-pub struct RestoreState {
-    pub job: String,
-    pub source: String,
-    pub target: String,
-}
+pub use crate::restore::RestoreState;
 
 #[derive(Clone, Default)]
 pub struct CopyForm {
@@ -229,6 +224,8 @@ pub struct App {
     pub err_streak: [u32; 2],
     pub autostart: bool,
     pub history: crate::history::HistoryState,
+    /// edition de la verification automatique : (jours, heure)
+    pub verif_edit: Option<([bool; 7], String)>,
 }
 
 impl App {
@@ -287,6 +284,7 @@ impl App {
             err_streak: [0, 0],
             autostart: crate::tray::autostart_enabled(),
             history: Default::default(),
+            verif_edit: None,
         };
         app.tray = crate::tray::create(&app);
         crate::extras::apply_theme(&app.ctx, &app.settings.theme);
@@ -1149,6 +1147,27 @@ impl App {
     }
 }
 
+impl App {
+    /// Captures d'ecran de developpement : NAS_MANAGER_DEMO=restauration
+    #[cfg(debug_assertions)]
+    fn demo(&mut self) {
+        if std::env::var("NAS_MANAGER_DEMO").as_deref() != Ok("restauration") || self.restore.is_some() {
+            return;
+        }
+        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if DONE.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        if let Some(j) = self.omv.status.as_ref().and_then(|s| s.sauvegardes.first().cloned()) {
+            DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut r = RestoreState::new(&j.nom, &j.source, true);
+            r.tab = 1;
+            self.restore = Some(r);
+            crate::restore::demo_list(self, "2024".into());
+        }
+    }
+}
+
 fn bad_output(o: &CmdOut, err: &str) -> String {
     let t = o.text();
     let short: String = t.lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
@@ -1168,6 +1187,8 @@ impl eframe::App for App {
             self.maybe_poll(HostId::Syno);
         }
         crate::tray::update(self, ctx);
+        #[cfg(debug_assertions)]
+        self.demo();
         ctx.request_repaint_after(Duration::from_secs(1));
     }
 

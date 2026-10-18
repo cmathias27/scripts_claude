@@ -1,5 +1,23 @@
 # Journal des modifications
 
+## 1.0.0-beta.5
+
+Étape 5 sur 6 de la version 1.0 : restauration.
+
+### Restaurer
+- Parcourir le contenu du Drive d'une sauvegarde (déchiffré) et restaurer un seul fichier ou dossier.
+- Restaurer depuis la corbeille du Drive : fichiers supprimés ou anciennes versions gardés par les sauvegardes miroir, rangés par date.
+- Restaurer dans un autre dossier, ou à l'emplacement d'origine (avec confirmation, les fichiers locaux de même nom étant remplacés).
+
+### Vérifier
+- Vérification d'intégrité d'une sauvegarde (menu ⋯) : chaque fichier du NAS est comparé à sa copie sur le Drive (empreintes, déchiffrement pour les sauvegardes chiffrées). Résultat sur la carte de la sauvegarde, avec le détail des écarts.
+- Vérification automatique de toutes les sauvegardes, les jours et à l'heure choisis, avec notification en cas d'écart.
+
+### Corrections
+- nas-backup : échec aléatoire possible « remote 'gdrive' introuvable » au lancement d'une commande (également corrigé dans install-cam-sync.sh).
+
+nas-backup passe en version 4 : mets-le à jour depuis Paramètres > Scripts sur les NAS.
+
 ## 1.0.0-beta.4
 
 Étape 4 sur 6 de la version 1.0 : gérer plus finement.

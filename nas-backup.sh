@@ -16,6 +16,9 @@
 #    nas-backup gen-cron
 #    nas-backup stop <NOM>          (arret d'une seule sauvegarde)
 #    nas-backup simulate <NOM>      (ce qui serait envoye / supprime, sans rien faire)
+#    nas-backup ls <NOM> [CHEMIN] [corbeille]      (contenu du Drive, dechiffre)
+#    nas-backup restore <NOM> <DOSSIER> [ELEMENT] [corbeille]
+#    nas-backup verifier <NOM> | verifier-tout | verif-plan <JOURS|off> [HH:MM]
 #  Horaire : HH:MM, HH:MM/JOURS (1 = lundi, ex. 03:30/135), plusieurs separes par ;, ou manuel
 #
 #  Prerequis : rclone + remote "gdrive" fonctionnel
@@ -62,7 +65,7 @@ pause() { echo; rd_ "Entree pour continuer..." _; }
 init() {
   [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
   command -v rclone >/dev/null || die "rclone n'est pas installe."
-  rclone listremotes | grep -qx "${GDRIVE}:" || die "remote '${GDRIVE}' introuvable (rclone listremotes)."
+  rclone listremotes 2>/dev/null | grep -x "${GDRIVE}:" >/dev/null || die "remote '${GDRIVE}' introuvable (rclone listremotes)."
   mkdir -p "$CONF_DIR" "$STATE_DIR"
   [ -f "$JOBS" ] || echo "# NOM|SOURCE|DOSSIER_DRIVE|MODE(sync/copy)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|CORBEILLE_JOURS" > "$JOBS"
   touch "$LOG"
@@ -82,7 +85,7 @@ self_install() {
 }
 
 ensure_crypt() {
-  rclone listremotes | grep -qx "${CRYPT}:" && return 0
+  rclone listremotes 2>/dev/null | grep -x "${CRYPT}:" >/dev/null && return 0
   local P1 P2
   if [ -f "$CAM_PASS" ]; then
     P1=$(awk -F': ' '/^Mot de passe/{print $2}' "$CAM_PASS")
@@ -205,6 +208,12 @@ gen_cron() {
         echo "$((10#$mi)) $((10#$h)) * * * root $SELF run-at $t >/dev/null 2>&1"
       done
     done < "$JOBS"
+    if [ -f "$CONF_DIR/verification" ]; then
+      local vd vt
+      read -r vd vt < "$CONF_DIR/verification"
+      [[ "$vd" =~ ^[1-7]+$ && "$vt" =~ ^[0-9]{2}:[0-9]{2}$ ]] && \
+        echo "$((10#${vt##*:})) $((10#${vt%%:*})) * * $(echo "$vd" | sed 's/./&,/g; s/,$//; s/7/0/') root $SELF verifier-tout >/dev/null 2>&1"
+    fi
   } > "$CRON_FILE"
   chmod 644 "$CRON_FILE"
   patch_nas_check
@@ -700,7 +709,7 @@ menu() {
 
 # =========================== Commandes non interactives ==============
 # Utilisees par l'application Windows "NAS Manager" (aucune question posee).
-API_VERSION=3
+API_VERSION=4
 
 api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER_DRIVE MODE CHIFFRE HORAIRE CORBEILLE [DEBIT]
   local kind="$1"; shift
@@ -758,29 +767,107 @@ api_delete() {  # api_delete NOM [effacer-drive]
   fi
 }
 
-api_restore() {  # api_restore NOM DOSSIER_CIBLE   (a lancer en arriere-plan)
+# chemin interne a la sauvegarde : pas de remontee (..), pas de chemin absolu
+safe_rel() {  # -> REL (dans le shell courant : die arrete bien le script)
+  local r="${1#/}"; r="${r%/}"
+  [[ "/$r/" == *"/../"* || "$r" == *"|"* ]] && die "chemin invalide : $1"
+  REL="$r"
+}
+
+api_restore() {  # api_restore NOM DOSSIER_CIBLE [ELEMENT] [corbeille]   (a lancer en arriere-plan)
   local st="$STATE_DIR/restauration.status" rlog="$STATE_DIR/restauration.log"
   job_get "$1" || die "sauvegarde '$1' introuvable."
-  local target="${2%/}" dest rc
+  local target="${2%/}" dest rc rel
   [ -n "$target" ] || die "dossier de restauration manquant."
-  dest=$(dest_of "$J_ENC" "$J_SUB")
+  safe_rel "${3:-}"; rel="$REL"
+  if [ "${4:-}" = corbeille ]; then dest=$(trash_of "$J_ENC" "$J_NAME"); else dest=$(dest_of "$J_ENC" "$J_SUB"); fi
+  [ -n "$rel" ] && dest="$dest/$rel"
   exec 9>/run/nas-backup-restauration.lock
   flock -n 9 || die "une restauration est deja en cours."
   mkdir -p "$target" || die "impossible de creer $target"
   : > "$rlog"
-  printf 'ETAT=en_cours\nNOM=%q\nCIBLE=%q\nDEBUT=%s\n' "$J_NAME" "$target" "$(date +%s)" > "$st"
+  printf 'ETAT=en_cours\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nDEBUT=%s\n' "$J_NAME" "$target" "$rel" "$(date +%s)" > "$st"
   logl "$J_NAME : restauration vers $target"
-  rclone copy "$dest" "$target" "${EXCLUDES[@]}" --stats 10s --log-file "$rlog" --log-level INFO; rc=$?
+  # un fichier : copyto vers DOSSIER/nom ; un dossier : copy du contenu
+  if [ -n "$rel" ] && rclone lsf "$dest" --max-depth 1 2>/dev/null | grep -x "${rel##*/}" >/dev/null; then
+    rclone copyto "$dest" "$target/${rel##*/}" --stats 10s --log-file "$rlog" --log-level INFO; rc=$?
+  elif [ -n "$rel" ]; then
+    # un dossier : recree dans DOSSIER/nom
+    rclone copy "$dest" "$target/${rel##*/}" "${EXCLUDES[@]}" --stats 10s --log-file "$rlog" --log-level INFO; rc=$?
+  else
+    rclone copy "$dest" "$target" "${EXCLUDES[@]}" --stats 10s --log-file "$rlog" --log-level INFO; rc=$?
+  fi
   if [ $rc -eq 0 ]; then
-    printf 'ETAT=ok\nNOM=%q\nCIBLE=%q\nFIN=%s\n' "$J_NAME" "$target" "$(date +%s)" > "$st"
+    printf 'ETAT=ok\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nFIN=%s\n' "$J_NAME" "$target" "$rel" "$(date +%s)" > "$st"
     logl "$J_NAME : restauration terminee ($target)"
     notify info "restore-$J_NAME" "Restauration « $J_NAME » terminée" "Fichiers restaurés dans $target"
   else
-    printf 'ETAT=echec\nNOM=%q\nCIBLE=%q\nFIN=%s\nCODE=%s\n' "$J_NAME" "$target" "$(date +%s)" "$rc" > "$st"
+    printf 'ETAT=echec\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nFIN=%s\nCODE=%s\n' "$J_NAME" "$target" "$rel" "$(date +%s)" "$rc" > "$st"
     logl "$J_NAME : restauration en ECHEC (code $rc)"
     notify critique "restore-$J_NAME" "Restauration « $J_NAME » en échec" "Code $rc. Détails : $rlog"
   fi
   return $rc
+}
+
+# Contenu (dechiffre) d'une sauvegarde sur le Drive : JSON rclone lsjson
+api_ls() {  # api_ls NOM [CHEMIN] [corbeille]
+  job_get "$1" || die "sauvegarde '$1' introuvable."
+  local rel dest
+  safe_rel "${2:-}"; rel="$REL"
+  if [ "${3:-}" = corbeille ]; then dest=$(trash_of "$J_ENC" "$J_NAME"); else dest=$(dest_of "$J_ENC" "$J_SUB"); fi
+  [ -n "$rel" ] && dest="$dest/$rel"
+  rclone lsjson "$dest" --max-depth 1 --no-mimetype "${EXCLUDES[@]}" 2>&1
+}
+
+# Verification d'integrite : compare le NAS et le Drive (empreintes ; dechiffrement pour les sauvegardes chiffrees)
+api_verify() {  # api_verify NOM   (a lancer en arriere-plan)
+  job_get "$1" || die "sauvegarde '$1' introuvable."
+  local out="$STATE_DIR/$J_NAME.verif" dest rc
+  dest=$(dest_of "$J_ENC" "$J_SUB")
+  exec 7>"/run/nas-backup-verif-$J_NAME.lock"
+  flock -n 7 || die "une verification de '$J_NAME' est deja en cours."
+  [ -d "$J_SRC" ] || die "dossier source introuvable : $J_SRC"
+  mkdir -p "$out.d"; rm -f "$out.d"/*
+  printf 'ETAT=en_cours\nDEBUT=%s\n' "$(date +%s)" > "$out.status"
+  local -a o=(--one-way "${EXCLUDES[@]}" --match "$out.d/identiques" --differ "$out.d/differents"
+              --missing-on-dst "$out.d/manquants" --error "$out.d/erreurs" --log-file "$out.log" --log-level NOTICE)
+  # miroir : les fichiers en trop sur le Drive comptent aussi
+  [ "$J_MODE" = sync ] && o=("${o[@]:1}" --missing-on-src "$out.d/en-trop")
+  if [ "$J_ENC" = oui ]; then
+    rclone cryptcheck "$J_SRC" "$dest" "${o[@]}" < /dev/null; rc=$?
+  else
+    rclone check "$J_SRC" "$dest" "${o[@]}" < /dev/null; rc=$?
+  fi
+  local c_ok c_diff c_miss c_extra c_err
+  cnt() { [ -s "$1" ] && grep -c '' "$1" || echo 0; }
+  c_ok=$(cnt "$out.d/identiques"); c_diff=$(cnt "$out.d/differents"); c_miss=$(cnt "$out.d/manquants")
+  c_extra=$(cnt "$out.d/en-trop"); c_err=$(cnt "$out.d/erreurs")
+  local etat=ok
+  [ $((c_diff + c_miss + c_extra + c_err)) -gt 0 ] && etat=ecarts
+  [ "$rc" -ne 0 ] && [ "$etat" = ok ] && etat=echec
+  printf 'ETAT=%s\nFIN=%s\nIDENTIQUES=%s\nDIFFERENTS=%s\nMANQUANTS=%s\nEN_TROP=%s\nERREURS=%s\n' \
+    "$etat" "$(date +%s)" "$c_ok" "$c_diff" "$c_miss" "$c_extra" "$c_err" > "$out.status"
+  logl "$J_NAME : verification $etat ($c_ok identiques, $c_diff differents, $c_miss manquants sur le Drive, $c_extra en trop, $c_err erreurs)"
+  if [ "$etat" = ok ]; then
+    notify ok "verif-$J_NAME" "Vérification « $J_NAME »" "La sauvegarde est de nouveau identique au NAS."
+  else
+    notify critique "verif-$J_NAME" "Vérification « $J_NAME » : écarts" "$c_diff différent(s), $c_miss manquant(s) sur le Drive, $c_err erreur(s). Une nouvelle sauvegarde les corrige en général."
+  fi
+  vert "Verification de '$J_NAME' : $etat"
+}
+
+# Verification automatique : /etc/nas-backup/verification = "JOURS HH:MM" (ex. "7 05:00"), absent = aucune
+VERIF_CONF="$CONF_DIR/verification"
+api_verify_plan() {  # api_verify_plan <JOURS 1-7|off> [HH:MM]
+  if [ "$1" = off ]; then rm -f "$VERIF_CONF"; gen_cron; vert "Verification automatique desactivee."; return; fi
+  [[ "$1" =~ ^[1-7]+$ ]] || die "jours invalides (1 = lundi ... 7 = dimanche)."
+  [[ "${2:-}" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "heure invalide (HH:MM)."
+  echo "$1 $2" > "$VERIF_CONF"; gen_cron
+  vert "Verification automatique : jours $1 a $2."
+}
+verify_all() {
+  local n
+  for n in $(job_names); do ( api_verify "$n" ) || true; done
 }
 
 # =========================== Point d'entree ==========================
@@ -795,7 +882,11 @@ case "${1:-}" in
   simulate) [ -n "${2:-}" ] || die "usage : nas-backup simulate <NOM>"; api_simulate "$2" ;;
   save)     shift; api_save "$@" ;;
   delete)   [ -n "${2:-}" ] || die "usage : nas-backup delete <NOM> [effacer-drive]"; api_delete "$2" "${3:-}" ;;
-  restore)  [ -n "${3:-}" ] || die "usage : nas-backup restore <NOM> <DOSSIER>"; api_restore "$2" "$3" ;;
+  restore)  [ -n "${3:-}" ] || die "usage : nas-backup restore <NOM> <DOSSIER> [ELEMENT] [corbeille]"; api_restore "$2" "$3" "${4:-}" "${5:-}" ;;
+  ls)       [ -n "${2:-}" ] || die "usage : nas-backup ls <NOM> [CHEMIN] [corbeille]"; api_ls "$2" "${3:-}" "${4:-}" ;;
+  verifier) [ -n "${2:-}" ] || die "usage : nas-backup verifier <NOM>"; api_verify "$2" ;;
+  verifier-tout) verify_all ;;
+  verif-plan) api_verify_plan "${2:-}" "${3:-}" ;;
   gen-cron) gen_cron ;;
   api-version) echo "$API_VERSION" ;;
   *)        echo "Usage : nas-backup [run <NOM> | run-at <HH:MM> | run-all | list | stop | save ... | delete <NOM> | restore <NOM> <DOSSIER>]"; exit 1 ;;

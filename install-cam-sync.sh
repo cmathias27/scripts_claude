@@ -47,7 +47,7 @@ fi
 echo "== Verifications =="
 command -v rclone >/dev/null || die "rclone n'est pas installe."
 [ -d "$SRC" ] || die "dossier introuvable : $SRC"
-rclone listremotes | grep -qx "${GDRIVE_REMOTE}:" \
+rclone listremotes 2>/dev/null | grep -x "${GDRIVE_REMOTE}:" >/dev/null \
   || die "remote '${GDRIVE_REMOTE}' introuvable (voir 'rclone listremotes')."
 rclone lsd "${GDRIVE_REMOTE}:" >/dev/null 2>&1 \
   || die "connexion Google Drive en echec. Lance : rclone config reconnect ${GDRIVE_REMOTE}:"
@@ -61,7 +61,7 @@ vert "OK : inotify-tools"
 
 # --------------------------- Remote chiffre --------------------------
 echo "== Remote chiffre =="
-if rclone listremotes | grep -qx "${CRYPT_REMOTE}:"; then
+if rclone listremotes 2>/dev/null | grep -x "${CRYPT_REMOTE}:" >/dev/null; then
   jaune "Le remote '${CRYPT_REMOTE}' existe deja : conserve (mots de passe inchanges)."
 else
   P1=$(openssl rand -base64 24)
