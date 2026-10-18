@@ -296,7 +296,7 @@ if os.path.exists(JOBS):
                 last_run = iso(time.mktime(time.strptime(" ".join(parts[:2]), "%Y-%m-%d %H:%M")))
             except (ValueError, IndexError):
                 pass
-            etat = "OK" if parts[-1] == "OK" else "Échec"
+            etat = {"OK": "OK", "ARRETE": "Arrêtée"}.get(parts[-1], "Échec")
         b = load(f"{STATE_DIR}/{name}.bilan.json")
         j = {
             "nom": name,

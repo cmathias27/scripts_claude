@@ -6,6 +6,7 @@
 #  Lancer une sauvegarde        : nas-backup run <NOM>
 #  Lancer celles d'un horaire   : nas-backup run-at <HH:MM>   (utilise par cron)
 #  Lancer toutes les sauvegardes: nas-backup run-all
+#  Arreter celles en cours      : nas-backup stop
 #  Lister                       : nas-backup list
 #
 #  Prerequis : rclone + remote "gdrive" fonctionnel
@@ -34,6 +35,7 @@ STATE_DIR="/var/lib/nas-backup"
 LOG="/var/log/nas-backup.log"
 CRON_FILE="/etc/cron.d/nas-backup"
 SELF="/usr/local/bin/nas-backup"
+STOPF="$STATE_DIR/stop"          # present = arret demande (nas-backup stop)
 EXCLUDES=(--exclude '@eaDir/**' --exclude '\#recycle/**' --exclude '.Trash-*/**')
 
 vert()  { echo -e "\e[32m$*\e[0m"; }
@@ -242,7 +244,7 @@ list_jobs() {
   if [ -z "$(job_names)" ]; then jaune "Aucune sauvegarde configuree."; return; fi
   printf "\e[1m%-14s %-24s %-24s %-7s %-6s %-8s %s\e[0m\n" "NOM" "SOURCE" "DRIVE" "MODE" "CHIFFRE" "HORAIRE" "DERNIERE EXECUTION"
   local n s sub m e sch r st mode
-  while IFS='|' read -r n s sub m e sch r; do
+  while IFS='|' read -r n s sub m e sch r || [ -n "$n" ]; do
     [[ -z "$n" || "$n" == \#* ]] && continue
     st="jamais"; [ -f "$STATE_DIR/$n.status" ] && st=$(cat "$STATE_DIR/$n.status")
     mode="copie"; [ "$m" = sync ] && mode="miroir"
@@ -403,8 +405,10 @@ run_job() {
   if [ "$J_MODE" = sync ]; then
     if [ "${J_RET:-0}" -gt 0 ]; then
       rclone sync "$J_SRC" "$dest" --backup-dir "$trash/$jour" "${opts[@]}"; rc=$?
-      rclone delete "$trash" --min-age "${J_RET}d" -q 2>/dev/null
-      rclone rmdirs "$trash" --leave-root -q 2>/dev/null
+      if [ ! -f "$STOPF" ]; then
+        rclone delete "$trash" --min-age "${J_RET}d" -q 2>/dev/null
+        rclone rmdirs "$trash" --leave-root -q 2>/dev/null
+      fi
     else
       rclone sync "$J_SRC" "$dest" "${opts[@]}"; rc=$?
     fi
@@ -417,7 +421,13 @@ run_job() {
   local resume; resume=$(bilan "$runlog" "$t0" "$rc")
 
   local duree=$(( ($(date +%s) - t0) / 60 ))
-  if [ "$rc" -eq 0 ]; then
+  if [ "$rc" -ne 0 ] && [ -f "$STOPF" ]; then
+    # Arret demande : ni echec ni alerte critique, la prochaine execution reprendra
+    echo "$(date '+%Y-%m-%d %H:%M') ARRETE" > "$STATE_DIR/$J_NAME.status"
+    logl "$J_NAME : ARRETEE manuellement apres ${duree} min${resume:+ - $resume}"
+    jaune "Arretee : $J_NAME${resume:+ - $resume}"
+    notify info "stop-$J_NAME" "Sauvegarde « $J_NAME » arrêtée" "Arrêtée manuellement après ${duree} min. Elle reprendra à la prochaine exécution."
+  elif [ "$rc" -eq 0 ]; then
     echo "$(date '+%Y-%m-%d %H:%M') OK" > "$STATE_DIR/$J_NAME.status"
     date +%s > "$STATE_DIR/$J_NAME.lastok"
     logl "$J_NAME : OK${resume:+ - $resume}"; vert "OK : $J_NAME${resume:+ - $resume}"
@@ -433,14 +443,17 @@ run_job() {
 }
 
 run_job_locked() {
+  [ -f "$STOPF" ] && { jaune "Arret demande : '$1' n'est pas lancee."; return 1; }
   ( flock -n 9 || { jaune "La sauvegarde '$1' est deja en cours."; exit 1; }
     run_job "$1" ) 9>"/run/nas-backup-$1.lock"
 }
 
 run_at() {  # lance l'une apres l'autre les sauvegardes prevues a l'horaire $1 (utilise par cron)
   local n rc=0
+  rm -f "$STOPF"
   for n in $(job_names); do
     job_get "$n" || continue
+    [ -f "$STOPF" ] && break
     [ "$J_SCHED" = "$1" ] && { run_job_locked "$n" || rc=1; }
   done
   return $rc
@@ -448,8 +461,36 @@ run_at() {  # lance l'une apres l'autre les sauvegardes prevues a l'horaire $1 (
 
 run_all() {
   local n rc=0
-  for n in $(job_names); do run_job_locked "$n" || rc=1; done
+  rm -f "$STOPF"
+  for n in $(job_names); do
+    [ -f "$STOPF" ] && break
+    run_job_locked "$n" || rc=1
+  done
   return $rc
+}
+
+# Arret propre : plus de nouvelle sauvegarde, rclone termine ses envois en cours
+# (SIGTERM), puis arret force s'il ne s'est pas ferme. Les cameras ne sont pas touchees.
+stop_all() {
+  local pat="rclone .*--log-file $STATE_DIR/" i
+  if ! pgrep -f "$pat" >/dev/null && ! pgrep -f "$SELF run" >/dev/null; then
+    vert "Aucune sauvegarde en cours."; return 0
+  fi
+  touch "$STOPF"
+  logl "arret demande (nas-backup stop)"
+  jaune "Arret demande : aucune nouvelle sauvegarde ne sera lancee."
+  pkill -TERM -f "$pat"
+  for i in $(seq 30); do pgrep -f "$pat" >/dev/null || break; sleep 1; done
+  if pgrep -f "$pat" >/dev/null; then
+    jaune "rclone ne s'est pas ferme en 30 s : arret force."
+    pkill -KILL -f "$pat"; sleep 2
+  fi
+  # attendre que les scripts aient enregistre l'etat (ARRETE)
+  for i in $(seq 30); do pgrep -f "$SELF run" >/dev/null || break; sleep 1; done
+  if pgrep -f "$pat" >/dev/null; then
+    rouge "Un transfert tourne encore : pgrep -af rclone"; return 1
+  fi
+  vert "Sauvegardes arretees. Elles reprendront au prochain horaire prevu."
 }
 
 restore_job() {
@@ -490,6 +531,7 @@ menu() {
     echo "  5) Lancer toutes les sauvegardes"
     echo "  6) Restaurer une sauvegarde"
     echo "  7) Voir le journal"
+    echo "  8) Arreter les sauvegardes en cours"
     echo "  0) Quitter"
     echo
     rd_ "Choix : " c
@@ -498,10 +540,11 @@ menu() {
       1) add_job; pause ;;
       2) edit_job; pause ;;
       3) delete_job; pause ;;
-      4) choose_job "Laquelle" && run_job_locked "$ANS"; pause ;;
+      4) choose_job "Laquelle" && { rm -f "$STOPF"; run_job_locked "$ANS"; }; pause ;;
       5) run_all; pause ;;
       6) restore_job; pause ;;
       7) show_log; pause ;;
+      8) stop_all; pause ;;
       0|q|Q) exit 0 ;;
       *) ;;
     esac
@@ -512,9 +555,10 @@ menu() {
 init
 case "${1:-}" in
   "")       self_install; gen_cron; menu ;;
-  run)      [ -n "${2:-}" ] || die "usage : nas-backup run <NOM>"; run_job_locked "$2" ;;
+  run)      [ -n "${2:-}" ] || die "usage : nas-backup run <NOM>"; rm -f "$STOPF"; run_job_locked "$2" ;;
   run-at)   [ -n "${2:-}" ] || die "usage : nas-backup run-at <HH:MM>"; run_at "$2" ;;
   run-all)  run_all ;;
   list)     list_jobs ;;
-  *)        echo "Usage : nas-backup [run <NOM> | run-at <HH:MM> | run-all | list]"; exit 1 ;;
+  stop)     stop_all ;;
+  *)        echo "Usage : nas-backup [run <NOM> | run-at <HH:MM> | run-all | list | stop]"; exit 1 ;;
 esac

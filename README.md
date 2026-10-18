@@ -208,6 +208,7 @@ NOM|SOURCE|DOSSIER_DRIVE|MODE(sync/copy)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|
 | `nas-backup run <NOM>` | Lancer une sauvegarde |
 | `nas-backup run-at <HH:MM>` | Lancer à la suite toutes les sauvegardes de cet horaire (utilisé par cron) |
 | `nas-backup run-all` | Lancer toutes les sauvegardes |
+| `nas-backup stop` | Arrêter proprement les sauvegardes en cours (aussi option 8 du menu) : rclone termine ses envois, aucune sauvegarde suivante n'est lancée, état « ARRETE » sans alerte critique. Les caméras ne sont pas touchées |
 | `nas-backup list` | Tableau des sauvegardes et de leur dernière exécution |
 
 ### Paramètres
