@@ -131,6 +131,13 @@ Idées en attente, à décider selon l'usage.
       (ex. Drive + disque USB + autre NAS). **Chiffrement au choix pour chaque destination**,
       si l'utilisateur le demande.
 
+#### Transferts
+- [ ] **Transferts oCIS → dossier Synology (DSM) ou Debian** : sens inverse de la migration actuelle.
+      Choix de l'espace oCIS (personnel ou projet) et d'un sous-dossier, puis du dossier de destination
+      sur le Synology ou la machine Debian. Passage par l'API WebDAV d'oCIS (jamais de lecture directe
+      du stockage oCIS), dates de modification conservées, reprise en cas d'interruption,
+      file d'attente et suivi comme la migration, notification à la fin.
+
 #### Confort
 - [ ] **Réglages fins du temps réel** : exclusions par dossier, filtre par type de fichier,
       regroupement des envois d'un fichier modifié en boucle (document en cours d'édition).
