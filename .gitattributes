@@ -1,0 +1,4 @@
+# Scripts executes sur les NAS : toujours en fins de ligne Unix (LF)
+*.sh text eol=lf
+*.yaml text eol=lf
+*.bat text eol=crlf

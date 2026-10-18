@@ -593,6 +593,8 @@ pub fn migre_configure(url: &str, user: &str, token: &str, local: &str, insecure
 // ---------------- Installation des scripts ----------------
 /// Ecrit un script sur le NAS (copie de sauvegarde .bak, remplacement atomique)
 pub fn install_file(path: &str, content: &str) -> String {
+    // fins de ligne Unix obligatoires pour bash (le depot peut etre extrait en CRLF sous Windows)
+    let content = content.replace("\r\n", "\n");
     let b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
     let mut wrapped = String::new();
     for chunk in b64.as_bytes().chunks(76) {
@@ -612,6 +614,7 @@ pub fn copie_script_for(omv_host: &str) -> String {
         return COPIE_OMV_SH.to_string();
     }
     COPIE_OMV_SH
+        .replace("\r\n", "\n")
         .lines()
         .map(|l| {
             if l.starts_with("OMV_HOST=\"") {
@@ -700,5 +703,17 @@ mod live {
         run(false, &syno_list_dirs(""));
         run(false, &syno_size("/volume1/photo"));
         run(false, &migre_remove(9));
+    }
+}
+
+#[cfg(test)]
+mod crlf {
+    #[test]
+    fn install_strips_crlf() {
+        let s = super::install_file("/tmp/x.sh", "#!/bin/bash\r\necho ok\r\n");
+        let b64: String = s.lines().skip_while(|l| !l.starts_with("base64")).skip(1).take_while(|l| *l != "NASMGR_B64").collect();
+        use base64::Engine;
+        let dec = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        assert_eq!(String::from_utf8(dec).unwrap(), "#!/bin/bash\necho ok\n");
     }
 }

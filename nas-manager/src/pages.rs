@@ -2438,7 +2438,7 @@ fn install_omv_script(app: &mut App) {
         false,
         None,
         Box::new(|app| {
-            let script = remote::install_file(remote::NB_BIN, remote::NAS_BACKUP_SH) + &format!("{} gen-cron >/dev/null 2>&1 && echo 'Planification régénérée.'\n", remote::NB_BIN);
+            let script = remote::install_file(remote::NB_BIN, remote::NAS_BACKUP_SH) + &format!("{} gen-cron >/dev/null 2>&1 && echo 'Planification régénérée.' || true\n", remote::NB_BIN);
             app.action_dialog(HostId::Omv, "Installation de nas-backup", script, 60);
         }),
     );
