@@ -94,6 +94,19 @@ Idées en attente, à décider selon l'usage.
       limite `inotify`, logrotate…), sans aucune commande à taper.
 - [ ] **Page d'aide dédiée avec des exemples de configuration** (programmées et temps réel), par exemple :
       caméras en miroir chiffré, documents en temps réel, photos en copie hebdomadaire.
+- [ ] **Un seul script par type de machine** au lieu des scripts actuels :
+  - **OMV** : remplace `nas-backup`, `cam-sync`, `nas-check`, `nas-notify`, `nas-ha-status`
+    (sous-commandes : sauvegarde, temps réel, vérification, notification, état Home Assistant).
+  - **Synology** : remplace `copie-omv` et `migre-drive-ocis` (pas d'`apt`, rclone téléchargé à part).
+  - **Debian** (nouveau) : même rôle que le script OMV sur un serveur Debian classique
+    (chemins de disques libres au lieu de `/srv/dev-disk-by-uuid-*`, pas d'interface OMV).
+    OMV étant basé sur Debian, partager le maximum de code entre les deux.
+  - Les scripts `install-*.sh` disparaissent : l'installation est faite par l'application.
+  - Un numéro de version par script, vérifié et mis à jour par l'application.
+  - **Migration automatique** des installations actuelles : reprise de `jobs.conf`, des remotes et
+    des mots de passe, puis suppression des anciens services et crons (pas de doublons comme
+    aujourd'hui entre `install-cam-sync.sh` et `install-alertes.sh`).
+  - Tests contre le faux NAS pour les trois scripts (ajouter un faux Debian).
 
 ### Écarté
 - Signature du `.exe` (certificat payant).
