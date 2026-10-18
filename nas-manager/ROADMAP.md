@@ -140,6 +140,22 @@ Idées en attente, à décider selon l'usage.
       **Deux modes au choix** : transfert ponctuel, ou transfert **programmé** (sauvegarde régulière
       de l'oCIS vers le NAS, avec les mêmes options que les sauvegardes programmées).
 
+#### Surveillance
+- [ ] **Santé des disques** : état SMART, température, secteurs défectueux, état du RAID,
+      sur toutes les machines suivies ; alerte avant la panne.
+- [ ] **Rapport hebdomadaire / mensuel** envoyé sur le téléphone : volumes envoyés, échecs,
+      espace restant, santé des disques.
+
+#### Fiabilité
+- [ ] **Réveil des machines (Wake-on-LAN)** : réveiller le NAS de destination en veille ou éteint
+      avant une sauvegarde ou un transfert, option pour le laisser se rendormir ensuite.
+- [ ] **Retour à une date précise** : grâce aux corbeilles datées, restaurer un dossier tel qu'il
+      était à une date choisie (« mes documents au 3 octobre »).
+
+#### PC Windows
+- [ ] **Sauvegarde du PC vers le NAS** depuis l'application : dossiers au choix (Documents, Bureau…),
+      programmée ou en temps réel, mêmes options que les autres sauvegardes.
+
 #### Confort
 - [ ] **Réglages fins du temps réel** : exclusions par dossier, filtre par type de fichier,
       regroupement des envois d'un fichier modifié en boucle (document en cours d'édition).
