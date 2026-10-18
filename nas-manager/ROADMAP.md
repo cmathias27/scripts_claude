@@ -89,6 +89,11 @@ Idées en attente, à décider selon l'usage.
 - [ ] **Renommer les pages en conséquence** (menu, raccourcis, aide, traduction anglaise) :
   - « Caméras » → **« Sauvegardes temps réel »** (*Real-time backups*).
   - « Sauvegardes » → **« Sauvegardes programmées »** (*Scheduled backups*).
+- [ ] **Installation automatique de TOUS les outils nécessaires** : l'application détecte ce qui manque
+      sur le NAS et l'installe elle-même (rclone, `inotify-tools`, remotes, service systemd, cron,
+      limite `inotify`, logrotate…), sans aucune commande à taper.
+- [ ] **Page d'aide dédiée avec des exemples de configuration** (programmées et temps réel), par exemple :
+      caméras en miroir chiffré, documents en temps réel, photos en copie hebdomadaire.
 
 ### Écarté
 - Signature du `.exe` (certificat payant).
