@@ -1,5 +1,5 @@
 # Compile l'application Windows NAS Manager (nas-manager.exe)
-# Le .exe est telechargeable dans l'onglet Actions > dernier run > Artifacts,
+# Le .exe est dans la Release « NAS Manager (derniere version) » et dans Actions > Artifacts.
 name: NAS Manager (Windows)
 
 on:
