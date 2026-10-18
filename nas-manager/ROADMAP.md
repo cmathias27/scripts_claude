@@ -137,6 +137,8 @@ Idées en attente, à décider selon l'usage.
       sur le Synology ou la machine Debian. Passage par l'API WebDAV d'oCIS (jamais de lecture directe
       du stockage oCIS), dates de modification conservées, reprise en cas d'interruption,
       file d'attente et suivi comme la migration, notification à la fin.
+      **Deux modes au choix** : transfert ponctuel, ou transfert **programmé** (sauvegarde régulière
+      de l'oCIS vers le NAS, avec les mêmes options que les sauvegardes programmées).
 
 #### Confort
 - [ ] **Réglages fins du temps réel** : exclusions par dossier, filtre par type de fichier,
