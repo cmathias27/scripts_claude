@@ -1,6 +1,8 @@
 //! Restauration : tout, un element choisi en parcourant le Drive (dechiffre),
 //! ou un fichier de la corbeille du Drive (supprime / ancienne version).
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use crate::app::{App, BrowsePurpose, HostId};
 use crate::fmt;
 use crate::remote;
@@ -62,7 +64,7 @@ fn list(app: &mut App, path: String) {
     let (job, trash) = (r.job.clone(), r.tab == 2);
     app.exec(
         HostId::Omv,
-        "Lecture du Drive",
+        tr("Lecture du Drive"),
         remote::nb_ls(&job, &path, trash),
         120,
         Box::new(move |app, res| {
@@ -81,9 +83,9 @@ fn list(app: &mut App, path: String) {
                         }
                         Err(_) => {
                             r.error = if line.contains("directory not found") {
-                                if trash { "La corbeille est vide.".into() } else { "Dossier vide ou absent du Drive.".into() }
+                                if trash { tr("La corbeille est vide.").into() } else { tr("Dossier vide ou absent du Drive.").into() }
                             } else {
-                                o.text().lines().last().unwrap_or("Lecture impossible").to_string()
+                                o.text().lines().last().unwrap_or(tr("Lecture impossible")).to_string()
                             }
                         }
                     }
@@ -115,7 +117,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     let mut browse_target = false;
     let mut nav: Option<String> = None;
     let mut tab_changed = false;
-    egui::Window::new(RichText::new(format!("Restaurer « {} »", r.job)).strong())
+    egui::Window::new(RichText::new(tf("Restaurer « {0} »", &[&r.job])).strong())
         .id(egui::Id::unique("restore"))
         .collapsible(false)
         .resizable(true)
@@ -124,24 +126,24 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                tab_changed |= ui.selectable_value(&mut r.tab, 0, "Tout restaurer").changed();
-                tab_changed |= ui.selectable_value(&mut r.tab, 1, "📂 Un fichier ou un dossier").changed();
+                tab_changed |= ui.selectable_value(&mut r.tab, 0, tr("Tout restaurer")).changed();
+                tab_changed |= ui.selectable_value(&mut r.tab, 1, tr("\u{E256} Un fichier ou un dossier")).changed();
                 if r.has_trash {
-                    tab_changed |= ui.selectable_value(&mut r.tab, 2, "🗑 Corbeille du Drive").changed();
+                    tab_changed |= ui.selectable_value(&mut r.tab, 2, tr("\u{E4A6} Corbeille du Drive")).changed();
                 }
             });
             ui.separator();
             if r.tab == 0 {
-                ui.label("Tout le contenu de la sauvegarde est recopié (déchiffré si besoin) dans le dossier ci-dessous.");
+                ui.label(tr("Tout le contenu de la sauvegarde est recopié (déchiffré si besoin) dans le dossier ci-dessous."));
             } else {
                 if r.tab == 2 {
-                    ui.label(RichText::new("Fichiers supprimés ou remplacés par les sauvegardes miroir, rangés par date. Choisis la date puis le fichier.").small());
+                    ui.label(RichText::new(tr("Fichiers supprimés ou remplacés par les sauvegardes miroir, rangés par date. Choisis la date puis le fichier.")).small());
                 }
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!r.path.is_empty(), egui::Button::new("⬆")).on_hover_text("Remonter").clicked() {
+                    if ui.add_enabled(!r.path.is_empty(), egui::Button::new("\u{E08E}")).on_hover_text(tr("Remonter")).clicked() {
                         nav = Some(r.path.rsplit_once('/').map(|(a, _)| a.to_string()).unwrap_or_default());
                     }
-                    ui.label(RichText::new(if r.path.is_empty() { "(racine)".to_string() } else { format!("/{}", r.path) }).strong());
+                    ui.label(RichText::new(if r.path.is_empty() { tr("(racine)").to_string() } else { format!("/{}", r.path) }).strong());
                     if r.loading {
                         ui.spinner();
                     }
@@ -155,7 +157,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                             let full = join(&r.path, &e.name);
                             let sel = r.selected.as_deref() == Some(full.as_str());
                             ui.horizontal(|ui| {
-                                let label = if e.is_dir { format!("📁 {}", e.name) } else { format!("📄 {}", e.name) };
+                                let label = if e.is_dir { format!("\u{E24A} {}", e.name) } else { format!("\u{E230} {}", e.name) };
                                 let resp = ui.add(egui::Button::selectable(sel, label).min_size(egui::vec2(330.0, 0.0)));
                                 if resp.clicked() {
                                     r.selected = Some(full.clone());
@@ -167,7 +169,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                                     ui.label(RichText::new(fmt::bytes(e.size.max(0) as u64)).small().weak());
                                 }
                                 ui.label(RichText::new(e.mod_time.get(..16).unwrap_or("").replace('T', " ")).small().weak());
-                                if e.is_dir && ui.small_button("Ouvrir").clicked() {
+                                if e.is_dir && ui.small_button(tr("Ouvrir")).clicked() {
                                     nav = Some(full.clone());
                                 }
                             });
@@ -176,39 +178,39 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                 });
                 match &r.selected {
                     Some(s) => {
-                        ui.label(RichText::new(format!("Sélection : {s}")).strong().color(INFO));
+                        ui.label(RichText::new(tf("Sélection : {0}", &[&s])).strong().color(INFO));
                     }
                     None => {
-                        ui.label(RichText::new("Clique sur un élément pour le sélectionner, double-clic pour ouvrir un dossier.").small().weak());
+                        ui.label(RichText::new(tr("Clique sur un élément pour le sélectionner, double-clic pour ouvrir un dossier.")).small().weak());
                     }
                 }
             }
             ui.add_space(6.0);
-            ui.label("Restaurer dans :");
+            ui.label(tr("Restaurer dans :"));
             ui.horizontal(|ui| {
                 ui.add_enabled(!r.to_origin, egui::TextEdit::singleline(&mut r.target).desired_width(480.0));
-                if ui.add_enabled(!r.to_origin, egui::Button::new("📁")).clicked() {
+                if ui.add_enabled(!r.to_origin, egui::Button::new("\u{E24A}")).clicked() {
                     browse_target = true;
                 }
             });
             if r.tab != 2 {
-                ui.checkbox(&mut r.to_origin, "À son emplacement d'origine sur l'OMV");
+                ui.checkbox(&mut r.to_origin, tr("À son emplacement d'origine sur l'OMV"));
             }
             let dest = effective_target(&r);
             if r.to_origin || dest.trim_end_matches('/') == r.source.trim_end_matches('/') {
-                ui.colored_label(ERR, "⚠ Les fichiers locaux de même nom seront remplacés par ceux du Drive.");
+                ui.colored_label(ERR, tr("\u{E4E0} Les fichiers locaux de même nom seront remplacés par ceux du Drive."));
             }
-            ui.label(RichText::new("La restauration tourne en arrière-plan ; son avancement s'affiche sur la page Sauvegardes.").small().weak());
+            ui.label(RichText::new(tr("La restauration tourne en arrière-plan ; son avancement s'affiche sur la page Sauvegardes.")).small().weak());
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let can = r.tab == 0 || r.selected.is_some();
                 if ui
-                    .add_enabled(can && !dest.trim().is_empty(), egui::Button::new(RichText::new("📥 Restaurer").color(Color32::WHITE)).fill(INFO))
+                    .add_enabled(can && !dest.trim().is_empty(), egui::Button::new(RichText::new(tr("\u{E20C} Restaurer")).color(Color32::WHITE)).fill(INFO))
                     .clicked()
                 {
                     go = true;
                 }
-                if ui.button("Annuler").clicked() {
+                if ui.button(tr("Annuler")).clicked() {
                     cancel = true;
                 }
             });
@@ -230,15 +232,15 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         let overwrite = r.to_origin || target.trim_end_matches('/') == r.source.trim_end_matches('/');
         if overwrite {
             app.ask_confirm(
-                "Restaurer à l'emplacement d'origine",
-                &format!("« {label} » va être recopié dans {target} : les fichiers locaux de même nom seront remplacés."),
-                "Restaurer",
+                tr("Restaurer à l'emplacement d'origine"),
+                &tf("« {0} » va être recopié dans {1} : les fichiers locaux de même nom seront remplacés.", &[&label, &target]),
+                tr("Restaurer"),
                 true,
                 None,
-                Box::new(move |app| app.action_toast(HostId::Omv, "Restauration", script, 30)),
+                Box::new(move |app| app.action_toast(HostId::Omv, tr("Restauration"), script, 30)),
             );
         } else {
-            app.action_toast(HostId::Omv, "Restauration", script, 30);
+            app.action_toast(HostId::Omv, tr("Restauration"), script, 30);
         }
         return;
     }

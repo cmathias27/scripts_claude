@@ -1,5 +1,7 @@
 //! Editeurs d'horaire (jours / heures) et de limite de debit des sauvegardes.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use eframe::egui::{self, RichText};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -78,14 +80,14 @@ impl SchedEdit {
             0 => "manuel".to_string(),
             1 | 2 => {
                 if times.is_empty() || !times.iter().all(|t| valid_time(t)) {
-                    return Err("Heure invalide (format HH:MM, ex : 03:30 ; plusieurs séparées par des virgules).".into());
+                    return Err(tr("Heure invalide (format HH:MM, ex : 03:30 ; plusieurs séparées par des virgules).").into());
                 }
                 if self.mode == 1 || self.days.iter().all(|d| *d) {
                     times.join(";")
                 } else {
                     let d: String = (0..7).filter(|i| self.days[*i]).map(|i| char::from_digit(i as u32 + 1, 10).unwrap_or('1')).collect();
                     if d.is_empty() {
-                        return Err("Choisis au moins un jour.".into());
+                        return Err(tr("Choisis au moins un jour.").into());
                     }
                     times.iter().map(|t| format!("{t}/{d}")).collect::<Vec<_>>().join(";")
                 }
@@ -95,17 +97,17 @@ impl SchedEdit {
         if valid_sched(&s) {
             Ok(s)
         } else {
-            Err("Horaire invalide.".into())
+            Err(tr("Horaire invalide.").into())
         }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.radio_value(&mut self.mode, 0, "Manuel");
-                ui.radio_value(&mut self.mode, 1, "Tous les jours");
-                ui.radio_value(&mut self.mode, 2, "Certains jours");
-                if ui.radio_value(&mut self.mode, 3, "Avancé").clicked() && self.raw.is_empty() {
+                ui.radio_value(&mut self.mode, 0, tr("Manuel"));
+                ui.radio_value(&mut self.mode, 1, tr("Tous les jours"));
+                ui.radio_value(&mut self.mode, 2, tr("Certains jours"));
+                if ui.radio_value(&mut self.mode, 3, tr("Avancé")).clicked() && self.raw.is_empty() {
                     self.raw = self.build().unwrap_or_default();
                 }
             });
@@ -113,20 +115,20 @@ impl SchedEdit {
                 1 | 2 => {
                     if self.mode == 2 {
                         ui.horizontal(|ui| {
-                            for (i, n) in ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].iter().enumerate() {
+                            for (i, n) in [tr("Lun"), tr("Mar"), tr("Mer"), tr("Jeu"), tr("Ven"), tr("Sam"), tr("Dim")].iter().enumerate() {
                                 ui.toggle_value(&mut self.days[i], *n);
                             }
                         });
                     }
                     ui.horizontal(|ui| {
-                        ui.label("à");
+                        ui.label(tr("à"));
                         ui.add(egui::TextEdit::singleline(&mut self.times).desired_width(150.0).hint_text("03:30, 15:00"));
-                        ui.label(RichText::new("plusieurs heures séparées par des virgules").small().weak());
+                        ui.label(RichText::new(tr("plusieurs heures séparées par des virgules")).small().weak());
                     });
                 }
                 3 => {
                     ui.add(egui::TextEdit::singleline(&mut self.raw).desired_width(260.0).hint_text("03:30/135;22:00"));
-                    ui.label(RichText::new("HH:MM ou HH:MM/JOURS (1 = lundi … 7 = dimanche), séparés par ;").small().weak());
+                    ui.label(RichText::new(tr("HH:MM ou HH:MM/JOURS (1 = lundi … 7 = dimanche), séparés par ;")).small().weak());
                 }
                 _ => {}
             }
@@ -165,9 +167,9 @@ impl BwEdit {
 
     pub fn build(&self) -> Result<String, String> {
         let v = || -> Result<String, String> {
-            let x: f64 = self.value.trim().replace(',', ".").parse().map_err(|_| "Débit invalide (en Mo/s, ex : 5).".to_string())?;
+            let x: f64 = self.value.trim().replace(',', ".").parse().map_err(|_| tr("Débit invalide (en Mo/s, ex : 5).").to_string())?;
             if x <= 0.0 {
-                return Err("Débit invalide (en Mo/s, ex : 5).".into());
+                return Err(tr("Débit invalide (en Mo/s, ex : 5).").into());
             }
             Ok(format!("{}", (x * 10.0).round() / 10.0))
         };
@@ -180,7 +182,7 @@ impl BwEdit {
                 if r.chars().all(|c| c.is_ascii_alphanumeric() || ":., -".contains(c)) {
                     Ok(r.to_string())
                 } else {
-                    Err("Limite de débit invalide.".into())
+                    Err(tr("Limite de débit invalide.").into())
                 }
             }
         }
@@ -189,10 +191,10 @@ impl BwEdit {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.radio_value(&mut self.mode, 0, "Aucune");
-                ui.radio_value(&mut self.mode, 1, "Toujours");
-                ui.radio_value(&mut self.mode, 2, "En journée (8 h – 23 h)");
-                ui.radio_value(&mut self.mode, 3, "Avancée");
+                ui.radio_value(&mut self.mode, 0, tr("Aucune"));
+                ui.radio_value(&mut self.mode, 1, tr("Toujours"));
+                ui.radio_value(&mut self.mode, 2, tr("En journée (8 h – 23 h)"));
+                ui.radio_value(&mut self.mode, 3, tr("Avancée"));
             });
             match self.mode {
                 1 | 2 => {
@@ -200,13 +202,13 @@ impl BwEdit {
                         ui.add(egui::TextEdit::singleline(&mut self.value).desired_width(60.0).hint_text("5"));
                         ui.label("Mo/s");
                         if self.mode == 2 {
-                            ui.label(RichText::new("pleine vitesse la nuit").small().weak());
+                            ui.label(RichText::new(tr("pleine vitesse la nuit")).small().weak());
                         }
                     });
                 }
                 3 => {
                     ui.add(egui::TextEdit::singleline(&mut self.raw).desired_width(260.0).hint_text("08:00,2M 23:00,off"));
-                    ui.label(RichText::new("Format --bwlimit de rclone").small().weak());
+                    ui.label(RichText::new(tr("Format --bwlimit de rclone")).small().weak());
                 }
                 _ => {}
             }

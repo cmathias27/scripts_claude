@@ -10,7 +10,14 @@ Application Windows en Rust pour **suivre et gérer toutes les synchros du NAS s
 | Alertes | `nas-check`, `nas-notify` (OMV) | connexion et quota Google Drive, alertes en cours (acquitter), vérifier maintenant, notification de test, afficher les mots de passe de chiffrement |
 | Copie → OMV | `copie-omv` (Synology) | suivre / arrêter la copie, en lancer une nouvelle avec navigateur de dossiers des deux NAS, historique, réparer les droits |
 | Migration oCIS | `migre-drive-ocis` (Synology) | connexion oCIS, file d'attente (ajouter / retirer / lancer), suivi en direct, arrêt, résultats, historique |
+| Historique | `nas-backup` (OMV) | exécutions, taux de réussite, volumes, évolution de l'espace |
 | Journaux | tous | dernières lignes de chaque journal, suivi en direct, filtre |
+| Installation | tous | première installation sur des NAS vierges : rclone, connexion Google Drive, scripts, caméras, alertes, suivi Home Assistant |
+| Aide | — | premiers pas, accès à distance (Tailscale / WireGuard), erreurs fréquentes, raccourcis |
+
+Interface en **français ou en anglais** (Paramètres > Préférences, par défaut la langue de Windows).
+L'application se met à jour d'elle-même (Paramètres > Mises à jour), gère **plusieurs sites** (un OMV et un Synology
+chacun) et reste dans la zone de notification avec des notifications Windows.
 
 ## Comment ça marche
 
@@ -33,17 +40,19 @@ Les menus interactifs des scripts restent identiques : on peut toujours les util
 
 ## Mise en route
 
-1. **Paramètres** : adresse de l'OMV (`root`) et du Synology (compte administrateur, « Passer par sudo » coché).
-   Sur le Synology, activer SSH : DSM > Panneau de configuration > Terminal & SNMP.
-2. **Autoriser la clé…** sur chaque NAS : une fenêtre s'ouvre, taper une seule fois le mot de passe du compte,
-   puis **Tester**.
-3. Synology : le mot de passe administrateur (pour `sudo`) est demandé au premier accès ; il peut être mémorisé,
-   chiffré avec le compte Windows (DPAPI).
-4. **Scripts sur les NAS > Installer / mettre à jour** : installe `nas-backup` sur l'OMV et `copie-omv`,
-   `migre-drive-ocis` dans `/usr/local/bin` du Synology (l'ancienne version est gardée en `.bak`, les transferts
-   en cours ne sont pas interrompus). L'adresse de l'OMV des paramètres est reprise dans `copie-omv`.
-5. Page **Copie → OMV** : si besoin, **Autoriser le Synology à écrire sur l'OMV** (clé root du Synology
-   ajoutée sur l'OMV, plus besoin de la première copie en SSH).
+Au premier lancement, un **assistant** guide pas à pas :
+
+1. adresse de l'OMV (`root`) et, si besoin, du Synology (compte administrateur, « Passer par sudo » coché ;
+   activer SSH : DSM > Panneau de configuration > Terminal & SNMP) ;
+2. confirmation de l'identité de chaque NAS (empreinte SSH), puis **Autoriser la clé** : une fenêtre s'ouvre,
+   taper une seule fois le mot de passe du compte ;
+3. page **Installation** : rclone, connexion Google Drive (la page Google s'ouvre dans le navigateur du PC,
+   rien à copier), `nas-backup`, synchro des caméras, alertes et suivi Home Assistant, scripts du Synology.
+
+Le mot de passe administrateur du Synology (pour `sudo`) est demandé au premier accès ; il peut être mémorisé,
+chiffré avec le compte Windows (DPAPI). Les mises à jour des scripts se font depuis Paramètres > Scripts sur les NAS
+(l'ancienne version est gardée en `.bak`, les transferts en cours ne sont pas interrompus).
+Page **Copie → OMV** : si besoin, **Autoriser le Synology à écrire sur l'OMV**.
 
 Prérequis côté NAS : `python3` (présent sur OMV et DSM 7).
 

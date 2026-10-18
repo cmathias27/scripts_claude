@@ -12,8 +12,8 @@
 set -uo pipefail
 
 # --------------------------- Parametres ------------------------------
-HA_IP="192.168.1.222"
-WEBHOOK="nas-c09f382daf2d01deb430abbd"   # cree dans l'automatisation HA "NAS - Alertes sauvegardes"
+HA_IP="${NAS_HA_IP:-192.168.1.222}"
+WEBHOOK="${NAS_WEBHOOK:-nas-c09f382daf2d01deb430abbd}"   # cree dans l'automatisation HA "NAS - Alertes sauvegardes"
 REPEAT_HOURS=12                          # rappel d'une alerte non resolue toutes les X heures
 QUOTA_ALERT=90                           # alerte si le Drive est rempli a plus de X %
 LATE_HOURS=50                            # alerte si une sauvegarde planifiee n'a pas reussi depuis X heures
@@ -197,7 +197,8 @@ if /usr/local/bin/nas-notify info test "NAS" "Les alertes de sauvegarde sont act
 else
   rouge "Echec de l'envoi vers Home Assistant ($HA_URL)."
 fi
-read -r -p "Envoyer aussi une alerte CRITIQUE de test (sonnerie forte) ? [o/N] " r
+if [ -n "${NAS_TEST_CRITIQUE:-}" ]; then r="$NAS_TEST_CRITIQUE"
+else read -r -p "Envoyer aussi une alerte CRITIQUE de test (sonnerie forte) ? [o/N] " r || r=""; fi
 if [[ "$r" =~ ^[oOyY]$ ]]; then
   /usr/local/bin/nas-notify critique test-critique "Test d'alerte" "Ceci est un test, tout va bien." && vert "Alerte critique envoyee."
   rm -f /var/lib/nas-backup/alertes/test-critique

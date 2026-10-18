@@ -1,6 +1,8 @@
 //! Fonctions transverses : identite des NAS (empreinte SSH), nouveautes,
 //! rapport de diagnostic, export / import des parametres, raccourcis, theme.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use crate::app::{App, HostId, OutputDialog, Page};
 use crate::config;
 use crate::remote;
@@ -63,30 +65,25 @@ pub fn fingerprint_window(app: &mut App, ctx: &egui::Context) {
     let mut accept = false;
     let mut refuse = false;
     let mut retry = false;
-    egui::Window::new(RichText::new(format!("Identité du {} à confirmer", host.label())).strong())
+    egui::Window::new(RichText::new(tf("Identité du {0} à confirmer", &[&(host.label())])).strong())
         .id(egui::Id::unique("fingerprint"))
         .collapsible(false)
         .resizable(false)
         .default_width(560.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.label(format!(
-                "Première connexion à {} ({}:{}). Pour être sûr de parler au bon appareil, compare l'empreinte ci-dessous avec celle du NAS.",
-                host.label(),
-                cfg.host.trim(),
-                cfg.port
-            ));
+            ui.label(tf("Première connexion à {0} ({1}:{2}). Pour être sûr de parler au bon appareil, compare l'empreinte ci-dessous avec celle du NAS.", &[&(host.label()), &(cfg.host.trim()), &cfg.port]));
             ui.add_space(6.0);
             match (&scan, error.is_empty()) {
                 (None, true) => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Lecture de l'identité du NAS…");
+                        ui.label(tr("Lecture de l'identité du NAS…"));
                     });
                 }
                 (None, false) => {
                     ui.colored_label(ERR, &error);
-                    if ui.button("Réessayer").clicked() {
+                    if ui.button(tr("Réessayer")).clicked() {
                         retry = true;
                     }
                 }
@@ -101,12 +98,12 @@ pub fn fingerprint_window(app: &mut App, ctx: &egui::Context) {
                             }
                         });
                     ui.label(
-                        RichText::new("Pour vérifier, sur le NAS : ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub")
+                        RichText::new(tr("Pour vérifier, sur le NAS : ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"))
                             .small()
                             .weak(),
                     );
                     ui.label(
-                        RichText::new("Sur ton réseau local, accepter sans vérifier est en général sans risque. Si cette fenêtre réapparaît plus tard sans raison (pas de réinstallation du NAS), refuse.")
+                        RichText::new(tr("Sur ton réseau local, accepter sans vérifier est en général sans risque. Si cette fenêtre réapparaît plus tard sans raison (pas de réinstallation du NAS), refuse."))
                             .small()
                             .weak(),
                     );
@@ -115,12 +112,12 @@ pub fn fingerprint_window(app: &mut App, ctx: &egui::Context) {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(scan.is_some(), egui::Button::new(RichText::new("✔ C'est bien mon NAS").color(Color32::WHITE)).fill(INFO))
+                    .add_enabled(scan.is_some(), egui::Button::new(RichText::new(tr("\u{E182} C'est bien mon NAS")).color(Color32::WHITE)).fill(INFO))
                     .clicked()
                 {
                     accept = true;
                 }
-                if ui.button("Refuser").clicked() {
+                if ui.button(tr("Refuser")).clicked() {
                     refuse = true;
                 }
             });
@@ -175,7 +172,7 @@ fn open_key_console(app: &mut App, host: HostId) {
     let cfg = app.host_cfg(host).clone();
     match app.ssh.open_key_install_console(&cfg) {
         Ok(m) => {
-            app.output = Some(OutputDialog { title: format!("Autoriser la clé sur le {}", host.label()), text: m, ok: true })
+            app.output = Some(OutputDialog { title: tf("Autoriser la clé sur le {0}", &[&(host.label())]), text: m, ok: true })
         }
         Err(e) => app.toast(false, e),
     }
@@ -205,7 +202,7 @@ pub fn news_window(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let mut open = true;
-    egui::Window::new(RichText::new(format!("Nouveautés — NAS Manager {VERSION}")).strong())
+    egui::Window::new(RichText::new(tf("Nouveautés — NAS Manager {0}", &[&VERSION])).strong())
         .id(egui::Id::unique("news"))
         .collapsible(false)
         .resizable(true)
@@ -258,23 +255,18 @@ fn ssh_version(app: &App) -> String {
     }
     match c.output() {
         Ok(o) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string(),
-        Err(e) => format!("introuvable ({e})"),
+        Err(e) => tf("introuvable ({0})", &[&e]),
     }
 }
 
 pub fn diagnostic_report(app: &App) -> String {
     let mut r = String::new();
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-    r.push_str(&format!("=== Rapport de diagnostic NAS Manager {VERSION} — {now}\n"));
-    r.push_str(&format!("Système : {} {}\n", std::env::consts::OS, std::env::consts::ARCH));
-    r.push_str(&format!("Client SSH : {}\n", ssh_version(app)));
-    r.push_str(&format!("Clé de l'application : {}\n", if app.ssh.key_exists() { "présente" } else { "ABSENTE" }));
-    r.push_str(&format!(
-        "Mode lecture seule : {} · thème : {} · actualisation : {} s\n",
-        if app.settings.read_only { "oui" } else { "non" },
-        app.settings.theme,
-        app.settings.refresh_secs
-    ));
+    r.push_str(&tf("=== Rapport de diagnostic NAS Manager {0} — {1}\n", &[&VERSION, &now]));
+    r.push_str(&tf("Système : {0} {1}\n", &[&(std::env::consts::OS), &(std::env::consts::ARCH)]));
+    r.push_str(&tf("Client SSH : {0}\n", &[&(ssh_version(app))]));
+    r.push_str(&tf("Clé de l'application : {0}\n", &[&(if app.ssh.key_exists() { tr("présente") } else { tr("ABSENTE") })]));
+    r.push_str(&tf("Mode lecture seule : {0} · thème : {1} · actualisation : {2} s\n", &[&(if app.settings.read_only { "oui" } else { "non" }), &app.settings.theme, &app.settings.refresh_secs]));
     for h in [HostId::Omv, HostId::Syno] {
         let c = app.host_cfg(h);
         r.push_str(&format!("\n--- {}\n", h.label()));
@@ -289,59 +281,24 @@ pub fn diagnostic_report(app: &App) -> String {
             if c.sudo { "oui" } else { "non" },
             if c.saved_pass.is_empty() { "non" } else { "oui" }
         ));
-        r.push_str(&format!("Identité confirmée : {}\n", if app.ssh.host_known(c) { "oui" } else { "non" }));
+        r.push_str(&tf("Identité confirmée : {0}\n", &[&(if app.ssh.host_known(c) { "oui" } else { "non" })]));
         match app.host_error(h) {
-            Some(e) => r.push_str(&format!("État : ERREUR — {e}\n")),
+            Some(e) => r.push_str(&tf("État : ERREUR — {0}\n", &[&e])),
             None if app.host_connected(h) => r.push_str("État : connecté\n"),
             None => r.push_str("État : pas encore connecté\n"),
         }
     }
     if let Some(s) = &app.omv.status {
-        r.push_str(&format!(
-            "\n--- OMV ({})\nnas-backup : {} (API {}) · sauvegardes : {} · en cours : {} · alertes : {}\n",
-            s.serveur,
-            if s.nb_installe { "installé" } else { "absent" },
-            s.nb_api,
-            s.sauvegardes.len(),
-            s.sauvegardes.iter().filter(|j| j.en_cours).count(),
-            s.alertes.iter().map(|a| a.tag.clone()).collect::<Vec<_>>().join(", ")
-        ));
+        r.push_str(&tf("\n--- OMV ({0})\nnas-backup : {1} (API {2}) · sauvegardes : {3} · en cours : {4} · alertes : {5}\n", &[&s.serveur, &(if s.nb_installe { tr("installé") } else { "absent" }), &s.nb_api, &(s.sauvegardes.len()), &(s.sauvegardes.iter().filter(|j| j.en_cours).count()), &(s.alertes.iter().map(|a| a.tag.clone()).collect::<Vec<_>>().join(", "))]));
         for j in &s.sauvegardes {
-            r.push_str(&format!(
-                "  · {} : {} · horaire {} · dernière exécution {}\n",
-                j.nom,
-                j.dernier_etat.as_deref().unwrap_or("jamais"),
-                j.horaire,
-                j.derniere_execution.as_deref().unwrap_or("-")
-            ));
+            r.push_str(&tf("  · {0} : {1} · horaire {2} · dernière exécution {3}\n", &[&j.nom, &(j.dernier_etat.as_deref().unwrap_or("jamais")), &j.horaire, &(j.derniere_execution.as_deref().unwrap_or("-"))]));
         }
-        r.push_str(&format!(
-            "Caméras : installé {} · actif {} · dernier envoi {}\n",
-            s.cameras.installe,
-            s.cameras.actif,
-            s.cameras.dernier_envoi.as_deref().unwrap_or("-")
-        ));
+        r.push_str(&tf("Caméras : installé {0} · actif {1} · dernier envoi {2}\n", &[&s.cameras.installe, &s.cameras.actif, &(s.cameras.dernier_envoi.as_deref().unwrap_or("-"))]));
     }
     if let Some(s) = &app.syno.status {
-        r.push_str(&format!(
-            "\n--- Synology ({})\ncopie-omv : {} (API {}) · clé vers l'OMV : {} · copie en cours : {}\nmigre-drive-ocis : {} (API {}) · migration en cours : {} · file : {}\n",
-            s.serveur,
-            if s.copie.installe { "installé" } else { "absent" },
-            s.copie.api,
-            s.copie.cle_omv,
-            s.copie.en_cours,
-            if s.migration.installe { "installé" } else { "absent" },
-            s.migration.api,
-            s.migration.en_cours,
-            s.migration.file.len()
-        ));
+        r.push_str(&tf("\n--- Synology ({0})\ncopie-omv : {1} (API {2}) · clé vers l'OMV : {3} · copie en cours : {4}\nmigre-drive-ocis : {5} (API {6}) · migration en cours : {7} · file : {8}\n", &[&s.serveur, &(if s.copie.installe { tr("installé") } else { "absent" }), &s.copie.api, &s.copie.cle_omv, &s.copie.en_cours, &(if s.migration.installe { tr("installé") } else { "absent" }), &s.migration.api, &s.migration.en_cours, &(s.migration.file.len())]));
     }
-    r.push_str(&format!(
-        "\nScripts fournis : nas-backup API {} · copie-omv API {} · migre-drive-ocis API {}\n",
-        remote::nb_api(),
-        remote::copie_api(),
-        remote::migre_api()
-    ));
+    r.push_str(&tf("\nScripts fournis : nas-backup API {0} · copie-omv API {1} · migre-drive-ocis API {2}\n", &[&(remote::nb_api()), &(remote::copie_api()), &(remote::migre_api())]));
     r.push_str("\n=== Journal de l'application (200 dernières lignes)\n");
     r.push_str(&crate::log::tail(200));
     r.push('\n');
@@ -356,11 +313,11 @@ pub fn diagnostic_report(app: &App) -> String {
 
 pub fn export_diagnostic(app: &mut App) {
     let report = diagnostic_report(app);
-    let name = format!("nas-manager-diagnostic-{}.txt", chrono::Local::now().format("%Y%m%d-%H%M"));
+    let name = tf("nas-manager-diagnostic-{0}.txt", &[&(chrono::Local::now().format("%Y%m%d-%H%M"))]);
     if let Some(path) = rfd::FileDialog::new().set_file_name(&name).add_filter("Texte", &["txt"]).save_file() {
         match std::fs::write(&path, report) {
-            Ok(()) => app.toast(true, format!("Rapport enregistré : {}", path.display())),
-            Err(e) => app.toast(false, format!("Enregistrement impossible : {e}")),
+            Ok(()) => app.toast(true, tf("Rapport enregistré : {0}", &[&(path.display())])),
+            Err(e) => app.toast(false, tf("Enregistrement impossible : {0}", &[&e])),
         }
     }
 }
@@ -372,7 +329,7 @@ pub fn export_settings(app: &mut App) {
         .save_file()
     {
         match std::fs::write(&path, config::export_json(&app.settings)) {
-            Ok(()) => app.toast(true, "Paramètres exportés (sans mot de passe).".into()),
+            Ok(()) => app.toast(true, tr("Paramètres exportés (sans mot de passe).").into()),
             Err(e) => app.toast(false, e.to_string()),
         }
     }
@@ -385,7 +342,7 @@ pub fn import_settings(app: &mut App) {
                 s.last_version = app.settings.last_version.clone();
                 app.edit = s;
                 app.save_settings();
-                app.toast(true, "Paramètres importés. Les mots de passe sudo seront redemandés.".into());
+                app.toast(true, tr("Paramètres importés. Les mots de passe sudo seront redemandés.").into());
             }
             Err(e) => app.toast(false, e),
         }
@@ -420,6 +377,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         Page::Logs,
         Page::Settings,
     ];
+    // (Installation et Aide : depuis le menu)
     let keys = [
         egui::Key::Num1,
         egui::Key::Num2,
@@ -453,7 +411,7 @@ pub fn read_only_badge(app: &App, ui: &mut egui::Ui) {
             .corner_radius(10.0)
             .inner_margin(egui::Margin::symmetric(8, 2))
             .show(ui, |ui| {
-                ui.label(RichText::new("🔒 Lecture seule").small().color(WARN));
+                ui.label(RichText::new(tr("\u{E2FA} Lecture seule")).small().color(WARN));
             });
     }
 }

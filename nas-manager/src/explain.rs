@@ -1,6 +1,8 @@
 //! Explication en francais des erreurs courantes (rclone, rsync, SSH, oCIS)
 //! avec la marche a suivre.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use crate::theme::{ERR, WARN};
 use eframe::egui::{self, RichText};
 
@@ -137,12 +139,12 @@ pub fn show(ui: &mut egui::Ui, error_text: &str) {
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(format!("Pourquoi ? {}", e.cause)).strong());
-            ui.label(format!("Que faire ? {}", e.remedy));
+            ui.label(RichText::new(tf("Pourquoi ? {0}", &[&tr(e.cause)])).strong());
+            ui.label(tf("Que faire ? {0}", &[&tr(e.remedy)]));
             if let Some(c) = e.command {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(c).monospace());
-                    if ui.small_button("📋 Copier").clicked() {
+                    if ui.small_button(tr("\u{E1CA} Copier")).clicked() {
                         ui.ctx().copy_text(c.to_string());
                     }
                 });

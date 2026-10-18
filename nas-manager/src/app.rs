@@ -1,5 +1,7 @@
 //! Etat de l'application, communication avec les NAS, fenetres de dialogue.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use crate::config::{self, HostCfg, Settings};
 use crate::model::*;
 use crate::remote;
@@ -34,6 +36,8 @@ pub enum Page {
     Copy,
     Migration,
     Logs,
+    Install,
+    Help,
     Settings,
 }
 
@@ -104,6 +108,7 @@ pub enum BrowsePurpose {
     CopyDest,
     MigSource,
     PermsDir,
+    CamSource,
 }
 
 pub struct Browser {
@@ -226,6 +231,12 @@ pub struct App {
     pub history: crate::history::HistoryState,
     /// edition de la verification automatique : (jours, heure)
     pub verif_edit: Option<([bool; 7], String)>,
+    pub update: crate::update::UpdateState,
+    /// nom saisi pour un nouveau site
+    pub new_site: String,
+    pub install: crate::install::InstallState,
+    /// assistant de premier lancement : etape affichee
+    pub wizard: Option<u8>,
 }
 
 impl App {
@@ -285,13 +296,28 @@ impl App {
             autostart: crate::tray::autostart_enabled(),
             history: Default::default(),
             verif_edit: None,
+            update: Default::default(),
+            new_site: String::new(),
+            install: Default::default(),
+            wizard: None,
         };
+        crate::i18n::set_language(&app.settings.language);
+        if !app.settings.wizard_done {
+            app.wizard = Some(0);
+            app.show_news = false;
+        }
+        crate::update::cleanup();
+        if app.settings.auto_update && crate::fmt::now() - app.settings.last_update_check > 20 * 3600 {
+            crate::update::start_check(&mut app, false);
+        }
         app.tray = crate::tray::create(&app);
         crate::extras::apply_theme(&app.ctx, &app.settings.theme);
+        app.ctx.set_zoom_factor(app.settings.zoom.clamp(0.8, 1.8));
         crate::log::info(&format!("démarrage de NAS Manager {}", crate::extras::VERSION));
         // Nouveautes affichees apres une mise a jour
         if app.settings.last_version != crate::extras::VERSION {
-            app.show_news = true;
+            // (pas au premier lancement : l'assistant s'affiche)
+            app.show_news = app.wizard.is_none();
             app.settings.last_version = crate::extras::VERSION.to_string();
             app.edit.last_version = app.settings.last_version.clone();
             let _ = config::save(&app.settings);
@@ -325,6 +351,8 @@ impl App {
                 "copie" => Page::Copy,
                 "migration" => Page::Migration,
                 "journaux" => Page::Logs,
+                "installation" => Page::Install,
+                "aide" => Page::Help,
                 "parametres" => Page::Settings,
                 _ => Page::Dashboard,
             };
@@ -369,7 +397,7 @@ impl App {
         let cfg = self.host_cfg(host).clone();
         if cfg.sudo && self.pass_of(host).is_none() {
             self.ask_sudo(host, false);
-            self.toast(false, format!("{} : mot de passe sudo nécessaire.", host.label()));
+            self.toast(false, tf("{0} : mot de passe sudo nécessaire.", &[&(host.label())]));
             return;
         }
         let pass = self.pass_of(host);
@@ -398,7 +426,7 @@ impl App {
     /// Mode lecture seule : refuse l'action (renvoie true si bloquee)
     pub fn blocked(&mut self) -> bool {
         if self.settings.read_only {
-            self.toast(false, "Mode lecture seule : action désactivée (Paramètres).".into());
+            self.toast(false, tr("Mode lecture seule : action désactivée (Paramètres).").into());
             true
         } else {
             false
@@ -427,7 +455,7 @@ impl App {
                         }
                         app.output = Some(OutputDialog {
                             title: t,
-                            text: if text.is_empty() { "Terminé.".into() } else { text },
+                            text: if text.is_empty() { tr("Terminé.").into() } else { text },
                             ok,
                         });
                     }
@@ -462,9 +490,9 @@ impl App {
                             crate::log::warn(&format!("« {lab} » : code {} — {}", o.code, text.lines().last().unwrap_or("")));
                         }
                         if text.lines().count() > 3 {
-                            app.output = Some(OutputDialog { title: "Résultat".into(), text, ok });
+                            app.output = Some(OutputDialog { title: tr("Résultat").into(), text, ok });
                         } else {
-                            app.toast(ok, if text.is_empty() { "Fait.".into() } else { text });
+                            app.toast(ok, if text.is_empty() { tr("Fait.").into() } else { text });
                         }
                     }
                     Err(e) => {
@@ -584,6 +612,10 @@ impl App {
     fn maybe_poll(&mut self, host: HostId) {
         let cfg = self.host_cfg(host).clone();
         if !cfg.is_set() || !self.ssh.key_exists() {
+            return;
+        }
+        // assistant de premier lancement : pas de connexion avant l'etape des cles
+        if self.wizard.map(|s| s < 3).unwrap_or(false) {
             return;
         }
         let interval = self.poll_interval(host);
@@ -717,11 +749,11 @@ impl App {
             self.err_streak[k] += 1;
             if self.err_streak[k] == 3 && self.settings.notifications {
                 let msg = st_err.as_ref().map(|e| e.to_string()).unwrap_or_default();
-                crate::tray::notify(&self.ctx, &format!("⚠ {} injoignable", host.label()), &msg);
+                crate::tray::notify(&self.ctx, &tf("\u{E4E0} {0} injoignable", &[&(host.label())]), &msg);
             }
         } else if st_err.is_none() {
             if self.err_streak[k] >= 3 && self.settings.notifications {
-                crate::tray::notify(&self.ctx, &format!("✅ {} de nouveau joignable", host.label()), "");
+                crate::tray::notify(&self.ctx, &tf("✅ {0} de nouveau joignable", &[&(host.label())]), "");
             }
             self.err_streak[k] = 0;
         }
@@ -765,6 +797,32 @@ impl App {
         }
     }
 
+    /// Bascule sur un autre site (autre couple OMV + Synology)
+    pub fn switch_site(&mut self, name: &str) {
+        crate::ssh::close_session(&self.settings.omv);
+        crate::ssh::close_session(&self.settings.syno);
+        if self.settings.switch_site(name) {
+            self.edit = self.settings.clone();
+            let _ = config::save(&self.settings);
+            self.omv = HostState::default();
+            self.syno = HostState::default();
+            self.fp_dismissed = [false, false];
+            self.err_streak = [0, 0];
+            self.history = Default::default();
+            self.backup_sources.clear();
+            self.sources_loaded = false;
+            self.mig = MigForm::default();
+            if !self.settings.omv.saved_pass.is_empty() {
+                self.omv.pass = secret::unprotect(&self.settings.omv.saved_pass);
+            }
+            if !self.settings.syno.saved_pass.is_empty() {
+                self.syno.pass = secret::unprotect(&self.settings.syno.saved_pass);
+            }
+            crate::log::info(&format!("site actif : {name}"));
+            self.toast(true, tf("Site « {0} »", &[&name]));
+        }
+    }
+
     pub fn save_settings(&mut self) {
         let omv_changed = self.edit.omv.host != self.settings.omv.host
             || self.edit.omv.port != self.settings.omv.port
@@ -787,12 +845,14 @@ impl App {
             self.fp_dismissed[1] = false;
         }
         crate::extras::apply_theme(&self.ctx, &self.edit.theme);
+        self.ctx.set_zoom_factor(self.edit.zoom.clamp(0.8, 1.8));
+        crate::i18n::set_language(&self.edit.language);
         self.edit.refresh_secs = self.edit.refresh_secs.clamp(2, 300);
         self.settings = self.edit.clone();
         self.ssh = Ssh::new(&self.settings.ssh_bin);
         match config::save(&self.settings) {
-            Ok(()) => self.toast(true, "Paramètres enregistrés.".into()),
-            Err(e) => self.toast(false, format!("Enregistrement impossible : {e}")),
+            Ok(()) => self.toast(true, tr("Paramètres enregistrés.").into()),
+            Err(e) => self.toast(false, tf("Enregistrement impossible : {0}", &[&e])),
         }
         self.refresh(HostId::Omv);
         self.refresh(HostId::Syno);
@@ -826,7 +886,7 @@ impl App {
         };
         self.exec(
             host,
-            "Lecture des dossiers",
+            tr("Lecture des dossiers"),
             script,
             30,
             Box::new(move |app, r| {
@@ -876,6 +936,7 @@ impl App {
                 self.mig.src = path;
             }
             BrowsePurpose::PermsDir => self.perms.dir = path,
+            BrowsePurpose::CamSource => self.install.cam_src = path,
         }
     }
 
@@ -887,7 +948,7 @@ impl App {
         self.copy.sizing = true;
         self.exec(
             HostId::Syno,
-            "Calcul de la taille",
+            tr("Calcul de la taille"),
             remote::syno_size(&src),
             600,
             Box::new(move |app, r| {
@@ -912,7 +973,7 @@ impl App {
         }
         self.exec(
             HostId::Omv,
-            "Espace libre",
+            tr("Espace libre"),
             remote::free_space(&dst),
             30,
             Box::new(move |app, r| {
@@ -929,7 +990,7 @@ impl App {
         self.sources_loaded = true;
         self.exec(
             HostId::Omv,
-            "Dossiers de l'OMV",
+            tr("Dossiers de l'OMV"),
             remote::omv_list_backup_sources(),
             30,
             Box::new(|app, r| {
@@ -960,9 +1021,9 @@ impl App {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         if ok {
-                            ui.label(RichText::new("✔ Terminé").color(crate::theme::OK));
+                            ui.label(RichText::new(tr("\u{E182} Terminé")).color(crate::theme::OK));
                         } else {
-                            ui.label(RichText::new("⚠ Problème").color(crate::theme::ERR));
+                            ui.label(RichText::new(tr("\u{E4E0} Problème")).color(crate::theme::ERR));
                         }
                     });
                     ui.add_space(4.0);
@@ -977,10 +1038,10 @@ impl App {
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("📋 Copier").clicked() {
+                        if ui.button(tr("\u{E1CA} Copier")).clicked() {
                             ui.ctx().copy_text(text.clone());
                         }
-                        if ui.button("Fermer").clicked() {
+                        if ui.button(tr("Fermer")).clicked() {
                             close = true;
                         }
                     });
@@ -1005,7 +1066,7 @@ impl App {
                     let mut allowed = true;
                     if let Some(word) = &c.typed_required {
                         ui.add_space(6.0);
-                        ui.label(format!("Tape {} pour confirmer :", word));
+                        ui.label(tf("Tape {0} pour confirmer :", &[&word]));
                         ui.text_edit_singleline(&mut c.typed);
                         allowed = c.typed.trim() == word;
                     }
@@ -1023,7 +1084,7 @@ impl App {
                         if ui.add_enabled(allowed, btn).clicked() {
                             do_action = true;
                         }
-                        if ui.button("Annuler").clicked() {
+                        if ui.button(tr("Annuler")).clicked() {
                             cancel = true;
                         }
                     });
@@ -1047,21 +1108,21 @@ impl App {
                 HostId::Omv => &self.settings.omv,
                 HostId::Syno => &self.settings.syno,
             };
-            let who = format!("{} sur {} ({})", cfg.user, s.host.label(), cfg.host);
-            egui::Window::new(RichText::new("Mot de passe administrateur").strong())
+            let who = tf("{0} sur {1} ({2})", &[&cfg.user, &(s.host.label()), &cfg.host]);
+            egui::Window::new(RichText::new(tr("Mot de passe administrateur")).strong())
                 .id(egui::Id::unique("sudo"))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.label(format!("Mot de passe de {who}"));
+                    ui.label(tf("Mot de passe de {0}", &[&who]));
                     ui.label(
-                        RichText::new("Nécessaire pour lire l'état des copies et migrations (sudo).")
+                        RichText::new(tr("Nécessaire pour lire l'état des copies et migrations (sudo)."))
                             .small()
                             .weak(),
                     );
                     if s.error {
-                        ui.colored_label(crate::theme::ERR, "Mot de passe refusé, réessaie.");
+                        ui.colored_label(crate::theme::ERR, tr("Mot de passe refusé, réessaie."));
                     }
                     let r = ui.add(egui::TextEdit::singleline(&mut s.pass).password(true).desired_width(260.0));
                     r.request_focus();
@@ -1069,13 +1130,13 @@ impl App {
                         submit = true;
                     }
                     if secret::can_store() {
-                        ui.checkbox(&mut s.remember, "Mémoriser (chiffré avec ton compte Windows)");
+                        ui.checkbox(&mut s.remember, tr("Mémoriser (chiffré avec ton compte Windows)"));
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Valider").clicked() {
+                        if ui.button(tr("Valider")).clicked() {
                             submit = true;
                         }
-                        if ui.button("Plus tard").clicked() {
+                        if ui.button(tr("Plus tard")).clicked() {
                             dismiss = true;
                         }
                     });
@@ -1113,6 +1174,7 @@ impl App {
         crate::pages::passwords_window(self, ctx);
         crate::extras::fingerprint_window(self, ctx);
         crate::extras::news_window(self, ctx);
+        crate::help::wizard_window(self, ctx);
     }
 
     fn toasts_ui(&mut self, ctx: &egui::Context) {
@@ -1137,7 +1199,7 @@ impl App {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         let col = if t.ok { crate::theme::OK } else { crate::theme::ERR };
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(if t.ok { "✔" } else { "⚠" }).color(col));
+                            ui.label(RichText::new(if t.ok { "\u{E182}" } else { "\u{E4E0}" }).color(col));
                             ui.label(&t.text);
                         });
                     });
@@ -1172,9 +1234,9 @@ fn bad_output(o: &CmdOut, err: &str) -> String {
     let t = o.text();
     let short: String = t.lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
     if short.is_empty() {
-        format!("Réponse vide du NAS ({err}).")
+        tf("Réponse vide du NAS ({0}).", &[&err])
     } else {
-        format!("Réponse inattendue du NAS : {short}")
+        tf("Réponse inattendue du NAS : {0}", &[&short])
     }
 }
 
@@ -1217,6 +1279,8 @@ impl eframe::App for App {
                     Page::Copy => crate::pages::copy(self, ui),
                     Page::Migration => crate::pages::migration(self, ui),
                     Page::Logs => crate::pages::logs(self, ui),
+                    Page::Install => crate::install::page(self, ui),
+                    Page::Help => crate::help::page(self, ui),
                     Page::Settings => crate::pages::settings(self, ui),
                 }
                 ui.add_space(30.0);

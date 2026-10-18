@@ -1,5 +1,32 @@
 # Journal des modifications
 
+## 1.0.0
+
+Version 1.0 : dernière étape (ouverture et finitions). Elle rassemble tout ce qui a été livré dans les versions 1.0.0-beta.1 à beta.5.
+
+### Installation des NAS depuis l'application (nouvelle page)
+- Première installation sur des NAS vierges, sans rien taper en SSH : rclone, connexion Google Drive, nas-backup, synchro des caméras (dossier au choix, envoi des vidéos existantes en arrière-plan), alertes Home Assistant, tableau de bord Home Assistant (MQTT), scripts du Synology.
+- Connexion Google Drive : la page d'autorisation Google s'ouvre dans le navigateur du PC, l'autorisation est transmise à l'OMV par la connexion SSH.
+- État de chaque élément (installé, version, à mettre à jour) et bouton pour installer ou réinstaller.
+
+### Assistant de premier lancement
+- Langue, adresses des NAS, autorisation de la clé, puis direction la page Installation.
+- Relançable depuis la page Aide.
+
+### Anglais
+- Interface entièrement disponible en anglais (Paramètres > Préférences > Langue), par défaut la langue de Windows.
+- Les messages produits par les scripts des NAS restent en français.
+
+### Aide (nouvelle page)
+- Premiers pas, accès à distance sécurisé (Tailscale ou WireGuard, sans ouvrir de port SSH), erreurs fréquentes, raccourcis, fichiers de l'application.
+
+### Aussi dans cette version
+- Mise à jour de l'application depuis l'application (recherche une fois par jour, installation en un clic, redémarrage).
+- Plusieurs sites (un OMV et un Synology chacun, ex. chez un proche) avec sélecteur en haut de la fenêtre.
+- Taille du texte réglable, icônes dessinées à la place des emojis.
+- Coffre des mots de passe de chiffrement : rappel tant qu'ils ne sont pas notés, enregistrement dans un fichier.
+- install-cam-sync.sh, install-alertes.sh, install-suivi-ha.sh : utilisables sans question (installation depuis l'application), toujours utilisables à la main en SSH.
+
 ## 1.0.0-beta.5
 
 Étape 5 sur 6 de la version 1.0 : restauration.

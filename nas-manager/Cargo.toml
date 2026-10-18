@@ -1,17 +1,18 @@
 [package]
 name = "nas-manager"
-version = "1.0.0-beta.5"
+version = "1.0.0"
 edition = "2021"
 description = "Suivi et gestion des sauvegardes et synchronisations du NAS (OMV + Synology) sans SSH"
 publish = false
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
 egui_extras = "0.37"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sys-locale = "0.3"
 rfd = "0.17"
 
 [target.'cfg(windows)'.dependencies]

@@ -6,7 +6,11 @@
 mod app;
 mod charts;
 mod explain;
+mod help;
 mod history;
+mod i18n;
+mod i18n_en;
+mod install;
 mod config;
 mod extras;
 mod fmt;
@@ -20,6 +24,7 @@ mod secret;
 mod ssh;
 mod theme;
 mod tray;
+mod update;
 
 use eframe::egui;
 

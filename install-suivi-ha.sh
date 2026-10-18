@@ -13,7 +13,7 @@
 #  install-alertes.sh (ils remplacent les scripts cameras).
 # =====================================================================
 set -uo pipefail
-MQTT_HOST="192.168.1.222"
+MQTT_HOST="${NAS_MQTT_HOST:-192.168.1.222}"
 MQTT_PORT=1883
 
 vert()  { echo -e "\e[32m$*\e[0m"; }
@@ -30,8 +30,12 @@ echo "== Connexion au serveur MQTT de Home Assistant ($MQTT_HOST) =="
 if [ -f /root/.config/mosquitto_pub ] && mosquitto_pub -t nas-omv/test -m ok 2>/dev/null; then
   vert "OK : connexion MQTT deja configuree (conservee)"
 else
-  read -r -p "Utilisateur MQTT : " MU
-  read -r -s -p "Mot de passe     : " MP; echo
+  if [ -n "${NAS_MQTT_USER:-}" ]; then
+    MU="$NAS_MQTT_USER"; MP="${NAS_MQTT_PASS:-}"      # fournis par NAS Manager
+  else
+    read -r -p "Utilisateur MQTT : " MU
+    read -r -s -p "Mot de passe     : " MP; echo
+  fi
   mkdir -p /root/.config
   printf -- "-h %s\n-p %s\n-u %s\n-P %s\n" "$MQTT_HOST" "$MQTT_PORT" "$MU" "$MP" > /root/.config/mosquitto_pub
   chmod 600 /root/.config/mosquitto_pub

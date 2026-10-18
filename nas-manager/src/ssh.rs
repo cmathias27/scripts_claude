@@ -7,6 +7,8 @@
 //! L'identite (empreinte) de chaque NAS est confirmee par l'utilisateur a la
 //! premiere connexion, puis verifiee strictement.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use crate::config::{app_dir, HostCfg};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -66,13 +68,13 @@ pub enum SshError {
 impl std::fmt::Display for SshError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SshError::KeyRefused => write!(f, "La clé de l'application n'est pas autorisée sur ce NAS (Paramètres > Autoriser la clé)."),
-            SshError::SudoPassword => write!(f, "Mot de passe sudo manquant ou incorrect."),
-            SshError::Unreachable(m) => write!(f, "NAS injoignable : {m}"),
-            SshError::HostKeyChanged => write!(f, "L'identité SSH du NAS a changé (réinstallation ?). Si c'est normal : Paramètres > Oublier l'identité, puis confirmer la nouvelle empreinte."),
-            SshError::HostUnknown => write!(f, "Identité du NAS à confirmer (empreinte SSH)."),
-            SshError::NoSshClient => write!(f, "Client OpenSSH introuvable. Windows : Paramètres > Applications > Fonctionnalités facultatives > Client OpenSSH."),
-            SshError::Timeout => write!(f, "Le NAS ne répond pas (délai dépassé)."),
+            SshError::KeyRefused => write!(f, "{}", tr("La clé de l'application n'est pas autorisée sur ce NAS (Paramètres > Autoriser la clé).")),
+            SshError::SudoPassword => write!(f, "{}", tr("Mot de passe sudo manquant ou incorrect.")),
+            SshError::Unreachable(m) => write!(f, "{}", tf("NAS injoignable : {0}", &[m])),
+            SshError::HostKeyChanged => write!(f, "{}", tr("L'identité SSH du NAS a changé (réinstallation ?). Si c'est normal : Paramètres > Oublier l'identité, puis confirmer la nouvelle empreinte.")),
+            SshError::HostUnknown => write!(f, "{}", tr("Identité du NAS à confirmer (empreinte SSH).")),
+            SshError::NoSshClient => write!(f, "{}", tr("Client OpenSSH introuvable. Windows : Paramètres > Applications > Fonctionnalités facultatives > Client OpenSSH.")),
+            SshError::Timeout => write!(f, "{}", tr("Le NAS ne répond pas (délai dépassé).")),
             SshError::Other(m) => write!(f, "{m}"),
         }
     }
@@ -162,14 +164,14 @@ impl Ssh {
             .stderr(Stdio::piped());
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        let out = cmd.output().map_err(|e| format!("ssh-keyscan introuvable : {e}"))?;
+        let out = cmd.output().map_err(|e| tf("ssh-keyscan introuvable : {0}", &[&e]))?;
         let lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|l| !l.starts_with('#') && l.split_whitespace().count() >= 3)
             .map(|l| l.trim().to_string())
             .collect();
         if lines.is_empty() {
-            return Err(format!("{} injoignable sur le port {} (aucune réponse SSH).", h.host.trim(), h.port));
+            return Err(tf("{0} injoignable sur le port {1} (aucune réponse SSH).", &[&(h.host.trim()), &h.port]));
         }
         // empreintes SHA256 via ssh-keygen -lf
         let tmp = app_dir().join("scan.tmp");
@@ -228,12 +230,9 @@ impl Ssh {
             .stderr(Stdio::piped());
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        let out = cmd.output().map_err(|e| format!("ssh-keygen introuvable : {e}"))?;
+        let out = cmd.output().map_err(|e| tf("ssh-keygen introuvable : {0}", &[&e]))?;
         if !out.status.success() {
-            return Err(format!(
-                "ssh-keygen a échoué : {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+            return Err(tf("ssh-keygen a échoué : {0}", &[&(String::from_utf8_lossy(&out.stderr).trim())]));
         }
         Ok(())
     }
@@ -272,7 +271,7 @@ impl Ssh {
         timeout: Duration,
     ) -> Result<CmdOut, SshError> {
         if !h.is_set() {
-            return Err(SshError::Other("Adresse ou utilisateur non renseigné (Paramètres).".into()));
+            return Err(SshError::Other(tr("Adresse ou utilisateur non renseigné (Paramètres).").into()));
         }
         if h.sudo && pass.map(|p| p.is_empty()).unwrap_or(true) {
             return Err(SshError::SudoPassword);
@@ -407,16 +406,51 @@ impl Ssh {
             if e.kind() == std::io::ErrorKind::NotFound {
                 SshError::NoSshClient
             } else {
-                SshError::Other(format!("ssh : {e}"))
+                SshError::Other(tf("ssh : {0}", &[&e]))
             }
         })
+    }
+
+    /// Commande longue avec redirection de port local -> NAS (ex. autorisation Google de rclone).
+    /// Renvoie le processus ssh (sortie standard lisible) ; le mot de passe sudo est deja envoye.
+    pub fn spawn_tunnel(&self, h: &HostCfg, pass: Option<&str>, local_port: u16, remote_port: u16, command: &str) -> Result<Child, SshError> {
+        if !self.host_known(h) {
+            return Err(SshError::HostUnknown);
+        }
+        let remote = if h.sudo { format!("sudo -S -k -p '' bash -c {}", sq(command)) } else { command.to_string() };
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(self.base_args(h))
+            .arg("-o")
+            .arg("ExitOnForwardFailure=yes")
+            .arg("-L")
+            .arg(format!("{local_port}:127.0.0.1:{remote_port}"))
+            .arg(h.target())
+            .arg(remote)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut child = cmd.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                SshError::NoSshClient
+            } else {
+                SshError::Other(tf("ssh : {0}", &[&e]))
+            }
+        })?;
+        if h.sudo {
+            if let Some(mut si) = child.stdin.take() {
+                let _ = si.write_all(format!("{}\n", pass.unwrap_or("")).as_bytes());
+            }
+        }
+        Ok(child)
     }
 
     /// Ouvre une fenetre de console pour autoriser la cle de l'application sur le NAS
     /// (le mot de passe du compte est demande une seule fois, dans cette fenetre).
     pub fn open_key_install_console(&self, h: &HostCfg) -> Result<String, String> {
         if !h.is_set() {
-            return Err("Adresse ou utilisateur non renseigné.".into());
+            return Err(tr("Adresse ou utilisateur non renseigné.").into());
         }
         self.generate_key()?;
         let remote = "umask 077; mkdir -p ~/.ssh && chmod go-w ~ ; cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo CLE-AUTORISEE";
@@ -446,7 +480,7 @@ if errorlevel 1 (\r\n  echo.\r\n  echo  ECHEC : mot de passe refuse ou NAS injoi
                 .creation_flags(CREATE_NEW_CONSOLE)
                 .spawn()
                 .map_err(|e| e.to_string())?;
-            Ok("Une fenêtre s'est ouverte : tape le mot de passe du compte, puis clique sur « Tester ».".into())
+            Ok(tr("Une fenêtre s'est ouverte : tape le mot de passe du compte, puis clique sur « Tester ».").into())
         }
         #[cfg(not(windows))]
         {
@@ -512,7 +546,7 @@ fn connection_error(stderr: &str) -> SshError {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .last()
-        .unwrap_or("connexion impossible")
+        .unwrap_or(tr("connexion impossible"))
         .trim()
         .to_string();
     SshError::Unreachable(msg)
@@ -528,10 +562,7 @@ fn sudo_error(stderr: &str, h: &HostCfg) -> Option<SshError> {
         return Some(SshError::SudoPassword);
     }
     if low.contains("is not in the sudoers") || low.contains("may not run sudo") {
-        return Some(SshError::Other(format!(
-            "L'utilisateur {} n'a pas le droit d'utiliser sudo (groupe administrators sur le Synology).",
-            h.user
-        )));
+        return Some(SshError::Other(tf("L'utilisateur {0} n'a pas le droit d'utiliser sudo (groupe administrators sur le Synology).", &[&h.user])));
     }
     None
 }
@@ -684,7 +715,7 @@ impl Session {
         self.stdin
             .write_all(req.as_bytes())
             .and_then(|_| self.stdin.flush())
-            .map_err(|e| SshError::Other(format!("session : {e}")))?;
+            .map_err(|e| SshError::Other(tf("session : {0}", &[&e])))?;
         let deadline = Instant::now() + timeout;
         let mut out: Vec<String> = Vec::new();
         let mut err: Vec<String> = Vec::new();
@@ -711,7 +742,7 @@ impl Session {
                 Err(RecvTimeoutError::Timeout) => return Err(SshError::Timeout),
                 Err(RecvTimeoutError::Disconnected) => {
                     let e = self.stderr.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    return Err(SshError::Other(format!("session fermée : {}", e.trim())));
+                    return Err(SshError::Other(tf("session fermée : {0}", &[&(e.trim())])));
                 }
             }
         }

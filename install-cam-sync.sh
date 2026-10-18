@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # --------------------------- Parametres ------------------------------
-SRC="/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Cam"
+SRC="${CAM_SRC:-/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Cam}"   # (CAM_SRC : installation depuis NAS Manager)
 GDRIVE_REMOTE="gdrive"          # remote Google Drive deja configure
 CRYPT_REMOTE="gcrypt"           # remote chiffre cree par ce script
 DRIVE_FOLDER="Cam-chiffre"      # dossier cree sur le Drive
@@ -159,10 +159,19 @@ fi
 
 # --------------------------- Premier envoi ---------------------------
 echo
-read -r -p "Envoyer maintenant les videos deja presentes ? [o/N] " REP
+# CAM_PREMIER_ENVOI=o|n : reponse fournie par NAS Manager (installation sans question)
+if [ -n "${CAM_PREMIER_ENVOI:-}" ]; then REP="$CAM_PREMIER_ENVOI"
+else read -r -p "Envoyer maintenant les videos deja presentes ? [o/N] " REP || REP=""; fi
 if [[ "$REP" =~ ^[oOyY]$ ]]; then
-  flock /run/cam-sync-full.lock rclone sync "$SRC" "${CRYPT_REMOTE}:" \
-    --exclude '@eaDir/**' --exclude '\#recycle/**' -P
+  if [ -n "${CAM_PREMIER_ENVOI:-}" ]; then
+    # depuis l'application : envoi en arriere-plan (peut durer longtemps)
+    nohup setsid flock /run/cam-sync-full.lock rclone sync "$SRC" "${CRYPT_REMOTE}:" \
+      --exclude '@eaDir/**' --exclude '\#recycle/**' --log-file "$LOG" --log-level INFO >/dev/null 2>&1 < /dev/null &
+    vert "Envoi des videos existantes lance en arriere-plan (suivi : page Cameras)."
+  else
+    flock /run/cam-sync-full.lock rclone sync "$SRC" "${CRYPT_REMOTE}:" \
+      --exclude '@eaDir/**' --exclude '\#recycle/**' -P
+  fi
 else
   jaune "Pas de souci : le rattrapage automatique s'en chargera (toutes les $CATCHUP_MIN min)."
 fi

@@ -1,5 +1,7 @@
 //! Parametres de l'application, enregistres en JSON dans le dossier de l'application.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -25,6 +27,7 @@ impl HostCfg {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct Settings {
     pub omv: HostCfg,
     pub syno: HostCfg,
@@ -48,6 +51,45 @@ pub struct Settings {
     /// Fermer la fenetre = reduire dans la zone de notification
     #[serde(default = "yes")]
     pub close_to_tray: bool,
+    /// Nom du site actif (couple OMV + Synology), ex. « Maison »
+    #[serde(default = "default_site")]
+    pub site: String,
+    /// Autres sites enregistres
+    #[serde(default)]
+    pub sites: Vec<Site>,
+    /// Recherche automatique des mises a jour de l'application
+    #[serde(default = "yes")]
+    pub auto_update: bool,
+    #[serde(default)]
+    pub last_update_check: i64,
+    /// Langue de l'interface : "" (celle de Windows), "fr" ou "en"
+    #[serde(default)]
+    pub language: String,
+    /// Taille du texte (zoom), 1.0 = normal
+    #[serde(default = "one")]
+    pub zoom: f32,
+    /// Mots de passe de chiffrement notes en lieu sur (plus de rappel)
+    #[serde(default)]
+    pub passwords_noted: bool,
+    /// Assistant de premier lancement deja fait
+    #[serde(default)]
+    pub wizard_done: bool,
+}
+
+/// Un site : un OMV et (eventuellement) un Synology
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Site {
+    pub name: String,
+    pub omv: HostCfg,
+    pub syno: HostCfg,
+}
+
+fn default_site() -> String {
+    "Maison".into()
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 fn yes() -> bool {
@@ -82,6 +124,14 @@ impl Default for Settings {
             last_version: String::new(),
             notifications: true,
             close_to_tray: true,
+            site: default_site(),
+            sites: Vec::new(),
+            auto_update: true,
+            last_update_check: 0,
+            language: String::new(),
+            zoom: 1.0,
+            passwords_noted: false,
+            wizard_done: false,
         }
     }
 }
@@ -107,10 +157,40 @@ fn settings_path() -> PathBuf {
 }
 
 pub fn load() -> Settings {
-    std::fs::read_to_string(settings_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    match std::fs::read_to_string(settings_path()) {
+        Ok(s) => serde_json::from_str::<Settings>(&s)
+            .map(|mut st| {
+                // installation existante (cle deja creee) : pas d'assistant de premier lancement
+                if app_dir().join("id_ed25519").exists() && st.omv.is_set() && !st.last_version.is_empty() {
+                    st.wizard_done = true;
+                }
+                st
+            })
+            .unwrap_or_default(),
+        Err(_) => Settings::default(),
+    }
+}
+
+impl Settings {
+    /// Noms de tous les sites (actif compris), dans l'ordre
+    pub fn site_names(&self) -> Vec<String> {
+        let mut v = vec![self.site.clone()];
+        v.extend(self.sites.iter().map(|s| s.name.clone()));
+        v.sort_by_key(|a| a.to_lowercase());
+        v
+    }
+
+    /// Bascule sur un autre site : le site actif est range dans la liste
+    pub fn switch_site(&mut self, name: &str) -> bool {
+        let Some(i) = self.sites.iter().position(|s| s.name == name) else { return false };
+        let next = self.sites.remove(i);
+        let cur = Site { name: self.site.clone(), omv: self.omv.clone(), syno: self.syno.clone() };
+        self.sites.push(cur);
+        self.site = next.name;
+        self.omv = next.omv;
+        self.syno = next.syno;
+        true
+    }
 }
 
 pub fn save(s: &Settings) -> Result<(), String> {
@@ -130,7 +210,7 @@ pub fn export_json(s: &Settings) -> String {
 }
 
 pub fn import_json(txt: &str) -> Result<Settings, String> {
-    let mut s: Settings = serde_json::from_str(txt).map_err(|e| format!("fichier invalide : {e}"))?;
+    let mut s: Settings = serde_json::from_str(txt).map_err(|e| tf("fichier invalide : {0}", &[&e]))?;
     s.omv.saved_pass.clear();
     s.syno.saved_pass.clear();
     Ok(s)

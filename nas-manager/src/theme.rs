@@ -44,6 +44,19 @@ fn load_fonts(ctx: &egui::Context) {
     if let Some(p) = text.first() {
         add(p, true, &mut fonts);
     }
+    // icones Phosphor (zone privee d'Unicode : aucun conflit avec le texte)
+    fonts.font_data.insert(
+        "phosphor".into(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/Phosphor.ttf")).tweak(egui::FontTweak {
+            y_offset_factor: 0.08,
+            ..Default::default()
+        })),
+    );
+    for fam in [FontFamily::Proportional, FontFamily::Monospace] {
+        let v = fonts.families.entry(fam).or_default();
+        let at = v.len().min(1);
+        v.insert(at, "phosphor".into());
+    }
     for p in &symbols {
         add(p, false, &mut fonts);
     }

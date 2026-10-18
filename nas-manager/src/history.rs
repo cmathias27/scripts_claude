@@ -1,6 +1,8 @@
 //! Page « Historique » : executions des sauvegardes, volumes, taux de reussite,
 //! evolution de l'espace (Google Drive et disques de l'OMV).
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use crate::app::{App, HostId};
 use crate::charts::{self, Series};
 use crate::fmt;
@@ -28,7 +30,7 @@ pub fn load(app: &mut App) {
     app.history.last_fetch = Some(std::time::Instant::now());
     app.exec(
         HostId::Omv,
-        "Lecture de l'historique",
+        tr("Lecture de l'historique"),
         remote::OMV_HISTORY.to_string(),
         60,
         Box::new(|app, r| {
@@ -39,7 +41,7 @@ pub fn load(app: &mut App) {
                         app.history.data = Some(h);
                         app.history.error.clear();
                     }
-                    _ => app.history.error = format!("Réponse inattendue : {}", o.text().lines().last().unwrap_or("")),
+                    _ => app.history.error = tf("Réponse inattendue : {0}", &[&(o.text().lines().last().unwrap_or(""))]),
                 },
                 Err(e) => app.history.error = e.to_string(),
             }
@@ -73,8 +75,8 @@ fn kpi(ui: &mut egui::Ui, title: &str, value: String, col: Color32) {
 }
 
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
-    ui.heading("Historique");
-    ui.label(RichText::new("Exécutions des sauvegardes et évolution de l'espace").weak());
+    ui.heading(tr("Historique"));
+    ui.label(RichText::new(tr("Exécutions des sauvegardes et évolution de l'espace")).weak());
     ui.add_space(8.0);
     if app.history.days == 0 {
         app.history.days = 30;
@@ -84,7 +86,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         load(app);
     }
     ui.horizontal(|ui| {
-        if ui.button("⟳ Actualiser").clicked() {
+        if ui.button(tr("\u{E094} Actualiser")).clicked() {
             load(app);
         }
         if app.history.loading {
@@ -92,15 +94,15 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         }
         let jobs: Vec<String> = app.omv.status.as_ref().map(|s| s.sauvegardes.iter().map(|j| j.nom.clone()).collect()).unwrap_or_default();
         egui::ComboBox::from_id_salt("histjob")
-            .selected_text(if app.history.job.is_empty() { "Toutes les sauvegardes".to_string() } else { app.history.job.clone() })
+            .selected_text(if app.history.job.is_empty() { tr("Toutes les sauvegardes").to_string() } else { app.history.job.clone() })
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut app.history.job, String::new(), "Toutes les sauvegardes");
+                ui.selectable_value(&mut app.history.job, String::new(), tr("Toutes les sauvegardes"));
                 for j in jobs {
                     ui.selectable_value(&mut app.history.job, j.clone(), j);
                 }
             });
         for d in [7u32, 30, 90, 365] {
-            ui.selectable_value(&mut app.history.days, d, format!("{d} j"));
+            ui.selectable_value(&mut app.history.days, d, tf("{0} j", &[&d]));
         }
     });
     if !app.history.error.is_empty() {
@@ -108,7 +110,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     }
     let Some(h) = app.history.data.clone() else {
         if !app.host_connected(HostId::Omv) {
-            ui.label(RichText::new("OMV non connecté.").weak());
+            ui.label(RichText::new(tr("OMV non connecté.")).weak());
         }
         return;
     };
@@ -125,8 +127,8 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     if h.executions.is_empty() {
         crate::pages::info_banner(
             ui,
-            "L'historique se remplit à chaque sauvegarde depuis la mise à jour de nas-backup (version 2). \
-Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait.",
+            tr("L'historique se remplit à chaque sauvegarde depuis la mise à jour de nas-backup (version 2). \
+Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait."),
         );
     }
 
@@ -137,22 +139,22 @@ Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait
     let files: i64 = runs.iter().map(|r| r.fichiers_envoyes).sum();
     let avg = if runs.is_empty() { 0.0 } else { runs.iter().map(|r| r.duree_min).sum::<f64>() / runs.len() as f64 };
     ui.horizontal_wrapped(|ui| {
-        kpi(ui, "Exécutions", runs.len().to_string(), INFO);
+        kpi(ui, tr("Exécutions"), runs.len().to_string(), INFO);
         let rate = if runs.is_empty() { 0.0 } else { ok as f64 * 100.0 / runs.len() as f64 };
         kpi(
             ui,
-            "Taux de réussite",
-            if runs.is_empty() { "—".into() } else { format!("{rate:.0} %") },
+            tr("Taux de réussite"),
+            if runs.is_empty() { "—".into() } else { tf("{0} %", &[&format!("{:.0}", rate)]) },
             if ko == 0 { OK } else if rate >= 80.0 { WARN } else { ERR },
         );
-        kpi(ui, "Volume envoyé", fmt::bytes(vol as u64), INFO);
-        kpi(ui, "Fichiers envoyés", files.to_string(), INFO);
-        kpi(ui, "Durée moyenne", format!("{avg:.0} min"), INFO);
+        kpi(ui, tr("Volume envoyé"), fmt::bytes(vol as u64), INFO);
+        kpi(ui, tr("Fichiers envoyés"), files.to_string(), INFO);
+        kpi(ui, tr("Durée moyenne"), tf("{0} min", &[&format!("{:.0}", avg)]), INFO);
     });
     ui.add_space(8.0);
 
     // ---- volume par jour
-    crate::pages::card_pub(ui, "Volume envoyé par jour", |ui| {
+    crate::pages::card_pub(ui, tr("Volume envoyé par jour"), |ui| {
         let days = app.history.days.min(90) as i64;
         let mut items = Vec::new();
         for d in (0..days).rev() {
@@ -169,17 +171,17 @@ Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait
             items.push((short_day(t), v as f64, col, tip));
         }
         charts::bars(ui, &items, 160.0, &|v| fmt::bytes(v as u64));
-        charts::legend(ui, &[("Envoyé".into(), INFO), ("Jour avec un échec".into(), ERR)]);
+        charts::legend(ui, &[(tr("Envoyé").into(), INFO), (tr("Jour avec un échec").into(), ERR)]);
     });
     ui.add_space(8.0);
 
     // ---- executions
-    crate::pages::card_pub(ui, &format!("Dernières exécutions ({})", runs.len()), |ui| {
+    crate::pages::card_pub(ui, &tf("Dernières exécutions ({0})", &[&(runs.len())]), |ui| {
         if runs.is_empty() {
-            ui.label(RichText::new("Aucune exécution sur la période.").weak());
+            ui.label(RichText::new(tr("Aucune exécution sur la période.")).weak());
         }
         egui::Grid::new("runs").striped(true).num_columns(7).spacing([14.0, 6.0]).show(ui, |ui| {
-            for t in ["Date", "Sauvegarde", "État", "Durée", "Fichiers", "Volume", "Supprimés"] {
+            for t in [tr("Date"), tr("Sauvegarde"), tr("État"), tr("Durée"), tr("Fichiers"), tr("Volume"), tr("Supprimés")] {
                 ui.label(RichText::new(t).small().strong());
             }
             ui.end_row();
@@ -191,8 +193,8 @@ Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait
                     ui.painter().circle_filled(rect.center(), 4.5, run_color(r));
                     let l = ui.label(match r.etat.as_str() {
                         "OK" => "OK",
-                        "ECHEC" => "Échec",
-                        "ARRETE" => "Arrêtée",
+                        "ECHEC" => tr("Échec"),
+                        "ARRETE" => tr("Arrêtée"),
                         e => e,
                     });
                     if !r.erreur.is_empty() {
@@ -202,7 +204,7 @@ Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait
                         });
                     }
                 });
-                ui.label(format!("{:.0} min", r.duree_min));
+                ui.label(tf("{0} min", &[&format!("{:.0}", r.duree_min)]));
                 ui.label(r.fichiers_envoyes.to_string());
                 ui.label(fmt::bytes(r.volume_octets.max(0) as u64));
                 ui.label(r.retires.to_string());
@@ -210,24 +212,24 @@ Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait
             }
         });
         if runs.iter().any(|r| !r.erreur.is_empty()) {
-            ui.label(RichText::new("Survole un échec pour voir son explication.").small().weak());
+            ui.label(RichText::new(tr("Survole un échec pour voir son explication.")).small().weak());
         }
     });
     ui.add_space(8.0);
 
     // ---- espace
-    crate::pages::card_pub(ui, "Évolution de l'espace", |ui| {
+    crate::pages::card_pub(ui, tr("Évolution de l'espace"), |ui| {
         let pts: Vec<_> = h.espace.iter().filter(|p| p.t >= since).collect();
         let xl = |x: f64| short_day(x as i64);
         // Google Drive
         let drive: Vec<(f64, f64)> = pts.iter().filter_map(|p| p.drive_go.map(|g| (p.t as f64, g))).collect();
         let total = pts.iter().rev().find_map(|p| p.drive_total_go);
-        ui.label(RichText::new("Google Drive").strong());
+        ui.label(RichText::new(tr("Google Drive")).strong());
         charts::lines(
             ui,
-            &[Series { name: "Utilisé".into(), color: INFO, points: drive.clone() }],
+            &[Series { name: tr("Utilisé").into(), color: INFO, points: drive.clone() }],
             130.0,
-            &|v| format!("{v:.0} Go"),
+            &|v| tf("{0} Go", &[&format!("{:.0}", v)]),
             &xl,
             total,
         );
@@ -238,23 +240,17 @@ Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait
                     let col = if days < 30.0 { ERR } else if days < 120.0 { WARN } else { OK };
                     ui.colored_label(
                         col,
-                        format!(
-                            "{:.1} Go utilisés sur {:.0} Go · +{:.1} Go par mois · plein dans environ {}",
-                            last.1,
-                            tot,
-                            s * 86400.0 * 30.0,
-                            if days > 3650.0 { "plus de 10 ans".to_string() } else { fmt::duration((days * 86400.0) as i64) }
-                        ),
+                        tf("{0} Go utilisés sur {1} Go · +{2} Go par mois · plein dans environ {3}", &[&format!("{:.1}", last.1), &format!("{:.0}", tot), &format!("{:.1}", s * 86400.0 * 30.0), &(if days > 3650.0 { tr("plus de 10 ans").to_string() } else { fmt::duration((days * 86400.0) as i64) })]),
                     );
                 }
                 _ => {
-                    ui.label(RichText::new(format!("{:.1} Go utilisés sur {:.0} Go · stable", last.1, tot)).small());
+                    ui.label(RichText::new(tf("{0} Go utilisés sur {1} Go · stable", &[&format!("{:.1}", last.1), &format!("{:.0}", tot)])).small());
                 }
             }
         }
         ui.add_space(8.0);
         // disques de l'OMV (%)
-        ui.label(RichText::new("Disques de l'OMV (% utilisé)").strong());
+        ui.label(RichText::new(tr("Disques de l'OMV (% utilisé)")).strong());
         let palette = [INFO, OK, WARN, Color32::from_rgb(150, 100, 220), Color32::from_rgb(40, 170, 170)];
         let mut names: Vec<String> = Vec::new();
         for p in &pts {

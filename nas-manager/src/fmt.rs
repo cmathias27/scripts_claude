@@ -1,9 +1,12 @@
 //! Mise en forme (francais) : tailles, durees, dates.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use chrono::{Local, TimeZone};
 
 pub fn bytes(b: u64) -> String {
-    let units = ["o", "Ko", "Mo", "Go", "To"];
+    let en = crate::i18n::is_english();
+    let units = if en { ["B", "KB", "MB", "GB", "TB"] } else { ["o", "Ko", "Mo", "Go", "To"] };
     let mut v = b as f64;
     let mut i = 0;
     while v >= 1024.0 && i < units.len() - 1 {
@@ -13,7 +16,8 @@ pub fn bytes(b: u64) -> String {
     if i == 0 {
         format!("{} {}", b, units[0])
     } else {
-        format!("{:.1} {}", v, units[i]).replace('.', ",")
+        let t = format!("{:.1} {}", v, units[i]);
+        if en { t } else { t.replace('.', ",") }
     }
 }
 
@@ -47,6 +51,9 @@ fn tidy_numbers(s: &str) -> String {
 
 /// Unites rclone (GiB, MiB/s...) en francais
 pub fn rclone_units(s: &str) -> String {
+    if crate::i18n::is_english() {
+        return s.replace("KiB", "KB").replace("MiB", "MB").replace("GiB", "GB").replace("TiB", "TB");
+    }
     tidy_numbers(s).replace("KiB", "Ko")
         .replace("MiB", "Mo")
         .replace("GiB", "Go")
@@ -79,23 +86,23 @@ pub fn duration(secs: i64) -> String {
     if s < 60 {
         format!("{s} s")
     } else if s < 3600 {
-        format!("{} min", s / 60)
+        tf("{0} min", &[&(s / 60)])
     } else if s < 86400 {
         format!("{} h {:02}", s / 3600, (s % 3600) / 60)
     } else {
-        format!("{} j {} h", s / 86400, (s % 86400) / 3600)
+        tf("{0} j {1} h", &[&(s / 86400), &((s % 86400) / 3600)])
     }
 }
 
 pub fn ago(ts: i64, now: i64) -> String {
     let d = now - ts;
     if d < 0 {
-        return "à l'instant".into();
+        return tr("à l'instant").into();
     }
     if d < 45 {
-        "à l'instant".into()
+        tr("à l'instant").into()
     } else {
-        format!("il y a {}", duration(d))
+        tf("il y a {0}", &[&(duration(d))])
     }
 }
 
@@ -105,9 +112,9 @@ pub fn date(ts: i64) -> String {
             let today = Local::now().date_naive();
             let d = t.date_naive();
             if d == today {
-                format!("aujourd'hui {}", t.format("%H:%M"))
+                tf("aujourd'hui {0}", &[&(t.format("%H:%M"))])
             } else if Some(d) == today.pred_opt() {
-                format!("hier {}", t.format("%H:%M"))
+                tf("hier {0}", &[&(t.format("%H:%M"))])
             } else {
                 t.format("%d/%m/%Y %H:%M").to_string()
             }
@@ -135,7 +142,7 @@ pub fn short_path(p: &str) -> String {
         if let Some(i) = rest.find('/') {
             return format!("…{}", &rest[i..]);
         }
-        return format!("disque {}", &rest[..rest.len().min(8)]);
+        return tf("disque {0}", &[&(&rest[..rest.len().min(8)])]);
     }
     p.to_string()
 }
@@ -143,21 +150,21 @@ pub fn short_path(p: &str) -> String {
 /// Horaire nas-backup en clair : "03:30/135;15:00" -> "lun, mer, ven 03:30 · tous les jours 15:00"
 pub fn schedule_human(s: &str) -> String {
     if s == "manuel" || s.is_empty() {
-        return "Manuel".into();
+        return tr("Manuel").into();
     }
-    let names = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+    let names = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"].map(tr);
     s.split(';')
         .map(|sl| match sl.split_once('/') {
             Some((t, d)) => {
                 let days: Vec<&str> = d.chars().filter_map(|c| c.to_digit(10)).filter(|n| (1..=7).contains(n)).map(|n| names[n as usize - 1]).collect();
                 let label = match d {
-                    "12345" => "en semaine".to_string(),
-                    "67" => "le week-end".to_string(),
+                    "12345" => tr("en semaine").to_string(),
+                    "67" => tr("le week-end").to_string(),
                     _ => days.join(", "),
                 };
-                format!("{label} {t}")
+                tf("{0} {1}", &[&label, &t])
             }
-            None => format!("chaque jour {sl}"),
+            None => tf("chaque jour {0}", &[&sl]),
         })
         .collect::<Vec<_>>()
         .join(" · ")
@@ -193,21 +200,21 @@ pub fn next_run_sched(s: &str) -> Option<String> {
     let b = best?;
     let days = (b.date() - now.date()).num_days();
     let jour = match days {
-        0 => "aujourd'hui".to_string(),
-        1 => "demain".to_string(),
-        _ => ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"][b.weekday().num_days_from_monday() as usize].to_string(),
+        0 => tr("aujourd'hui").to_string(),
+        1 => tr("demain").to_string(),
+        _ => tr(["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"][b.weekday().num_days_from_monday() as usize]).to_string(),
     };
-    Some(format!("{jour} {}", b.format("%H:%M")))
+    Some(tf("{0} {1}", &[&jour, &(b.format("%H:%M"))]))
 }
 
 /// Limite de debit rclone en clair
 pub fn bw_human(s: &str) -> String {
     let s = s.trim();
     if let Some(v) = s.strip_suffix('M').filter(|v| v.parse::<f64>().is_ok()) {
-        return format!("{} Mo/s", v.replace('.', ","));
+        return tf("{0} Mo/s", &[&(v.replace('.', ","))]);
     }
     if let Some(v) = s.strip_prefix("08:00,").and_then(|r| r.strip_suffix("M 23:00,off")) {
-        return format!("{} Mo/s de 8 h à 23 h, sans limite la nuit", v.replace('.', ","));
+        return tf("{0} Mo/s de 8 h à 23 h, sans limite la nuit", &[&(v.replace('.', ","))]);
     }
     s.to_string()
 }

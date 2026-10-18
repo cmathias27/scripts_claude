@@ -1,5 +1,7 @@
 //! Les pages de l'application.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use crate::app::*;
 use crate::fmt;
 use crate::model::*;
@@ -98,8 +100,8 @@ fn progress_bar(ui: &mut egui::Ui, pct: Option<i64>, text: String) {
 fn host_banner(app: &mut App, ui: &mut egui::Ui, h: HostId) -> bool {
     let cfg = app.host_cfg(h).clone();
     if !cfg.is_set() {
-        banner(ui, WARN, &format!("{} non configuré : renseigne son adresse dans les Paramètres.", h.label()));
-        if ui.button("⚙ Ouvrir les paramètres").clicked() {
+        banner(ui, WARN, &tf("{0} non configuré : renseigne son adresse dans les Paramètres.", &[&(h.label())]));
+        if ui.button(tr("\u{E270} Ouvrir les paramètres")).clicked() {
             app.page = Page::Settings;
         }
         return false;
@@ -112,14 +114,14 @@ fn host_banner(app: &mut App, ui: &mut egui::Ui, h: HostId) -> bool {
         let col = if matches!(e, SshError::HostUnknown | SshError::SudoPassword) { WARN } else { ERR };
         banner(ui, col, &format!("{} : {}", h.label(), e));
         ui.horizontal(|ui| {
-            if ui.button("⟳ Réessayer").clicked() {
+            if ui.button(tr("\u{E094} Réessayer")).clicked() {
                 app.refresh(h);
             }
-            if matches!(e, SshError::HostUnknown) && ui.button("🔐 Confirmer l'identité du NAS").clicked() {
+            if matches!(e, SshError::HostUnknown) && ui.button(tr("\u{E23E} Confirmer l'identité du NAS")).clicked() {
                 app.fp_dismissed[crate::extras::idx(h)] = false;
                 crate::extras::start_fingerprint(app, h, crate::extras::AfterTrust::Nothing);
             }
-            if matches!(e, SshError::KeyRefused | SshError::HostKeyChanged) && ui.button("⚙ Paramètres").clicked() {
+            if matches!(e, SshError::KeyRefused | SshError::HostKeyChanged) && ui.button(tr("\u{E270} Paramètres")).clicked() {
                 app.page = Page::Settings;
             }
         });
@@ -127,7 +129,7 @@ fn host_banner(app: &mut App, ui: &mut egui::Ui, h: HostId) -> bool {
     } else if !has {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(format!("Connexion au {}…", h.label()));
+            ui.label(tf("Connexion au {0}…", &[&(h.label())]));
         });
     }
     has
@@ -156,13 +158,13 @@ fn job_color(j: &Job) -> Color32 {
 
 fn job_state_text(j: &Job) -> &'static str {
     if j.en_cours {
-        "En cours"
+        tr("En cours")
     } else {
         match j.dernier_etat.as_deref() {
             Some("OK") => "OK",
-            Some("ECHEC") => "Échec",
-            Some("ARRETE") => "Arrêtée",
-            _ => "Jamais lancée",
+            Some("ECHEC") => tr("Échec"),
+            Some("ARRETE") => tr("Arrêtée"),
+            _ => tr("Jamais lancée"),
         }
     }
 }
@@ -174,11 +176,11 @@ fn progress_text(p: &Progress) -> String {
         fmt::rclone_units(&p.octets_total)
     );
     if let Some(pc) = p.pct {
-        t.push_str(&format!(" · {pc} %"));
+        t.push_str(&tf(" · {0} %", &[&pc]));
     }
     t.push_str(&format!(" · {}", fmt::rclone_units(&p.vitesse)));
     if p.reste != "-" && !p.reste.is_empty() {
-        t.push_str(&format!(" · reste {}", fmt::rclone_dur(&p.reste)));
+        t.push_str(&tf(" · reste {0}", &[&(fmt::rclone_dur(&p.reste))]));
     }
     t
 }
@@ -186,18 +188,18 @@ fn progress_text(p: &Progress) -> String {
 fn progress_details(ui: &mut egui::Ui, p: &Progress) {
     let mut parts = Vec::new();
     if let (Some(a), Some(b)) = (p.fichiers_faits, p.fichiers_total) {
-        parts.push(format!("{a} / {b} fichiers envoyés"));
+        parts.push(tf("{0} / {1} fichiers envoyés", &[&a, &b]));
     }
     if let (Some(a), Some(b)) = (p.verifs_faites, p.verifs_total) {
-        parts.push(format!("{a} / {b} vérifiés"));
+        parts.push(tf("{0} / {1} vérifiés", &[&a, &b]));
     }
     if let Some(e) = p.erreurs {
         if e > 0 {
-            parts.push(format!("{e} erreur(s)"));
+            parts.push(tf("{0} erreur(s)", &[&e]));
         }
     }
     if let Some(d) = &p.duree {
-        parts.push(format!("depuis {}", fmt::rclone_dur(d)));
+        parts.push(tf("depuis {0}", &[&(fmt::rclone_dur(d))]));
     }
     if !parts.is_empty() {
         ui.label(RichText::new(parts.join(" · ")).small().weak());
@@ -223,20 +225,14 @@ fn progress_details(ui: &mut egui::Ui, p: &Progress) {
 }
 
 fn bilan_text(b: &Bilan) -> String {
-    let mut t = format!(
-        "{} fichier{} envoyé{} ({})",
-        b.fichiers_envoyes,
-        if b.fichiers_envoyes > 1 { "s" } else { "" },
-        if b.fichiers_envoyes > 1 { "s" } else { "" },
-        fmt::bytes(b.volume_octets.max(0) as u64)
-    );
+    let mut t = tf("{0} fichier{1} envoyé{1} ({2})", &[&b.fichiers_envoyes, &(if b.fichiers_envoyes > 1 { "s" } else { "" }), &(fmt::bytes(b.volume_octets.max(0) as u64))]);
     if b.retires > 0 {
-        t.push_str(&format!(", {} retiré(s)", b.retires));
+        t.push_str(&tf(", {0} retiré(s)", &[&b.retires]));
     }
     if b.erreurs > 0 {
-        t.push_str(&format!(", {} erreur(s)", b.erreurs));
+        t.push_str(&tf(", {0} erreur(s)", &[&b.erreurs]));
     }
-    t.push_str(&format!(" · {:.0} min", b.duree_min));
+    t.push_str(&tf(" · {0} min", &[&format!("{:.0}", b.duree_min)]));
     t
 }
 
@@ -248,15 +244,62 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
     egui::Panel::top("top").show(ui, |ui| {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("🗄 NAS Manager").strong().size(18.0));
+            ui.label(RichText::new(tr("\u{E2A0} NAS Manager")).strong().size(18.0));
             ui.add_space(18.0);
+            if !app.settings.sites.is_empty() {
+                let names = app.settings.site_names();
+                let cur = app.settings.site.clone();
+                let mut pick: Option<String> = None;
+                egui::ComboBox::from_id_salt("site")
+                    .selected_text(RichText::new(tf("\u{E2C2} {0}", &[&cur])).strong())
+                    .show_ui(ui, |ui| {
+                        for n in names {
+                            if ui.selectable_label(n == cur, &n).clicked() && n != cur {
+                                pick = Some(n);
+                            }
+                        }
+                    });
+                if let Some(n) = pick {
+                    app.switch_site(&n);
+                }
+                ui.add_space(6.0);
+            }
             for h in [HostId::Omv, HostId::Syno] {
                 host_chip(app, ui, h);
                 ui.add_space(8.0);
             }
             crate::extras::read_only_badge(app, ui);
+            if let Some(u) = app.update.available.clone() {
+                if !app.update.dismissed {
+                    let busy = app.update.installing;
+                    egui::Frame::new()
+                        .fill(INFO.gamma_multiply(0.2))
+                        .corner_radius(10.0)
+                        .inner_margin(egui::Margin::symmetric(8, 2))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(tf("\u{E6A2} Version {0} disponible", &[&u.version])).small().color(INFO));
+                                if busy {
+                                    ui.spinner();
+                                } else if ui.small_button(tr("Installer")).clicked() {
+                                    crate::update::start_install(app);
+                                }
+                                if ui.small_button(tr("Nouveautés")).clicked() {
+                                    app.output = Some(OutputDialog {
+                                        title: tf("Version {0}", &[&u.version]),
+                                        text: u.notes.replace("**", ""),
+                                        ok: true,
+                                    });
+                                }
+                                if !busy && ui.small_button("\u{E4F6}").on_hover_text(tr("Plus tard")).clicked() {
+                                    app.update.dismissed = true;
+                                }
+                            });
+                        });
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⟳ Actualiser").on_hover_text("Relire l'état des deux NAS (F5)").clicked() {
+                if ui.button(tr("\u{E094} Actualiser")).on_hover_text(tr("Relire l'état des deux NAS (F5)")).clicked() {
                     app.refresh(HostId::Omv);
                     app.refresh(HostId::Syno);
                 }
@@ -269,14 +312,14 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
 fn host_chip(app: &mut App, ui: &mut egui::Ui, h: HostId) {
     let cfg = app.host_cfg(h).clone();
     let (col, txt, tip) = if !cfg.is_set() {
-        (IDLE, format!("{} : non configuré", h.label()), "À renseigner dans les Paramètres".to_string())
+        (IDLE, tf("{0} : non configuré", &[&(h.label())]), tr("À renseigner dans les Paramètres").to_string())
     } else if let Some(e) = app.host_error(h) {
         if matches!(e, SshError::SudoPassword) {
-            (WARN, format!("{} : mot de passe requis", h.label()), e.to_string())
+            (WARN, tf("{0} : mot de passe requis", &[&(h.label())]), e.to_string())
         } else if matches!(e, SshError::HostUnknown) {
-            (WARN, format!("{} : identité à confirmer", h.label()), e.to_string())
+            (WARN, tf("{0} : identité à confirmer", &[&(h.label())]), e.to_string())
         } else {
-            (ERR, format!("{} : hors ligne", h.label()), e.to_string())
+            (ERR, tf("{0} : hors ligne", &[&(h.label())]), e.to_string())
         }
     } else {
         let (last, polling) = match h {
@@ -286,11 +329,11 @@ fn host_chip(app: &mut App, ui: &mut egui::Ui, h: HostId) {
         match last {
             Some(t) => (
                 OK,
-                format!("{} : connecté", h.label()),
-                format!("{} — mis à jour il y a {} s", cfg.target(), t.elapsed().as_secs()),
+                tf("{0} : connecté", &[&(h.label())]),
+                tf("{0} — mis à jour il y a {1} s", &[&(cfg.target()), &(t.elapsed().as_secs())]),
             ),
-            None if polling => (WARN, format!("{} : connexion…", h.label()), cfg.target()),
-            None => (IDLE, format!("{} : en attente", h.label()), cfg.target()),
+            None if polling => (WARN, tf("{0} : connexion…", &[&(h.label())]), cfg.target()),
+            None => (IDLE, tf("{0} : en attente", &[&(h.label())]), cfg.target()),
         }
     };
     let r = ui
@@ -323,35 +366,37 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
     egui::Panel::left("nav").exact_size(220.0).show(ui, |ui| {
         ui.add_space(10.0);
         let items: Vec<(Page, &str, Option<(String, Color32)>)> = vec![
-            (Page::Dashboard, "🏠  Tableau de bord", None),
+            (Page::Dashboard, tr("\u{E2C2}  Tableau de bord"), None),
             (
                 Page::Backups,
-                "💾  Sauvegardes",
+                tr("\u{E248}  Sauvegardes"),
                 if running_jobs > 0 {
-                    Some((format!("{running_jobs} en cours"), INFO))
+                    Some((tf("{0} en cours", &[&running_jobs]), INFO))
                 } else if failed_jobs > 0 {
-                    Some((format!("{failed_jobs} échec"), ERR))
+                    Some((tf("{0} échec", &[&failed_jobs]), ERR))
                 } else {
                     None
                 },
             ),
-            (Page::History, "📈  Historique", None),
-            (Page::Cameras, "📹  Caméras", if cam_bad { Some(("arrêtée".into(), ERR)) } else { None }),
-            (Page::Alerts, "🔔  Alertes", if alerts > 0 { Some((alerts.to_string(), ERR)) } else { None }),
-            (Page::Copy, "📦  Copie → OMV", if copy_run { Some(("en cours".into(), INFO)) } else { None }),
+            (Page::History, tr("\u{E154}  Historique"), None),
+            (Page::Cameras, tr("\u{E4DA}  Caméras"), if cam_bad { Some((tr("arrêtée").into(), ERR)) } else { None }),
+            (Page::Alerts, tr("\u{E0CE}  Alertes"), if alerts > 0 { Some((alerts.to_string(), ERR)) } else { None }),
+            (Page::Copy, tr("\u{E390}  Copie → OMV"), if copy_run { Some((tr("en cours").into(), INFO)) } else { None }),
             (
                 Page::Migration,
-                "☁  Migration oCIS",
+                tr("\u{E1AA}  Migration oCIS"),
                 if mig_run {
-                    Some(("en cours".into(), INFO))
+                    Some((tr("en cours").into(), INFO))
                 } else if mig_q > 0 {
-                    Some((format!("{mig_q} en file"), WARN))
+                    Some((tf("{0} en file", &[&mig_q]), WARN))
                 } else {
                     None
                 },
             ),
-            (Page::Logs, "📜  Journaux", None),
-            (Page::Settings, "⚙  Paramètres", None),
+            (Page::Logs, tr("\u{EB7A}  Journaux"), None),
+            (Page::Install, tr("\u{ECA0}  Installation"), None),
+            (Page::Help, tr("\u{E63A}  Aide"), None),
+            (Page::Settings, tr("\u{E270}  Paramètres"), None),
         ];
         for (p, label, b) in items {
             let sel = app.page == p;
@@ -367,7 +412,7 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(8.0);
-            if ui.link(RichText::new(format!("v{} · Nouveautés", env!("CARGO_PKG_VERSION"))).small()).clicked() {
+            if ui.link(RichText::new(tf("v{0} · Nouveautés", &[&(env!("CARGO_PKG_VERSION"))])).small()).clicked() {
                 app.show_news = true;
             }
         });
@@ -379,13 +424,25 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
 // =====================================================================
 
 pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, "Tableau de bord", "Vue d'ensemble des sauvegardes et transferts du NAS");
+    page_title(ui, tr("Tableau de bord"), tr("Vue d'ensemble des sauvegardes et transferts du NAS"));
     let omv = app.omv.status.clone();
     let syno = app.syno.status.clone();
     if omv.is_none() {
         host_banner(app, ui, HostId::Omv);
     } else if let Some(e) = app.host_error(HostId::Omv).cloned() {
-        banner(ui, ERR, &format!("OMV : {e} (dernières informations affichées)"));
+        banner(ui, ERR, &tf("OMV : {0} (dernières informations affichées)", &[&e]));
+    }
+    if let Some(s) = &omv {
+        let uses_crypt = s.sauvegardes.iter().any(|j| j.chiffre) || s.cameras.installe;
+        if uses_crypt && !app.settings.passwords_noted {
+            ui.horizontal(|ui| {
+                banner(ui, WARN, tr("\u{E2D6} As-tu noté les mots de passe de chiffrement hors du NAS ? Sans eux, les sauvegardes chiffrées sont illisibles si le NAS tombe en panne."));
+            });
+            if ui.button(tr("Voir les mots de passe")).clicked() {
+                open_passwords(app);
+            }
+            ui.add_space(6.0);
+        }
     }
     let now = fmt::now();
     let ncol = if ui.available_width() > 980.0 { 3 } else { 2 };
@@ -401,7 +458,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 
         // ---- Sauvegardes
         let k = next(cols);
-        card(&mut cols[k], "💾 Sauvegardes Drive", |ui| {
+        card(&mut cols[k], tr("\u{E248} Sauvegardes Drive"), |ui| {
             match &omv {
                 None => {
                     ui.label(RichText::new("—").weak());
@@ -411,23 +468,23 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                     let ok = s.sauvegardes.iter().filter(|j| j.dernier_etat.as_deref() == Some("OK")).count();
                     let ko = s.sauvegardes.iter().filter(|j| j.dernier_etat.as_deref() == Some("ECHEC")).count();
                     if n == 0 {
-                        ui.label("Aucune sauvegarde configurée.");
+                        ui.label(tr("Aucune sauvegarde configurée."));
                     } else {
-                        dot_label(ui, if ko > 0 { ERR } else { OK }, format!("{n} sauvegarde(s) · {ok} OK · {ko} en échec"));
+                        dot_label(ui, if ko > 0 { ERR } else { OK }, tf("{0} sauvegarde(s) · {1} OK · {2} en échec", &[&n, &ok, &ko]));
                     }
                     for j in s.sauvegardes.iter().filter(|j| j.en_cours) {
-                        ui.label(RichText::new(format!("▶ {}", j.nom)).strong());
+                        ui.label(RichText::new(format!("\u{E3D0} {}", j.nom)).strong());
                         match &j.avancement {
                             Some(p) => progress_bar(
                                 ui,
                                 p.pct,
                                 format!("{} % · {}", p.pct.unwrap_or(0), fmt::rclone_units(&p.vitesse)),
                             ),
-                            None => progress_bar(ui, None, "Préparation…".into()),
+                            None => progress_bar(ui, None, tr("Préparation…").into()),
                         }
                     }
                     if s.arret_demande {
-                        ui.colored_label(WARN, "Arrêt demandé : plus de nouvelle sauvegarde jusqu'au prochain horaire.");
+                        ui.colored_label(WARN, tr("Arrêt demandé : plus de nouvelle sauvegarde jusqu'au prochain horaire."));
                     }
                     let next_runs: Vec<String> = s
                         .sauvegardes
@@ -437,11 +494,11 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                         .take(3)
                         .collect();
                     if !next_runs.is_empty() {
-                        ui.label(RichText::new(format!("Prochaines : {}", next_runs.join(" · "))).small().weak());
+                        ui.label(RichText::new(tf("Prochaines : {0}", &[&(next_runs.join(" · "))])).small().weak());
                     }
                 }
             }
-            if ui.link("Gérer les sauvegardes →").clicked() {
+            if ui.link(tr("Gérer les sauvegardes →")).clicked() {
                 goto = Some(Page::Backups);
             }
         });
@@ -449,37 +506,37 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 
         // ---- Cameras
         let k = next(cols);
-        card(&mut cols[k], "📹 Caméras", |ui| {
+        card(&mut cols[k], tr("\u{E4DA} Caméras"), |ui| {
             match omv.as_ref().map(|s| &s.cameras) {
                 None => {
                     ui.label(RichText::new("—").weak());
                 }
                 Some(c) if !c.installe => {
-                    ui.label(RichText::new("Synchro des caméras non installée.").weak());
+                    ui.label(RichText::new(tr("Synchro des caméras non installée.")).weak());
                 }
                 Some(c) => {
                     dot_label(
                         ui,
                         if c.actif { OK } else { ERR },
-                        if c.actif { "Synchro temps réel active" } else { "Synchro ARRÊTÉE" },
+                        if c.actif { tr("Synchro temps réel active") } else { tr("Synchro ARRÊTÉE") },
                     );
                     match c.dernier_envoi.as_deref().and_then(fmt::parse_rclone_ts) {
-                        Some(t) => ui.label(format!("Dernière vidéo envoyée {}", fmt::ago(t, now))),
-                        None => ui.label(RichText::new("Aucun envoi récent dans le journal").weak()),
+                        Some(t) => ui.label(tf("Dernière vidéo envoyée {0}", &[&(fmt::ago(t, now))])),
+                        None => ui.label(RichText::new(tr("Aucun envoi récent dans le journal")).weak()),
                     };
-                    ui.label(format!("{} envoi(s) aujourd'hui", c.envois_aujourdhui));
+                    ui.label(tf("{0} envoi(s) aujourd'hui", &[&c.envois_aujourdhui]));
                     if c.erreurs_aujourdhui > 0 {
-                        ui.colored_label(ERR, format!("{} erreur(s) aujourd'hui", c.erreurs_aujourdhui));
+                        ui.colored_label(ERR, tf("{0} erreur(s) aujourd'hui", &[&c.erreurs_aujourdhui]));
                     }
                     if c.rattrapage_en_cours {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Rattrapage en cours");
+                            ui.label(tr("Rattrapage en cours"));
                         });
                     }
                 }
             }
-            if ui.link("Voir les caméras →").clicked() {
+            if ui.link(tr("Voir les caméras →")).clicked() {
                 goto = Some(Page::Cameras);
             }
         });
@@ -487,32 +544,32 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 
         // ---- Google Drive
         let k = next(cols);
-        card(&mut cols[k], "☁ Google Drive", |ui| {
+        card(&mut cols[k], tr("\u{E1AA} Google Drive"), |ui| {
             match omv.as_ref().and_then(|s| s.sante.clone()) {
                 None => {
-                    ui.label(RichText::new("État inconnu (nas-check pas encore lancé).").weak());
+                    ui.label(RichText::new(tr("État inconnu (nas-check pas encore lancé).")).weak());
                 }
                 Some(h) => {
-                    dot_label(ui, if h.gdrive { OK } else { ERR }, if h.gdrive { "Connexion OK" } else { "Connexion en échec" });
+                    dot_label(ui, if h.gdrive { OK } else { ERR }, if h.gdrive { tr("Connexion OK") } else { tr("Connexion en échec") });
                     if let Some(p) = h.quota_pct {
                         let col = if p >= 90.0 { ERR } else if p >= 75.0 { WARN } else { OK };
                         let txt = match (h.used_go, h.total_go) {
-                            (Some(u), Some(t)) => format!("{:.0} % · {:.1} / {:.0} Go", p, u, t),
+                            (Some(u), Some(t)) => tf("{0} % · {1} / {2} Go", &[&format!("{:.0}", p), &format!("{:.1}", u), &format!("{:.0}", t)]),
                             _ => format!("{p:.0} %"),
                         };
                         ui.add(egui::ProgressBar::new((p / 100.0) as f32).fill(col).text(txt));
                     }
                     if let Some(c) = &h.checked {
-                        ui.label(RichText::new(format!("Vérifié : {}", c.replace('T', " ").chars().take(16).collect::<String>())).small().weak());
+                        ui.label(RichText::new(tf("Vérifié : {0}", &[&(c.replace('T', " ").chars().take(16).collect::<String>())])).small().weak());
                     }
                 }
             }
             if let Some(s) = &omv {
                 if !s.alertes.is_empty() {
-                    ui.colored_label(ERR, format!("🔔 {} alerte(s) en cours", s.alertes.len()));
+                    ui.colored_label(ERR, tf("\u{E0CE} {0} alerte(s) en cours", &[&(s.alertes.len())]));
                 }
             }
-            if ui.link("Alertes & santé →").clicked() {
+            if ui.link(tr("Alertes & santé →")).clicked() {
                 goto = Some(Page::Alerts);
             }
         });
@@ -520,10 +577,10 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 
         // ---- Copie
         let k = next(cols);
-        card(&mut cols[k], "📦 Copie Synology → OMV", |ui| {
+        card(&mut cols[k], tr("\u{E390} Copie Synology → OMV"), |ui| {
             match &syno {
                 None => {
-                    ui.label(RichText::new(if app.settings.syno.is_set() { "Synology non joignable." } else { "Synology non configuré." }).weak());
+                    ui.label(RichText::new(if app.settings.syno.is_set() { tr("Synology non joignable.") } else { tr("Synology non configuré.") }).weak());
                 }
                 Some(s) => {
                     let c = &s.copie;
@@ -534,18 +591,18 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                             fmt::short_path(c.destination.as_deref().unwrap_or(""))
                         )).strong());
                         match &c.avancement {
-                            Some(p) => progress_bar(ui, Some(p.pct), format!("{} % · {} · reste {}", p.pct, p.vitesse, p.reste)),
-                            None => progress_bar(ui, None, "Préparation de la liste des fichiers…".into()),
+                            Some(p) => progress_bar(ui, Some(p.pct), tf("{0} % · {1} · reste {2}", &[&p.pct, &p.vitesse, &p.reste])),
+                            None => progress_bar(ui, None, tr("Préparation de la liste des fichiers…").into()),
                         }
                     } else {
-                        dot_label(ui, IDLE, "Aucune copie en cours");
+                        dot_label(ui, IDLE, tr("Aucune copie en cours"));
                         if let Some(l) = c.historique.last() {
                             ui.label(RichText::new(hist_line(l)).small().weak());
                         }
                     }
                 }
             }
-            if ui.link("Copies →").clicked() {
+            if ui.link(tr("Copies →")).clicked() {
                 goto = Some(Page::Copy);
             }
         });
@@ -553,7 +610,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 
         // ---- Migration
         let k = next(cols);
-        card(&mut cols[k], "☁ Migration Drive → oCIS", |ui| {
+        card(&mut cols[k], tr("\u{E1AA} Migration Drive → oCIS"), |ui| {
             match &syno {
                 None => {
                     ui.label(RichText::new("—").weak());
@@ -563,19 +620,19 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                     if m.en_cours {
                         if let Some(e) = &m.etape {
                             ui.label(RichText::new(format!("[{}/{}] {} → {}", e.etape, m.nb, e.libelle, e.espace)).strong());
-                            progress_bar(ui, e.pct, if e.ligne.is_empty() { "Comparaison avec oCIS…".into() } else { fmt::stats_line(&e.ligne) });
+                            progress_bar(ui, e.pct, if e.ligne.is_empty() { tr("Comparaison avec oCIS…").into() } else { fmt::stats_line(&e.ligne) });
                         } else {
-                            ui.label("Migration en cours…");
+                            ui.label(tr("Migration en cours…"));
                         }
                     } else {
-                        dot_label(ui, IDLE, "Aucune migration en cours");
+                        dot_label(ui, IDLE, tr("Aucune migration en cours"));
                     }
                     if !m.file.is_empty() {
-                        ui.label(format!("{} migration(s) en file d'attente", m.file.len()));
+                        ui.label(tf("{0} migration(s) en file d'attente", &[&(m.file.len())]));
                     }
                 }
             }
-            if ui.link("Migration →").clicked() {
+            if ui.link(tr("Migration →")).clicked() {
                 goto = Some(Page::Migration);
             }
         });
@@ -583,18 +640,13 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 
         // ---- Systeme
         let k = next(cols);
-        card(&mut cols[k], "🖥 Serveur OMV", |ui| {
+        card(&mut cols[k], tr("\u{E560} Serveur OMV"), |ui| {
             match &omv {
                 None => {
                     ui.label(RichText::new("—").weak());
                 }
                 Some(s) => {
-                    ui.label(format!(
-                        "{} · allumé depuis {}{}",
-                        s.serveur,
-                        fmt::duration(s.uptime_s.unwrap_or(0)),
-                        s.charge.as_ref().map(|c| format!(" · charge {c}")).unwrap_or_default()
-                    ));
+                    ui.label(tf("{0} · allumé depuis {1}{2}", &[&s.serveur, &(fmt::duration(s.uptime_s.unwrap_or(0))), &(s.charge.as_ref().map(|c| tf(" · charge {0}", &[&c])).unwrap_or_default())]));
                     for d in &s.disques {
                         let f = if d.taille > 0 { d.utilise as f32 / d.taille as f32 } else { 0.0 };
                         let col = if f > 0.9 { ERR } else if f > 0.8 { WARN } else { OK };
@@ -602,7 +654,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                         ui.add(
                             egui::ProgressBar::new(f)
                                 .fill(col)
-                                .text(format!("{} libres sur {}", fmt::bytes(d.libre), fmt::bytes(d.taille))),
+                                .text(tf("{0} libres sur {1}", &[&(fmt::bytes(d.libre)), &(fmt::bytes(d.taille))])),
                         );
                     }
                 }
@@ -619,7 +671,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 // =====================================================================
 
 pub fn backups(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, "Sauvegardes vers Google Drive", "Script nas-backup sur l'OMV");
+    page_title(ui, tr("Sauvegardes vers Google Drive"), tr("Script nas-backup sur l'OMV"));
     if !host_banner(app, ui, HostId::Omv) {
         return;
     }
@@ -629,19 +681,19 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
             ui,
             WARN,
             if s.nb_installe {
-                "La version de nas-backup installée sur l'OMV est ancienne : mets-la à jour pour pouvoir ajouter, modifier ou restaurer depuis l'application."
+                tr("La version de nas-backup installée sur l'OMV est ancienne : mets-la à jour pour pouvoir ajouter, modifier ou restaurer depuis l'application.")
             } else {
-                "nas-backup n'est pas installé sur l'OMV."
+                tr("nas-backup n'est pas installé sur l'OMV.")
             },
         );
-        if ui.button("⬆ Installer / mettre à jour nas-backup").clicked() {
+        if ui.button(tr("\u{E08E} Installer / mettre à jour nas-backup")).clicked() {
             install_omv_script(app);
         }
         ui.add_space(6.0);
     }
     let any_running = s.any_job_running();
     ui.horizontal(|ui| {
-        if primary_button(ui, "+ Nouvelle sauvegarde").clicked() {
+        if primary_button(ui, tr("+ Nouvelle sauvegarde")).clicked() {
             app.job_form = Some(JobFormState {
                 new: true,
                 mirror: true,
@@ -653,30 +705,30 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
                 app.load_backup_sources();
             }
         }
-        if ui.add_enabled(!s.sauvegardes.is_empty(), egui::Button::new("▶ Tout lancer")).clicked() {
+        if ui.add_enabled(!s.sauvegardes.is_empty(), egui::Button::new(tr("\u{E3D0} Tout lancer"))).clicked() {
             app.ask_confirm(
-                "Lancer toutes les sauvegardes",
-                "Les sauvegardes vont être lancées l'une après l'autre.",
-                "Lancer",
+                tr("Lancer toutes les sauvegardes"),
+                tr("Les sauvegardes vont être lancées l'une après l'autre."),
+                tr("Lancer"),
                 false,
                 None,
-                Box::new(|app| app.action_toast(HostId::Omv, "Lancement", remote::nb_run_all(), 30)),
+                Box::new(|app| app.action_toast(HostId::Omv, tr("Lancement"), remote::nb_run_all(), 30)),
             );
         }
-        if any_running && danger_button(ui, "⏹ Arrêter les sauvegardes en cours").clicked() {
+        if any_running && danger_button(ui, tr("\u{E46C} Arrêter les sauvegardes en cours")).clicked() {
             app.ask_confirm(
-                "Arrêter les sauvegardes",
-                "Les transferts en cours s'arrêtent proprement (fin des fichiers en cours d'envoi).\nAucune nouvelle sauvegarde ne démarre avant le prochain horaire prévu.",
-                "Arrêter",
+                tr("Arrêter les sauvegardes"),
+                tr("Les transferts en cours s'arrêtent proprement (fin des fichiers en cours d'envoi).\nAucune nouvelle sauvegarde ne démarre avant le prochain horaire prévu."),
+                tr("Arrêter"),
                 true,
                 None,
-                Box::new(|app| app.action_dialog(HostId::Omv, "Arrêt des sauvegardes", remote::nb_stop(), 150)),
+                Box::new(|app| app.action_dialog(HostId::Omv, tr("Arrêt des sauvegardes"), remote::nb_stop(), 150)),
             );
         }
     });
     verif_planner(app, ui, &s.verif_auto);
     if s.arret_demande && !any_running {
-        ui.colored_label(WARN, "Un arrêt a été demandé : les sauvegardes reprendront à leur prochain horaire (ou en les lançant ici).");
+        ui.colored_label(WARN, tr("Un arrêt a été demandé : les sauvegardes reprendront à leur prochain horaire (ou en les lançant ici)."));
     }
     ui.add_space(6.0);
 
@@ -685,19 +737,19 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
         let show = r.etat == "en_cours"
             || r.fin.parse::<i64>().map(|f| fmt::now() - f < 86400).unwrap_or(false);
         if show {
-            card(ui, "📥 Restauration", |ui| {
+            card(ui, tr("\u{E20C} Restauration"), |ui| {
                 let (col, t) = match r.etat.as_str() {
-                    "en_cours" => (INFO, "En cours"),
-                    "ok" => (OK, "Terminée"),
-                    "echec" => (ERR, "Échec"),
-                    _ => (WARN, "Interrompue"),
+                    "en_cours" => (INFO, tr("En cours")),
+                    "ok" => (OK, tr("Terminée")),
+                    "echec" => (ERR, tr("Échec")),
+                    _ => (WARN, tr("Interrompue")),
                 };
                 let what = if r.element.is_empty() { r.nom.clone() } else { format!("{} / {}", r.nom, r.element) };
-                dot_label(ui, col, format!("{t} : « {what} » → {}", r.cible));
+                dot_label(ui, col, tf("{0} : « {1} » → {2}", &[&t, &what, &r.cible]));
                 if let Some(p) = &r.avancement {
                     progress_bar(ui, p.pct, progress_text(p));
                 } else if r.etat == "en_cours" {
-                    progress_bar(ui, None, "Préparation…".into());
+                    progress_bar(ui, None, tr("Préparation…").into());
                 }
             });
             ui.add_space(8.0);
@@ -706,7 +758,7 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
 
     if s.sauvegardes.is_empty() {
         card(ui, "", |ui| {
-            ui.label("Aucune sauvegarde configurée. Clique sur « Nouvelle sauvegarde » pour en créer une.");
+            ui.label(tr("Aucune sauvegarde configurée. Clique sur « Nouvelle sauvegarde » pour en créer une."));
         });
     }
     let now = s.maintenant.max(fmt::now());
@@ -723,69 +775,69 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
             dot(ui, job_color(j));
             ui.label(RichText::new(&j.nom).strong().size(16.0));
             badge(ui, job_state_text(j), job_color(j));
-            badge(ui, if j.mode == "sync" { "Miroir" } else { "Copie" }, IDLE);
+            badge(ui, if j.mode == "sync" { tr("Miroir") } else { tr("Copie") }, IDLE);
             if j.chiffre {
-                badge(ui, "🔒 Chiffré", IDLE);
+                badge(ui, tr("\u{E2FA} Chiffré"), IDLE);
             }
             badge(
                 ui,
-                &if j.horaire == "manuel" { "Manuel".to_string() } else { format!("⏰ {}", fmt::schedule_human(&j.horaire)) },
+                &if j.horaire == "manuel" { tr("Manuel").to_string() } else { format!("\u{E19A} {}", fmt::schedule_human(&j.horaire)) },
                 IDLE,
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let name = j.nom.clone();
-                ui.menu_button("⋯", |ui| {
+                ui.menu_button(tr("\u{E1FE}"), |ui| {
                     if ui
-                        .add_enabled(!j.en_cours && j.simulation.as_ref().map(|s| s.etat != "en_cours").unwrap_or(true), egui::Button::new("🔍 Simuler (sans rien envoyer)"))
-                        .on_hover_text("Liste ce que la sauvegarde enverrait et supprimerait sur le Drive")
+                        .add_enabled(!j.en_cours && j.simulation.as_ref().map(|s| s.etat != "en_cours").unwrap_or(true), egui::Button::new(tr("\u{E30C} Simuler (sans rien envoyer)")))
+                        .on_hover_text(tr("Liste ce que la sauvegarde enverrait et supprimerait sur le Drive"))
                         .clicked()
                     {
-                        app.action_toast(HostId::Omv, "Simulation", remote::nb_simulate(&name), 30);
+                        app.action_toast(HostId::Omv, tr("Simulation"), remote::nb_simulate(&name), 30);
                         ui.close();
                     }
-                    if ui.button("📥 Restaurer…").clicked() {
+                    if ui.button(tr("\u{E20C} Restaurer…")).clicked() {
                         app.restore = Some(RestoreState::new(&name, &j.source, j.mode == "sync" && j.corbeille > 0));
                         ui.close();
                     }
                     if ui
                         .add_enabled(
                             j.verification.as_ref().map(|v| v.etat != "en_cours").unwrap_or(true),
-                            egui::Button::new("🛡 Vérifier l'intégrité"),
+                            egui::Button::new(tr("\u{E40C} Vérifier l'intégrité")),
                         )
-                        .on_hover_text("Compare chaque fichier du NAS avec sa copie sur le Drive (empreintes, déchiffrement si besoin)")
+                        .on_hover_text(tr("Compare chaque fichier du NAS avec sa copie sur le Drive (empreintes, déchiffrement si besoin)"))
                         .clicked()
                     {
-                        app.action_toast(HostId::Omv, "Vérification", remote::nb_verify(&name), 30);
+                        app.action_toast(HostId::Omv, tr("Vérification"), remote::nb_verify(&name), 30);
                         ui.close();
                     }
-                    if ui.button("🗑 Supprimer la sauvegarde…").clicked() {
+                    if ui.button(tr("\u{E4A6} Supprimer la sauvegarde…")).clicked() {
                         let n = name.clone();
                         app.ask_confirm(
-                            "Supprimer la sauvegarde",
-                            &format!("La sauvegarde « {n} » ne sera plus planifiée.\nLes fichiers déjà envoyés restent sur le Drive."),
-                            "Supprimer",
+                            tr("Supprimer la sauvegarde"),
+                            &tf("La sauvegarde « {0} » ne sera plus planifiée.\nLes fichiers déjà envoyés restent sur le Drive.", &[&n]),
+                            tr("Supprimer"),
                             true,
                             None,
-                            Box::new(move |app| app.action_dialog(HostId::Omv, "Suppression", remote::nb_delete(&n, false), 60)),
+                            Box::new(move |app| app.action_dialog(HostId::Omv, tr("Suppression"), remote::nb_delete(&n, false), 60)),
                         );
                         ui.close();
                     }
-                    if ui.button(RichText::new("🗑 Supprimer et effacer du Drive…").color(ERR)).clicked() {
+                    if ui.button(RichText::new(tr("\u{E4A6} Supprimer et effacer du Drive…")).color(ERR)).clicked() {
                         let n = name.clone();
                         let word = name.clone();
                         let dest = job_dest(j);
                         app.ask_confirm(
-                            "Supprimer et effacer du Drive",
-                            &format!("La sauvegarde « {n} » est supprimée ET ses fichiers sont DÉFINITIVEMENT effacés du Drive ({dest}, corbeille comprise)."),
-                            "Supprimer définitivement",
+                            tr("Supprimer et effacer du Drive"),
+                            &tf("La sauvegarde « {0} » est supprimée ET ses fichiers sont DÉFINITIVEMENT effacés du Drive ({1}, corbeille comprise).", &[&n, &dest]),
+                            tr("Supprimer définitivement"),
                             true,
                             Some(&word),
-                            Box::new(move |app| app.action_dialog(HostId::Omv, "Suppression", remote::nb_delete(&n, true), 1800)),
+                            Box::new(move |app| app.action_dialog(HostId::Omv, tr("Suppression"), remote::nb_delete(&n, true), 1800)),
                         );
                         ui.close();
                     }
                 });
-                if ui.button("✏ Modifier").clicked() {
+                if ui.button(tr("\u{E3B4} Modifier")).clicked() {
                     app.job_form = Some(JobFormState {
                         new: false,
                         name: j.nom.clone(),
@@ -804,33 +856,39 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                     }
                 }
                 if j.en_cours {
-                    if ui.button("⏹ Arrêter").on_hover_text("Arrête cette sauvegarde seulement ; elle reprendra à sa prochaine exécution").clicked() {
+                    if ui.button(tr("\u{E46C} Arrêter")).on_hover_text(tr("Arrête cette sauvegarde seulement ; elle reprendra à sa prochaine exécution")).clicked() {
                         let n = name.clone();
                         app.ask_confirm(
-                            "Arrêter la sauvegarde",
-                            &format!("La sauvegarde « {n} » s'arrête proprement (fin des fichiers en cours d'envoi). Les autres continuent."),
-                            "Arrêter",
+                            tr("Arrêter la sauvegarde"),
+                            &tf("La sauvegarde « {0} » s'arrête proprement (fin des fichiers en cours d'envoi). Les autres continuent.", &[&n]),
+                            tr("Arrêter"),
                             true,
                             None,
-                            Box::new(move |app| app.action_toast(HostId::Omv, "Arrêt", remote::nb_stop_job(&n), 90)),
+                            Box::new(move |app| app.action_toast(HostId::Omv, tr("Arrêt"), remote::nb_stop_job(&n), 90)),
                         );
                     }
-                } else if ui.button("▶ Lancer").clicked() {
-                    app.action_toast(HostId::Omv, "Lancement", remote::nb_run(&name), 30);
+                } else if ui.button(tr("\u{E3D0} Lancer")).clicked() {
+                    app.action_toast(HostId::Omv, tr("Lancement"), remote::nb_run(&name), 30);
                 }
             });
         });
         ui.label(
-            RichText::new(format!("{}  →  Drive : {}", fmt::short_path(&j.source), job_dest(j)))
+            RichText::new(tf("{0}  →  Drive : {1}", &[&(fmt::short_path(&j.source)), &(job_dest(j))]))
                 .color(ui.visuals().strong_text_color()),
         )
         .on_hover_text(&j.source);
         if !j.source_existe {
-            ui.colored_label(ERR, "⚠ Dossier source introuvable (disque démonté ?)");
+            ui.colored_label(ERR, tr("\u{E4E0} Dossier source introuvable (disque démonté ?)"));
         }
         if !j.en_cours && j.dernier_etat.as_deref() == Some("ECHEC") {
             if let Some(e) = &j.derniere_erreur {
                 crate::explain::show(ui, e);
+                if crate::explain::explain(e).and_then(|x| x.command).map(|c| c.contains("reconnect")).unwrap_or(false)
+                    && ui.button(tr("\u{E2D6} Reconnecter Google Drive")).clicked()
+                {
+                    app.page = Page::Install;
+                    crate::install::start_google(app);
+                }
             }
         }
         if j.en_cours {
@@ -839,36 +897,36 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                     progress_bar(ui, p.pct, progress_text(p));
                     progress_details(ui, p);
                 }
-                None => progress_bar(ui, None, "Comparaison avec le Drive…".into()),
+                None => progress_bar(ui, None, tr("Comparaison avec le Drive…").into()),
             }
             if let Some(d) = j.debut {
-                ui.label(RichText::new(format!("Démarrée {}", fmt::ago(d, now))).small().weak());
+                ui.label(RichText::new(tf("Démarrée {0}", &[&(fmt::ago(d, now))])).small().weak());
             }
         } else {
             let mut parts = Vec::new();
             if let Some(d) = &j.derniere_execution {
                 let when = fmt::parse_status_ts(d).map(fmt::date).unwrap_or_else(|| d.clone());
-                parts.push(format!("Dernière exécution : {when}"));
+                parts.push(tf("Dernière exécution : {0}", &[&when]));
             }
             if let Some(ok) = j.dernier_succes {
                 if j.dernier_etat.as_deref() != Some("OK") {
-                    parts.push(format!("dernier succès {}", fmt::ago(ok, now)));
+                    parts.push(tf("dernier succès {0}", &[&(fmt::ago(ok, now))]));
                 }
             }
             if j.horaire != "manuel" {
                 if let Some(n) = fmt::next_run_sched(&j.horaire) {
-                    parts.push(format!("prochaine : {n}"));
+                    parts.push(tf("prochaine : {0}", &[&n]));
                 }
             }
             if !parts.is_empty() {
                 ui.label(RichText::new(parts.join(" · ")).small());
             }
             if let Some(b) = &j.bilan {
-                ui.label(RichText::new(format!("Bilan : {}", bilan_text(b))).small().weak());
+                ui.label(RichText::new(tf("Bilan : {0}", &[&(bilan_text(b))])).small().weak());
             }
         }
         if !j.debit.is_empty() {
-            ui.label(RichText::new(format!("Débit limité : {}", fmt::bw_human(&j.debit))).small().weak());
+            ui.label(RichText::new(tf("Débit limité : {0}", &[&(fmt::bw_human(&j.debit))])).small().weak());
         }
         if let Some(sim) = &j.simulation {
             simulation_box(app, ui, &j.nom, sim);
@@ -878,7 +936,7 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
         }
         if j.mode == "sync" && j.corbeille > 0 {
             ui.label(
-                RichText::new(format!("Fichiers supprimés/modifiés gardés {} jours dans la corbeille du Drive", j.corbeille))
+                RichText::new(tf("Fichiers supprimés/modifiés gardés {0} jours dans la corbeille du Drive", &[&j.corbeille]))
                     .small()
                     .weak(),
             );
@@ -890,14 +948,14 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
 fn verif_planner(app: &mut App, ui: &mut egui::Ui, current: &str) {
     let (days, time) = current.split_once(' ').unwrap_or(("", ""));
     ui.horizontal(|ui| {
-        ui.label(RichText::new("🛡 Vérification automatique de l'intégrité :").small());
+        ui.label(RichText::new(tr("\u{E40C} Vérification automatique de l'intégrité :")).small());
         let txt = if days.is_empty() {
-            "désactivée".to_string()
+            tr("désactivée").to_string()
         } else {
             fmt::schedule_human(&format!("{time}/{days}"))
         };
         ui.label(RichText::new(txt).small().strong());
-        if app.verif_edit.is_none() && ui.small_button("Modifier").clicked() {
+        if app.verif_edit.is_none() && ui.small_button(tr("Modifier")).clicked() {
             let mut d = [false; 7];
             for c in days.chars() {
                 if let Some(n) = c.to_digit(10) {
@@ -916,28 +974,28 @@ fn verif_planner(app: &mut App, ui: &mut egui::Ui, current: &str) {
     let mut close = false;
     if let Some((d, t)) = &mut app.verif_edit {
         ui.horizontal(|ui| {
-            for (i, n) in ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].iter().enumerate() {
+            for (i, n) in [tr("Lun"), tr("Mar"), tr("Mer"), tr("Jeu"), tr("Ven"), tr("Sam"), tr("Dim")].iter().enumerate() {
                 ui.toggle_value(&mut d[i], *n);
             }
-            ui.label("à");
+            ui.label(tr("à"));
             ui.add(egui::TextEdit::singleline(t).desired_width(55.0));
             let digits: String = (0..7).filter(|i| d[*i]).map(|i| char::from_digit(i as u32 + 1, 10).unwrap_or('7')).collect();
             let ok = !digits.is_empty() && crate::sched::valid_sched(&format!("{t}/{digits}"));
-            if ui.add_enabled(ok, egui::Button::new("Enregistrer")).clicked() {
+            if ui.add_enabled(ok, egui::Button::new(tr("Enregistrer"))).clicked() {
                 action = Some(remote::nb_verify_plan(&digits, t));
             }
-            if ui.button("Désactiver").clicked() {
+            if ui.button(tr("Désactiver")).clicked() {
                 action = Some(remote::nb_verify_plan("", ""));
             }
-            if ui.button("Annuler").clicked() {
+            if ui.button(tr("Annuler")).clicked() {
                 close = true;
             }
         });
-        ui.label(RichText::new("Compare chaque fichier du NAS avec le Drive (lit tout le Drive : à prévoir la nuit). Une notification signale les écarts.").small().weak());
+        ui.label(RichText::new(tr("Compare chaque fichier du NAS avec le Drive (lit tout le Drive : à prévoir la nuit). Une notification signale les écarts.")).small().weak());
     }
     if let Some(a) = action {
         app.verif_edit = None;
-        app.action_toast(HostId::Omv, "Vérification automatique", a, 60);
+        app.action_toast(HostId::Omv, tr("Vérification automatique"), a, 60);
     } else if close {
         app.verif_edit = None;
     }
@@ -960,31 +1018,31 @@ fn verification_box(app: &mut App, ui: &mut egui::Ui, name: &str, v: &Verificati
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("🛡 Intégrité").strong());
+                ui.label(RichText::new(tr("\u{E40C} Intégrité")).strong());
                 match v.etat.as_str() {
                     "en_cours" => {
                         ui.spinner();
-                        ui.label("comparaison fichier par fichier avec le Drive…");
+                        ui.label(tr("comparaison fichier par fichier avec le Drive…"));
                     }
                     "ok" => {
-                        ui.label(format!("vérifiée {} : les {} fichiers sont identiques sur le Drive", fmt::ago(v.fin, fmt::now()), v.identiques));
+                        ui.label(tf("vérifiée {0} : les {1} fichiers sont identiques sur le Drive", &[&(fmt::ago(v.fin, fmt::now())), &v.identiques]));
                     }
                     "ecarts" => {
                         let mut parts = Vec::new();
                         if v.differents > 0 {
-                            parts.push(format!("{} différent(s)", v.differents));
+                            parts.push(tf("{0} différent(s)", &[&v.differents]));
                         }
                         if v.manquants > 0 {
-                            parts.push(format!("{} absent(s) du Drive", v.manquants));
+                            parts.push(tf("{0} absent(s) du Drive", &[&v.manquants]));
                         }
                         if v.en_trop > 0 {
-                            parts.push(format!("{} en trop sur le Drive", v.en_trop));
+                            parts.push(tf("{0} en trop sur le Drive", &[&v.en_trop]));
                         }
                         if v.erreurs > 0 {
-                            parts.push(format!("{} illisible(s)", v.erreurs));
+                            parts.push(tf("{0} illisible(s)", &[&v.erreurs]));
                         }
-                        ui.label(format!("{} : {} identiques, {}", fmt::ago(v.fin, fmt::now()), v.identiques, parts.join(", ")));
-                        if ui.small_button("Voir le détail").clicked() {
+                        ui.label(tf("{0} : {1} identiques, {2}", &[&(fmt::ago(v.fin, fmt::now())), &v.identiques, &(parts.join(", "))]));
+                        if ui.small_button(tr("Voir le détail")).clicked() {
                             let n = name.to_string();
                             let d = format!("/var/lib/nas-backup/{n}.verif.d");
                             let script = format!(
@@ -992,14 +1050,14 @@ fn verification_box(app: &mut App, ui: &mut egui::Ui, name: &str, v: &Verificati
                             );
                             app.exec(
                                 HostId::Omv,
-                                "Lecture de la vérification",
+                                tr("Lecture de la vérification"),
                                 script,
                                 30,
                                 Box::new(move |app, r| {
                                     let t = r.map(|o| o.stdout).unwrap_or_else(|e| e.to_string());
                                     app.output = Some(OutputDialog {
-                                        title: format!("Vérification de « {n} »"),
-                                        text: format!("{t}\nUne nouvelle sauvegarde corrige en général ces écarts (fichiers modifiés ou ajoutés depuis la dernière sauvegarde)."),
+                                        title: tf("Vérification de « {0} »", &[&n]),
+                                        text: tf("{0}\nUne nouvelle sauvegarde corrige en général ces écarts (fichiers modifiés ou ajoutés depuis la dernière sauvegarde).", &[&t]),
                                         ok: false,
                                     });
                                 }),
@@ -1007,7 +1065,7 @@ fn verification_box(app: &mut App, ui: &mut egui::Ui, name: &str, v: &Verificati
                         }
                     }
                     _ => {
-                        ui.colored_label(ERR, "la vérification n'a pas pu aboutir (voir les journaux)");
+                        ui.colored_label(ERR, tr("la vérification n'a pas pu aboutir (voir les journaux)"));
                     }
                 }
             });
@@ -1026,32 +1084,26 @@ fn simulation_box(app: &mut App, ui: &mut egui::Ui, name: &str, sim: &Simulation
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("🔍 Simulation").strong());
+                ui.label(RichText::new(tr("\u{E30C} Simulation")).strong());
                 match sim.etat.as_str() {
                     "en_cours" => {
                         ui.spinner();
-                        ui.label("comparaison avec le Drive en cours…");
+                        ui.label(tr("comparaison avec le Drive en cours…"));
                     }
                     "ok" => {
-                        ui.label(format!(
-                            "{} : {} fichier(s) à envoyer ({}), {} à retirer du Drive",
-                            fmt::ago(sim.fin, fmt::now()),
-                            sim.envois,
-                            fmt::bytes(sim.octets),
-                            sim.suppressions
-                        ));
-                        if ui.small_button("Voir le détail").clicked() {
+                        ui.label(tf("{0} : {1} fichier(s) à envoyer ({2}), {3} à retirer du Drive", &[&(fmt::ago(sim.fin, fmt::now())), &sim.envois, &(fmt::bytes(sim.octets)), &sim.suppressions]));
+                        if ui.small_button(tr("Voir le détail")).clicked() {
                             let n = name.to_string();
                             app.exec(
                                 HostId::Omv,
-                                "Lecture de la simulation",
+                                tr("Lecture de la simulation"),
                                 remote::tail_file(&format!("/var/lib/nas-backup/{n}.simulation.txt"), 2000),
                                 30,
                                 Box::new(move |app, r| {
                                     let t = r.map(|o| o.stdout).unwrap_or_else(|e| e.to_string());
                                     app.output = Some(OutputDialog {
-                                        title: format!("Simulation de « {n} » (+ envoyé, - retiré du Drive)"),
-                                        text: if t.trim().is_empty() { "Rien à envoyer ni à retirer : le Drive est à jour.".into() } else { t },
+                                        title: tf("Simulation de « {0} » (+ envoyé, - retiré du Drive)", &[&n]),
+                                        text: if t.trim().is_empty() { tr("Rien à envoyer ni à retirer : le Drive est à jour.").into() } else { t },
                                         ok: true,
                                     });
                                 }),
@@ -1059,7 +1111,7 @@ fn simulation_box(app: &mut App, ui: &mut egui::Ui, name: &str, sim: &Simulation
                         }
                     }
                     _ => {
-                        ui.colored_label(ERR, "échec de la simulation (voir les journaux)");
+                        ui.colored_label(ERR, tr("échec de la simulation (voir les journaux)"));
                     }
                 }
             });
@@ -1074,7 +1126,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
     let mut cancel = false;
     let mut browse = false;
     let sources = app.backup_sources.clone();
-    egui::Window::new(RichText::new(if f.new { "Nouvelle sauvegarde" } else { "Modifier la sauvegarde" }).strong())
+    egui::Window::new(RichText::new(if f.new { tr("Nouvelle sauvegarde") } else { tr("Modifier la sauvegarde") }).strong())
         .id(egui::Id::unique("jobform"))
         .collapsible(false)
         .resizable(false)
@@ -1083,16 +1135,16 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
         .open(&mut open)
         .show(ctx, |ui| {
             egui::Grid::new("jobgrid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                ui.label("Nom");
-                ui.add_enabled(f.new, egui::TextEdit::singleline(&mut f.name).hint_text("ex : Photos").desired_width(300.0));
+                ui.label(tr("Nom"));
+                ui.add_enabled(f.new, egui::TextEdit::singleline(&mut f.name).hint_text(tr("ex : Photos")).desired_width(300.0));
                 ui.end_row();
 
-                ui.label("Dossier à sauvegarder");
+                ui.label(tr("Dossier à sauvegarder"));
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         egui::ComboBox::from_id_salt("srccombo")
                             .width(300.0)
-                            .selected_text(if f.source.is_empty() { "Choisir…".to_string() } else { fmt::short_path(&f.source) })
+                            .selected_text(if f.source.is_empty() { tr("Choisir…").to_string() } else { fmt::short_path(&f.source) })
                             .show_ui(ui, |ui| {
                                 for s in &sources {
                                     if ui.selectable_label(f.source == *s, fmt::short_path(s)).clicked() {
@@ -1103,7 +1155,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                                     }
                                 }
                             });
-                        if ui.button("📁").on_hover_text("Parcourir les dossiers de l'OMV").clicked() {
+                        if ui.button("\u{E24A}").on_hover_text(tr("Parcourir les dossiers de l'OMV")).clicked() {
                             browse = true;
                         }
                     });
@@ -1111,52 +1163,52 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 });
                 ui.end_row();
 
-                ui.label("Dossier sur le Drive");
+                ui.label(tr("Dossier sur le Drive"));
                 if ui.add(egui::TextEdit::singleline(&mut f.folder).desired_width(300.0)).changed() {
                     f.folder_touched = true;
                 }
                 ui.end_row();
 
-                ui.label("Mode");
+                ui.label(tr("Mode"));
                 ui.vertical(|ui| {
-                    ui.radio_value(&mut f.mirror, true, "Miroir : le Drive devient identique au NAS");
-                    ui.radio_value(&mut f.mirror, false, "Copie : ajoute et met à jour, ne supprime jamais");
+                    ui.radio_value(&mut f.mirror, true, tr("Miroir : le Drive devient identique au NAS"));
+                    ui.radio_value(&mut f.mirror, false, tr("Copie : ajoute et met à jour, ne supprime jamais"));
                 });
                 ui.end_row();
 
                 if f.mirror {
-                    ui.label("Corbeille (jours)");
+                    ui.label(tr("Corbeille (jours)"));
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.trash_days).desired_width(50.0));
-                        ui.label(RichText::new("fichiers supprimés/modifiés gardés sur le Drive (0 = aucune)").small().weak());
+                        ui.label(RichText::new(tr("fichiers supprimés/modifiés gardés sur le Drive (0 = aucune)")).small().weak());
                     });
                     ui.end_row();
                 }
 
-                ui.label("Chiffrement");
-                ui.checkbox(&mut f.encrypt, "Chiffrer (illisible sur le Drive sans les mots de passe)");
+                ui.label(tr("Chiffrement"));
+                ui.checkbox(&mut f.encrypt, tr("Chiffrer (illisible sur le Drive sans les mots de passe)"));
                 ui.end_row();
 
-                ui.label("Horaire");
+                ui.label(tr("Horaire"));
                 f.sched.ui(ui);
                 ui.end_row();
 
-                ui.label("Limite de débit");
+                ui.label(tr("Limite de débit"));
                 f.bw.ui(ui);
                 ui.end_row();
             });
             if !f.new {
-                ui.label(RichText::new("Changer le dossier Drive ou le chiffrement : les fichiers déjà envoyés restent à l'ancien emplacement.").small().weak());
+                ui.label(RichText::new(tr("Changer le dossier Drive ou le chiffrement : les fichiers déjà envoyés restent à l'ancien emplacement.")).small().weak());
             }
             if !f.error.is_empty() {
                 ui.colored_label(ERR, &f.error);
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if primary_button(ui, "Enregistrer").clicked() {
+                if primary_button(ui, tr("Enregistrer")).clicked() {
                     save = true;
                 }
-                if ui.button("Annuler").clicked() {
+                if ui.button(tr("Annuler")).clicked() {
                     cancel = true;
                 }
             });
@@ -1175,11 +1227,11 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
         let folder = f.folder.trim().trim_matches('/').to_string();
         let src = f.source.trim().trim_end_matches('/').to_string();
         let err = if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            "Nom invalide : lettres, chiffres, - et _ uniquement."
+            tr("Nom invalide : lettres, chiffres, - et _ uniquement.")
         } else if src.is_empty() {
-            "Choisis le dossier à sauvegarder."
+            tr("Choisis le dossier à sauvegarder.")
         } else if folder.is_empty() || folder.contains('|') || folder.starts_with("_corbeille") {
-            "Dossier Drive invalide."
+            tr("Dossier Drive invalide.")
         } else if let Err(e) = f.sched.build() {
             f.error = e;
             app.job_form = Some(f);
@@ -1189,7 +1241,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
             app.job_form = Some(f);
             return;
         } else if f.mirror && f.trash_days.trim().parse::<u32>().is_err() {
-            "Nombre de jours de corbeille invalide."
+            tr("Nombre de jours de corbeille invalide.")
         } else {
             ""
         };
@@ -1214,7 +1266,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 bwlimit: &bw,
             },
         );
-        let title = if f.new { "Nouvelle sauvegarde" } else { "Modification" };
+        let title = if f.new { tr("Nouvelle sauvegarde") } else { tr("Modification") };
         app.action_dialog(HostId::Omv, title, script, 120);
         return;
     }
@@ -1234,11 +1286,11 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
     let mut pick: Option<String> = None;
     let mut mkdir = false;
     let root_label = match host {
-        HostId::Omv => "Disques de l'OMV",
-        HostId::Syno => "Dossiers partagés du Synology",
+        HostId::Omv => tr("Disques de l'OMV"),
+        HostId::Syno => tr("Dossiers partagés du Synology"),
     };
     let can_mkdir = matches!(purpose, BrowsePurpose::CopyDest | BrowsePurpose::RestoreTarget) && !app.settings.read_only;
-    egui::Window::new(RichText::new(format!("Choisir un dossier — {}", host.label())).strong())
+    egui::Window::new(RichText::new(tf("Choisir un dossier — {0}", &[&(host.label())])).strong())
         .id(egui::Id::unique("browser"))
         .collapsible(false)
         .resizable(true)
@@ -1247,7 +1299,7 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.add_enabled(!cur.is_empty() && cur != "/", egui::Button::new("⬆ Remonter")).clicked() {
+                if ui.add_enabled(!cur.is_empty() && cur != "/", egui::Button::new(tr("\u{E08E} Remonter"))).clicked() {
                     let up = match host {
                         HostId::Omv => {
                             if cur.matches('/').count() <= 2 {
@@ -1273,7 +1325,7 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
                 if loading {
                     ui.spinner();
                 } else if entries.is_empty() {
-                    ui.label(RichText::new("(aucun sous-dossier)").weak());
+                    ui.label(RichText::new(tr("(aucun sous-dossier)")).weak());
                 }
                 for e in &entries {
                     let name = if cur.is_empty() {
@@ -1284,7 +1336,7 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
                     } else {
                         e.rsplit('/').next().unwrap_or(e).to_string()
                     };
-                    let r = ui.add(egui::Button::selectable(false, format!("📁 {name}")));
+                    let r = ui.add(egui::Button::selectable(false, tf("\u{E24A} {0}", &[&name])));
                     if r.clicked() {
                         go = Some(e.clone());
                     }
@@ -1293,20 +1345,20 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
             ui.separator();
             if can_mkdir && !cur.is_empty() {
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut new_folder).hint_text("nouveau dossier").desired_width(200.0));
-                    if ui.add_enabled(!new_folder.trim().is_empty() && !new_folder.contains('/'), egui::Button::new("Créer")).clicked() {
+                    ui.add(egui::TextEdit::singleline(&mut new_folder).hint_text(tr("nouveau dossier")).desired_width(200.0));
+                    if ui.add_enabled(!new_folder.trim().is_empty() && !new_folder.contains('/'), egui::Button::new(tr("Créer"))).clicked() {
                         mkdir = true;
                     }
                 });
             }
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(!cur.is_empty(), egui::Button::new(RichText::new("✔ Choisir ce dossier").color(Color32::WHITE)).fill(INFO))
+                    .add_enabled(!cur.is_empty(), egui::Button::new(RichText::new(tr("\u{E182} Choisir ce dossier")).color(Color32::WHITE)).fill(INFO))
                     .clicked()
                 {
                     pick = Some(cur.clone());
                 }
-                if ui.button("Annuler").clicked() {
+                if ui.button(tr("Annuler")).clicked() {
                     app.browser = None;
                 }
             });
@@ -1330,7 +1382,7 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
         }
         app.exec(
             host,
-            "Création du dossier",
+            tr("Création du dossier"),
             script,
             20,
             Box::new(move |app, r| match r {
@@ -1347,88 +1399,88 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
 // =====================================================================
 
 pub fn cameras(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, "Caméras", "Synchro temps réel chiffrée du dossier des caméras vers Google Drive");
+    page_title(ui, tr("Caméras"), tr("Synchro temps réel chiffrée du dossier des caméras vers Google Drive"));
     if !host_banner(app, ui, HostId::Omv) {
         return;
     }
     let s = app.omv.status.clone().unwrap();
     let c = s.cameras.clone();
     if !c.installe {
-        banner(ui, IDLE, "La synchro des caméras n'est pas installée sur l'OMV (script install-cam-sync.sh).");
+        banner(ui, IDLE, tr("La synchro des caméras n'est pas installée sur l'OMV (script install-cam-sync.sh)."));
         return;
     }
     let now = s.maintenant.max(fmt::now());
     ui.columns(3, |cols| {
-        card(&mut cols[0], "Service temps réel", |ui| {
-            dot_label(ui, if c.actif { OK } else { ERR }, RichText::new(if c.actif { "Actif" } else { "Arrêté" }).strong());
-            ui.label(RichText::new(if c.demarrage_auto { "Démarre avec l'OMV" } else { "Ne démarre PAS avec l'OMV" }).small().weak());
+        card(&mut cols[0], tr("Service temps réel"), |ui| {
+            dot_label(ui, if c.actif { OK } else { ERR }, RichText::new(if c.actif { tr("Actif") } else { tr("Arrêté") }).strong());
+            ui.label(RichText::new(if c.demarrage_auto { tr("Démarre avec l'OMV") } else { tr("Ne démarre PAS avec l'OMV") }).small().weak());
             if c.actif && !c.actif_depuis.is_empty() {
-                ui.label(RichText::new(format!("Depuis {}", c.actif_depuis)).small().weak());
+                ui.label(RichText::new(tf("Depuis {0}", &[&c.actif_depuis])).small().weak());
             }
         });
-        card(&mut cols[1], "Envois", |ui| {
+        card(&mut cols[1], tr("Envois"), |ui| {
             match c.dernier_envoi.as_deref().and_then(fmt::parse_rclone_ts) {
-                Some(t) => ui.label(RichText::new(format!("Dernière vidéo {}", fmt::ago(t, now))).strong()),
-                None => ui.label(RichText::new("Aucun envoi récent").weak()),
+                Some(t) => ui.label(RichText::new(tf("Dernière vidéo {0}", &[&(fmt::ago(t, now))])).strong()),
+                None => ui.label(RichText::new(tr("Aucun envoi récent")).weak()),
             };
-            ui.label(format!("{} vidéo(s) envoyée(s) aujourd'hui", c.envois_aujourdhui));
+            ui.label(tf("{0} vidéo(s) envoyée(s) aujourd'hui", &[&c.envois_aujourdhui]));
         });
-        card(&mut cols[2], "Rattrapage (toutes les 15 min)", |ui| {
+        card(&mut cols[2], tr("Rattrapage (toutes les 15 min)"), |ui| {
             if c.rattrapage_en_cours {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("En cours");
+                    ui.label(tr("En cours"));
                 });
             } else {
-                ui.label("En attente");
+                ui.label(tr("En attente"));
             }
             if c.erreurs_aujourdhui > 0 {
-                ui.colored_label(ERR, format!("{} erreur(s) aujourd'hui", c.erreurs_aujourdhui));
+                ui.colored_label(ERR, tf("{0} erreur(s) aujourd'hui", &[&c.erreurs_aujourdhui]));
             } else {
-                ui.label(RichText::new("Aucune erreur aujourd'hui").small().weak());
+                ui.label(RichText::new(tr("Aucune erreur aujourd'hui")).small().weak());
             }
         });
     });
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         if c.actif {
-            if ui.button("⟳ Redémarrer le service").clicked() {
-                app.action_toast(HostId::Omv, "Redémarrage", remote::cam_service("restart"), 40);
+            if ui.button(tr("\u{E094} Redémarrer le service")).clicked() {
+                app.action_toast(HostId::Omv, tr("Redémarrage"), remote::cam_service("restart"), 40);
             }
-            if danger_button(ui, "⏹ Arrêter").clicked() {
+            if danger_button(ui, tr("\u{E46C} Arrêter")).clicked() {
                 app.ask_confirm(
-                    "Arrêter la synchro des caméras",
-                    "Les nouvelles vidéos ne partiront plus vers le Drive en temps réel (le rattrapage toutes les 15 min continue).",
-                    "Arrêter",
+                    tr("Arrêter la synchro des caméras"),
+                    tr("Les nouvelles vidéos ne partiront plus vers le Drive en temps réel (le rattrapage toutes les 15 min continue)."),
+                    tr("Arrêter"),
                     true,
                     None,
-                    Box::new(|app| app.action_toast(HostId::Omv, "Arrêt", remote::cam_service("stop"), 40)),
+                    Box::new(|app| app.action_toast(HostId::Omv, tr("Arrêt"), remote::cam_service("stop"), 40)),
                 );
             }
-        } else if primary_button(ui, "▶ Démarrer le service").clicked() {
-            app.action_toast(HostId::Omv, "Démarrage", remote::cam_service("start"), 40);
+        } else if primary_button(ui, tr("\u{E3D0} Démarrer le service")).clicked() {
+            app.action_toast(HostId::Omv, tr("Démarrage"), remote::cam_service("start"), 40);
         }
-        if ui.add_enabled(!c.rattrapage_en_cours, egui::Button::new("☁ Lancer un rattrapage maintenant")).clicked() {
-            app.action_toast(HostId::Omv, "Rattrapage", remote::cam_catchup(), 30);
+        if ui.add_enabled(!c.rattrapage_en_cours, egui::Button::new(tr("\u{E1AA} Lancer un rattrapage maintenant"))).clicked() {
+            app.action_toast(HostId::Omv, tr("Rattrapage"), remote::cam_catchup(), 30);
         }
-        if ui.button("📜 Journal complet").clicked() {
+        if ui.button(tr("\u{EB7A} Journal complet")).clicked() {
             app.page = Page::Logs;
             app.logs.source = log_sources(app).iter().position(|l| l.path == "/var/log/cam-sync.log").unwrap_or(0);
             app.logs.last_fetch = None;
         }
     });
     if !c.dossier.is_empty() {
-        ui.label(RichText::new(format!("Dossier surveillé : {}", c.dossier)).small().weak());
+        ui.label(RichText::new(tf("Dossier surveillé : {0}", &[&c.dossier])).small().weak());
     }
     ui.add_space(8.0);
     if let Some(e) = &c.derniere_erreur {
-        ui.label(RichText::new("Dernière erreur").strong());
+        ui.label(RichText::new(tr("Dernière erreur")).strong());
         crate::explain::show(ui, e);
         ui.add_space(6.0);
     }
-    card(ui, "Derniers événements", |ui| {
+    card(ui, tr("Derniers événements"), |ui| {
         if c.evenements.is_empty() {
-            ui.label(RichText::new("(rien dans le journal)").weak());
+            ui.label(RichText::new(tr("(rien dans le journal)")).weak());
         }
         for e in c.evenements.iter().rev() {
             let col = if e.contains(" ERROR ") {
@@ -1448,102 +1500,93 @@ pub fn cameras(app: &mut App, ui: &mut egui::Ui) {
 // =====================================================================
 
 pub fn alerts(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, "Alertes & santé", "Vérifications horaires (nas-check) et notifications Home Assistant");
+    page_title(ui, tr("Alertes & santé"), tr("Vérifications horaires (nas-check) et notifications Home Assistant"));
     if !host_banner(app, ui, HostId::Omv) {
         return;
     }
     let s = app.omv.status.clone().unwrap();
     let now = s.maintenant.max(fmt::now());
     if !s.alertes_installees {
-        banner(ui, WARN, "Les alertes ne sont pas installées sur l'OMV (script install-alertes.sh).");
+        banner(ui, WARN, tr("Les alertes ne sont pas installées sur l'OMV (script install-alertes.sh)."));
         ui.add_space(6.0);
     }
     ui.columns(2, |cols| {
-        card(&mut cols[0], "☁ Google Drive", |ui| match &s.sante {
+        card(&mut cols[0], tr("\u{E1AA} Google Drive"), |ui| match &s.sante {
             None => {
-                ui.label(RichText::new("Pas encore vérifié.").weak());
+                ui.label(RichText::new(tr("Pas encore vérifié.")).weak());
             }
             Some(h) => {
-                dot_label(ui, if h.gdrive { OK } else { ERR }, if h.gdrive { "Connexion OK" } else { "Connexion en échec" });
+                dot_label(ui, if h.gdrive { OK } else { ERR }, if h.gdrive { tr("Connexion OK") } else { tr("Connexion en échec") });
                 if !h.gdrive {
-                    ui.label(RichText::new("Sur l'OMV : rclone config reconnect gdrive:").small().monospace());
+                    ui.label(RichText::new(tr("Sur l'OMV : rclone config reconnect gdrive:")).small().monospace());
                 }
                 if let Some(p) = h.quota_pct {
                     let col = if p >= 90.0 { ERR } else if p >= 75.0 { WARN } else { OK };
                     ui.add(egui::ProgressBar::new((p / 100.0) as f32).fill(col).text(match (h.used_go, h.total_go) {
-                        (Some(u), Some(t)) => format!("{p:.0} % utilisé · {u:.1} Go sur {t:.0} Go"),
-                        _ => format!("{p:.0} % utilisé"),
+                        (Some(u), Some(t)) => tf("{0} % utilisé · {1} Go sur {2} Go", &[&format!("{:.0}", p), &format!("{:.1}", u), &format!("{:.0}", t)]),
+                        _ => tf("{0} % utilisé", &[&format!("{:.0}", p)]),
                     }));
                 }
                 if let Some(c) = &h.checked {
-                    ui.label(RichText::new(format!("Dernière vérification : {}", c.replace('T', " ").chars().take(16).collect::<String>())).small().weak());
+                    ui.label(RichText::new(tf("Dernière vérification : {0}", &[&(c.replace('T', " ").chars().take(16).collect::<String>())])).small().weak());
                 }
             }
         });
-        card(&mut cols[1], "Actions", |ui| {
+        card(&mut cols[1], tr("Actions"), |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui.add_enabled(s.alertes_installees && !s.nas_check_en_cours, egui::Button::new("🔍 Vérifier maintenant")).clicked() {
-                    app.action_toast(HostId::Omv, "Vérification", remote::nas_check(), 30);
+                if ui.add_enabled(s.alertes_installees && !s.nas_check_en_cours, egui::Button::new(tr("\u{E30C} Vérifier maintenant"))).clicked() {
+                    app.action_toast(HostId::Omv, tr("Vérification"), remote::nas_check(), 30);
                 }
                 if s.nas_check_en_cours {
                     ui.spinner();
                 }
-                if ui.add_enabled(s.alertes_installees, egui::Button::new("📱 Notification de test")).clicked() {
-                    app.action_toast(HostId::Omv, "Notification", remote::notify_test(), 30);
+                if ui.add_enabled(s.alertes_installees, egui::Button::new(tr("\u{E1E0} Notification de test"))).clicked() {
+                    app.action_toast(HostId::Omv, tr("Notification"), remote::notify_test(), 30);
                 }
-                if ui.button("🔑 Mots de passe de chiffrement").on_hover_text("Indispensables pour relire les sauvegardes chiffrées").clicked() {
-                    app.exec(
-                        HostId::Omv,
-                        "Lecture",
-                        remote::show_passwords(),
-                        20,
-                        Box::new(|app, r| match r {
-                            Ok(o) => app.passwords = Some(o.text()),
-                            Err(e) => app.toast(false, e.to_string()),
-                        }),
-                    );
+                if ui.button(tr("\u{E2D6} Mots de passe de chiffrement")).on_hover_text(tr("Indispensables pour relire les sauvegardes chiffrées")).clicked() {
+                    open_passwords(app);
                 }
             });
-            ui.label(RichText::new(if s.suivi_ha { "Suivi Home Assistant (MQTT) installé." } else { "Suivi Home Assistant (MQTT) non installé." }).small().weak());
+            ui.label(RichText::new(if s.suivi_ha { tr("Suivi Home Assistant (MQTT) installé.") } else { tr("Suivi Home Assistant (MQTT) non installé.") }).small().weak());
         });
     });
     ui.add_space(8.0);
-    card(ui, &format!("🔔 Alertes en cours ({})", s.alertes.len()), |ui| {
+    card(ui, &tf("\u{E0CE} Alertes en cours ({0})", &[&(s.alertes.len())]), |ui| {
         if s.alertes.is_empty() {
-            dot_label(ui, OK, "Aucune alerte en cours.");
+            dot_label(ui, OK, tr("Aucune alerte en cours."));
         }
         for a in &s.alertes {
             ui.horizontal(|ui| {
                 dot(ui, ERR);
                 ui.label(RichText::new(alert_label(&a.tag)).strong());
-                ui.label(RichText::new(format!("depuis {}", fmt::ago(a.depuis, now).replace("il y a ", ""))).weak());
+                ui.label(RichText::new(tf("depuis {0}", &[&(fmt::ago(a.depuis, now).replace("il y a ", ""))])).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button("Acquitter")
-                        .on_hover_text("Retire l'alerte. Si le problème persiste, elle reviendra à la prochaine vérification.")
+                        .button(tr("Acquitter"))
+                        .on_hover_text(tr("Retire l'alerte. Si le problème persiste, elle reviendra à la prochaine vérification."))
                         .clicked()
                     {
-                        app.action_toast(HostId::Omv, "Acquittement", remote::ack_alert(&a.tag), 20);
+                        app.action_toast(HostId::Omv, tr("Acquittement"), remote::ack_alert(&a.tag), 20);
                     }
                 });
             });
         }
-        ui.label(RichText::new("Une alerte non résolue est rappelée sur le téléphone toutes les 12 h.").small().weak());
+        ui.label(RichText::new(tr("Une alerte non résolue est rappelée sur le téléphone toutes les 12 h.")).small().weak());
     });
 }
 
 pub fn alert_label(tag: &str) -> String {
     if let Some(n) = tag.strip_prefix("job-") {
-        return format!("Sauvegarde « {n} » en échec");
+        return tf("Sauvegarde « {0} » en échec", &[&n]);
     }
     if let Some(n) = tag.strip_prefix("retard-") {
-        return format!("Sauvegarde « {n} » en retard");
+        return tf("Sauvegarde « {0} » en retard", &[&n]);
     }
     match tag {
-        "gdrive" => "Google Drive inaccessible".into(),
-        "quota" => "Google Drive presque plein".into(),
-        "cam-service" => "Caméras : service arrêté".into(),
-        "cam-sync" => "Caméras : envoi en échec".into(),
+        "gdrive" => tr("Google Drive inaccessible").into(),
+        "quota" => tr("Google Drive presque plein").into(),
+        "cam-service" => tr("Caméras : service arrêté").into(),
+        "cam-sync" => tr("Caméras : envoi en échec").into(),
         t => t.to_string(),
     }
 }
@@ -1551,29 +1594,58 @@ pub fn alert_label(tag: &str) -> String {
 pub fn passwords_window(app: &mut App, ctx: &egui::Context) {
     let Some(t) = app.passwords.clone() else { return };
     let mut open = true;
-    egui::Window::new(RichText::new("🔑 Mots de passe de chiffrement").strong())
+    egui::Window::new(RichText::new(tr("\u{E2D6} Mots de passe de chiffrement")).strong())
         .id(egui::Id::unique("pwd"))
         .collapsible(false)
         .default_width(600.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
-            banner(ui, WARN, "Sans ces mots de passe, les sauvegardes chiffrées du Drive sont définitivement illisibles. Garde-les en lieu sûr, hors du NAS (gestionnaire de mots de passe).");
+            banner(ui, WARN, tr("Sans ces mots de passe, les sauvegardes chiffrées du Drive sont définitivement illisibles (panne ou perte du NAS). Garde-les hors du NAS : gestionnaire de mots de passe, clé USB rangée, papier dans un lieu sûr."));
             ui.add_space(6.0);
             let mut tt = t.clone();
             ui.add(egui::TextEdit::multiline(&mut tt).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
             ui.horizontal(|ui| {
-                if ui.button("📋 Copier").clicked() {
+                if ui.button(tr("\u{E1CA} Copier")).clicked() {
                     ui.ctx().copy_text(t.clone());
                 }
-                if ui.button("Fermer").clicked() {
+                if ui.button(tr("\u{E248} Enregistrer dans un fichier…")).on_hover_text(tr("Par exemple sur une clé USB rangée en lieu sûr")).clicked() {
+                    if let Some(path) = rfd::FileDialog::new().set_file_name("mots-de-passe-sauvegardes-NAS.txt").add_filter("Texte", &["txt"]).save_file() {
+                        let content = tf("Mots de passe de chiffrement des sauvegardes du NAS (rclone crypt)\r\nExportés par NAS Manager le {0}\r\nÀ CONSERVER EN LIEU SÛR, HORS DU NAS.\r\n\r\n{1}\r\n", &[&(chrono::Local::now().format("%d/%m/%Y")), &(t.replace('\n', "\r\n"))]);
+                        match std::fs::write(&path, content) {
+                            Ok(()) => app.toast(true, tf("Enregistré : {0}", &[&(path.display())])),
+                            Err(e) => app.toast(false, e.to_string()),
+                        }
+                    }
+                }
+                if ui.button(tr("Fermer")).clicked() {
                     app.passwords = None;
                 }
             });
+            ui.separator();
+            let mut noted = app.settings.passwords_noted;
+            if ui.checkbox(&mut noted, tr("Je les ai notés en lieu sûr (ne plus me le rappeler)")).changed() {
+                app.settings.passwords_noted = noted;
+                app.edit.passwords_noted = noted;
+                let _ = crate::config::save(&app.settings);
+            }
         });
     if !open {
         app.passwords = None;
     }
+}
+
+pub fn open_passwords(app: &mut App) {
+    app.exec(
+        HostId::Omv,
+        tr("Lecture"),
+        remote::show_passwords(),
+        20,
+        Box::new(|app, r| match r {
+            Ok(o) => app.passwords = Some(o.text()),
+            Err(e) => app.toast(false, e.to_string()),
+        }),
+    );
 }
 
 // =====================================================================
@@ -1589,12 +1661,12 @@ fn syno_script_banner(app: &mut App, ui: &mut egui::Ui, installed: bool, api: u3
         ui,
         WARN,
         &if installed {
-            format!("La version de {name} installée sur le Synology est ancienne : mets-la à jour pour la piloter depuis l'application.")
+            tf("La version de {0} installée sur le Synology est ancienne : mets-la à jour pour la piloter depuis l'application.", &[&name])
         } else {
-            format!("{name} n'est pas encore installé dans /usr/local/bin sur le Synology (les copies et l'historique faits avec l'ancien script restent visibles).")
+            tf("{0} n'est pas encore installé dans /usr/local/bin sur le Synology (les copies et l'historique faits avec l'ancien script restent visibles).", &[&name])
         },
     );
-    if ui.button("⬆ Installer / mettre à jour les scripts du Synology").clicked() {
+    if ui.button(tr("\u{E08E} Installer / mettre à jour les scripts du Synology")).clicked() {
         install_syno_scripts(app);
     }
     ui.add_space(6.0);
@@ -1602,7 +1674,7 @@ fn syno_script_banner(app: &mut App, ui: &mut egui::Ui, installed: bool, api: u3
 }
 
 pub fn copy(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, "Copie Synology → OMV", "Copie ou déplacement d'un dossier du Synology vers l'OMV (rsync)");
+    page_title(ui, tr("Copie Synology → OMV"), tr("Copie ou déplacement d'un dossier du Synology vers l'OMV (rsync)"));
     if !host_banner(app, ui, HostId::Syno) {
         return;
     }
@@ -1610,8 +1682,8 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
     let c = s.copie.clone();
     let ready = syno_script_banner(app, ui, c.installe, c.api, "copie-omv");
     if !c.cle_omv {
-        banner(ui, WARN, "Le Synology n'a pas encore de connexion automatique vers l'OMV.");
-        if ui.button("🔑 Autoriser le Synology à écrire sur l'OMV").clicked() {
+        banner(ui, WARN, tr("Le Synology n'a pas encore de connexion automatique vers l'OMV."));
+        if ui.button(tr("\u{E2D6} Autoriser le Synology à écrire sur l'OMV")).clicked() {
             authorize_syno_to_omv(app);
         }
         ui.add_space(6.0);
@@ -1619,16 +1691,11 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
 
     // ---- Copie en cours / derniere copie
     if c.source.is_some() {
-        card(ui, if c.en_cours { "Copie en cours" } else { "Dernière copie" }, |ui| {
+        card(ui, if c.en_cours { tr("Copie en cours") } else { tr("Dernière copie") }, |ui| {
             let src = c.source.clone().unwrap_or_default();
-            ui.label(RichText::new(format!("{}  →  OMV : {}", src, c.destination.clone().unwrap_or_default())).strong());
+            ui.label(RichText::new(tf("{0}  →  OMV : {1}", &[&src, &(c.destination.clone().unwrap_or_default())])).strong());
             ui.label(
-                RichText::new(format!(
-                    "{} · {} · {} fichiers",
-                    if c.mode.as_deref() == Some("deplacement") { "Déplacement (originaux supprimés)" } else { "Copie" },
-                    fmt::bytes(c.total),
-                    c.nb_fichiers
-                ))
+                RichText::new(tf("{0} · {1} · {2} fichiers", &[&(if c.mode.as_deref() == Some("deplacement") { tr("Déplacement (originaux supprimés)") } else { tr("Copie") }), &(fmt::bytes(c.total)), &c.nb_fichiers]))
                 .small(),
             );
             if c.en_cours {
@@ -1636,29 +1703,29 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                     Some(p) => progress_bar(
                         ui,
                         Some(p.pct),
-                        format!("{} % · {} copiés · {} · reste {}", p.pct, p.fait, p.vitesse, p.reste),
+                        tf("{0} % · {1} copiés · {2} · reste {3}", &[&p.pct, &p.fait, &p.vitesse, &p.reste]),
                     ),
-                    None => progress_bar(ui, None, "Préparation de la liste des fichiers…".into()),
+                    None => progress_bar(ui, None, tr("Préparation de la liste des fichiers…").into()),
                 }
                 if c.debut > 0 {
-                    ui.label(RichText::new(format!("Lancée {}", fmt::ago(c.debut, s.maintenant))).small().weak());
+                    ui.label(RichText::new(tf("Lancée {0}", &[&(fmt::ago(c.debut, s.maintenant))])).small().weak());
                 }
-                if danger_button(ui, "⏹ Arrêter la copie").clicked() {
+                if danger_button(ui, tr("\u{E46C} Arrêter la copie")).clicked() {
                     app.ask_confirm(
-                        "Arrêter la copie",
-                        "La copie s'arrête. La relancer (même source, même destination) reprendra là où elle s'est arrêtée.",
-                        "Arrêter",
+                        tr("Arrêter la copie"),
+                        tr("La copie s'arrête. La relancer (même source, même destination) reprendra là où elle s'est arrêtée."),
+                        tr("Arrêter"),
                         true,
                         None,
-                        Box::new(|app| app.action_toast(HostId::Syno, "Arrêt", remote::copie_stop(), 30)),
+                        Box::new(|app| app.action_toast(HostId::Syno, tr("Arrêt"), remote::copie_stop(), 30)),
                     );
                 }
             } else {
                 match c.code.as_deref() {
-                    Some("0") => dot_label(ui, OK, "Terminée avec succès"),
-                    Some("stop") => dot_label(ui, WARN, "Arrêtée manuellement"),
-                    Some(code) => dot_label(ui, ERR, format!("Terminée avec une erreur (code {code}) — la relancer reprendra où elle s'est arrêtée")),
-                    None => dot_label(ui, WARN, "Interrompue"),
+                    Some("0") => dot_label(ui, OK, tr("Terminée avec succès")),
+                    Some("stop") => dot_label(ui, WARN, tr("Arrêtée manuellement")),
+                    Some(code) => dot_label(ui, ERR, tf("Terminée avec une erreur (code {0}) — la relancer reprendra où elle s'est arrêtée", &[&code])),
+                    None => dot_label(ui, WARN, tr("Interrompue")),
                 };
                 if let Some(l) = c.erreurs.iter().rev().find(|l| crate::explain::explain(l).is_some()) {
                     crate::explain::show(ui, l);
@@ -1668,8 +1735,8 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                 }
                 if ready
                     && ui
-                        .button("⟳ Relancer la même copie")
-                        .on_hover_text("Reprend là où elle s'était arrêtée")
+                        .button(tr("\u{E094} Relancer la même copie"))
+                        .on_hover_text(tr("Reprend là où elle s'était arrêtée"))
                         .clicked()
                 {
                     // destination finale -> dossier parent + placement
@@ -1695,16 +1762,16 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
 
     // ---- Nouvelle copie
     let running = c.en_cours;
-    card(ui, "Nouvelle copie", |ui| {
+    card(ui, tr("Nouvelle copie"), |ui| {
         ui.add_enabled_ui(ready, |ui| {
             egui::Grid::new("copygrid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                ui.label("Dossier du Synology");
+                ui.label(tr("Dossier du Synology"));
                 ui.horizontal(|ui| {
                     let r = ui.add(egui::TextEdit::singleline(&mut app.copy.src).desired_width(380.0).hint_text("/volume1/…"));
                     if r.lost_focus() && r.changed() {
                         app.copy.src_size = None;
                     }
-                    if ui.button("📁 Parcourir").clicked() {
+                    if ui.button(tr("\u{E24A} Parcourir")).clicked() {
                         app.open_browser(HostId::Syno, BrowsePurpose::CopySource, "");
                     }
                 });
@@ -1713,27 +1780,27 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| match (app.copy.src_size, app.copy.sizing) {
                     (_, true) => {
                         ui.spinner();
-                        ui.label(RichText::new("Calcul de la taille…").small());
+                        ui.label(RichText::new(tr("Calcul de la taille…")).small());
                     }
                     (Some((sz, nb)), _) => {
-                        ui.label(RichText::new(format!("{} · {} fichiers", fmt::bytes(sz), nb)).small());
+                        ui.label(RichText::new(tf("{0} · {1} fichiers", &[&(fmt::bytes(sz)), &nb])).small());
                     }
                     (None, _) => {
-                        if ui.add_enabled(!app.copy.src.is_empty(), egui::Button::new("Calculer la taille").small()).clicked() {
+                        if ui.add_enabled(!app.copy.src.is_empty(), egui::Button::new(tr("Calculer la taille")).small()).clicked() {
                             app.compute_copy_size();
                         }
                     }
                 });
                 ui.end_row();
 
-                ui.label("Dossier de l'OMV");
+                ui.label(tr("Dossier de l'OMV"));
                 ui.horizontal(|ui| {
                     let r = ui.add(egui::TextEdit::singleline(&mut app.copy.dst).desired_width(380.0).hint_text("/srv/dev-disk-by-uuid-…/…"));
                     if r.lost_focus() && r.changed() {
                         app.copy.dst_free = None;
                         app.compute_copy_free();
                     }
-                    if ui.button("📁 Parcourir").clicked() {
+                    if ui.button(tr("\u{E24A} Parcourir")).clicked() {
                         app.open_browser(HostId::Omv, BrowsePurpose::CopyDest, "");
                     }
                 });
@@ -1742,9 +1809,9 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                     ui.label("");
                     let enough = app.copy.src_size.map(|(sz, _)| sz <= f).unwrap_or(true);
                     if enough {
-                        ui.label(RichText::new(format!("{} libres sur l'OMV", fmt::bytes(f))).small());
+                        ui.label(RichText::new(tf("{0} libres sur l'OMV", &[&(fmt::bytes(f))])).small());
                     } else {
-                        ui.colored_label(ERR, format!("Pas assez de place : {} libres sur l'OMV", fmt::bytes(f)));
+                        ui.colored_label(ERR, tf("Pas assez de place : {0} libres sur l'OMV", &[&(fmt::bytes(f))]));
                     }
                     ui.end_row();
                 }
@@ -1757,33 +1824,33 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                 if dst.is_empty() {
                     dst = "destination".into();
                 }
-                ui.label("Placement");
+                ui.label(tr("Placement"));
                 ui.vertical(|ui| {
-                    ui.radio_value(&mut app.copy.into_folder, true, format!("Dans un dossier « {name} »  →  {}/{name}/…", fmt::short_path(&dst)));
-                    ui.radio_value(&mut app.copy.into_folder, false, format!("Directement dans le dossier choisi  →  {}/…", fmt::short_path(&dst)));
+                    ui.radio_value(&mut app.copy.into_folder, true, tf("Dans un dossier « {0} »  →  {1}/{0}/…", &[&name, &(fmt::short_path(&dst))]));
+                    ui.radio_value(&mut app.copy.into_folder, false, tf("Directement dans le dossier choisi  →  {0}/…", &[&(fmt::short_path(&dst))]));
                     if !name.is_empty() && dst.ends_with(&format!("/{name}")) && app.copy.into_folder {
-                        ui.label(RichText::new(format!("(même nom des deux côtés : « directement » évite un dossier {name}/{name})")).small().color(WARN));
+                        ui.label(RichText::new(tf("(même nom des deux côtés : « directement » évite un dossier {0}/{0})", &[&name])).small().color(WARN));
                     }
                 });
                 ui.end_row();
 
-                ui.label("Mode");
+                ui.label(tr("Mode"));
                 ui.vertical(|ui| {
-                    ui.radio_value(&mut app.copy.move_files, false, "Copier : les originaux restent sur le Synology");
-                    ui.radio_value(&mut app.copy.move_files, true, RichText::new("Déplacer : les originaux sont SUPPRIMÉS du Synology après copie").color(ERR));
+                    ui.radio_value(&mut app.copy.move_files, false, tr("Copier : les originaux restent sur le Synology"));
+                    ui.radio_value(&mut app.copy.move_files, true, RichText::new(tr("Déplacer : les originaux sont SUPPRIMÉS du Synology après copie")).color(ERR));
                 });
                 ui.end_row();
 
-                ui.label("Limite de débit");
+                ui.label(tr("Limite de débit"));
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut app.copy.bw).desired_width(70.0).hint_text("—"));
                     ui.label("Mo/s");
-                    ui.label(RichText::new("vide = pleine vitesse").small().weak());
+                    ui.label(RichText::new(tr("vide = pleine vitesse")).small().weak());
                 });
                 ui.end_row();
             });
             ui.label(
-                RichText::new("Si la destination contient déjà des fichiers : fusion (rien n'y est supprimé, les fichiers de même nom mais différents sont remplacés). Les fichiers prennent les droits du dossier de destination.")
+                RichText::new(tr("Si la destination contient déjà des fichiers : fusion (rien n'y est supprimé, les fichiers de même nom mais différents sont remplacés). Les fichiers prennent les droits du dossier de destination."))
                     .small()
                     .weak(),
             );
@@ -1792,10 +1859,10 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
             let bw: Option<u32> = app.copy.bw.trim().replace(',', ".").parse::<f64>().ok().filter(|v| *v > 0.0).map(|v| (v * 1024.0) as u32);
             let bw_bad = !app.copy.bw.trim().is_empty() && bw.is_none();
             if bw_bad {
-                ui.colored_label(ERR, "Limite de débit invalide (en Mo/s, ex : 20).");
+                ui.colored_label(ERR, tr("Limite de débit invalide (en Mo/s, ex : 20)."));
             }
             ui.horizontal(|ui| {
-            if ui.add_enabled(can && !bw_bad && !running, egui::Button::new(RichText::new("▶ Lancer").color(Color32::WHITE)).fill(INFO)).clicked() {
+            if ui.add_enabled(can && !bw_bad && !running, egui::Button::new(RichText::new(tr("\u{E3D0} Lancer")).color(Color32::WHITE)).fill(INFO)).clicked() {
                 let (src, dst, into, mv) = (
                     app.copy.src.trim().trim_end_matches('/').to_string(),
                     app.copy.dst.trim().trim_end_matches('/').to_string(),
@@ -1803,26 +1870,21 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                     app.copy.move_files,
                 );
                 let final_dst = if into { format!("{dst}/{}", src.rsplit('/').next().unwrap_or("")) } else { dst.clone() };
-                let text = format!(
-                    "{}\n{}\n  →  OMV : {}",
-                    if mv { "DÉPLACEMENT (les originaux seront effacés du Synology au fur et à mesure) :" } else { "Copie :" },
-                    src,
-                    final_dst
-                );
+                let text = tf("{0}\n{1}\n  →  OMV : {2}", &[&(if mv { tr("DÉPLACEMENT (les originaux seront effacés du Synology au fur et à mesure) :") } else { tr("Copie :") }), &src, &final_dst]);
                 app.ask_confirm(
-                    if mv { "Déplacer vers l'OMV" } else { "Copier vers l'OMV" },
+                    if mv { tr("Déplacer vers l'OMV") } else { tr("Copier vers l'OMV") },
                     &text,
-                    "Lancer",
+                    tr("Lancer"),
                     mv,
-                    if mv { Some("DEPLACER") } else { None },
+                    if mv { Some(tr("DEPLACER")) } else { None },
                     Box::new(move |app| {
-                        app.action_dialog(HostId::Syno, "Lancement de la copie", remote::copie_launch(&src, &dst, into, mv, bw), 1200)
+                        app.action_dialog(HostId::Syno, tr("Lancement de la copie"), remote::copie_launch(&src, &dst, into, mv, bw), 1200)
                     }),
                 );
             }
             if ui
-                .add_enabled(can && !bw_bad, egui::Button::new("+ Ajouter à la file d'attente"))
-                .on_hover_text("Les copies de la file partent l'une après l'autre, après celle en cours")
+                .add_enabled(can && !bw_bad, egui::Button::new(tr("+ Ajouter à la file d'attente")))
+                .on_hover_text(tr("Les copies de la file partent l'une après l'autre, après celle en cours"))
                 .clicked()
             {
                 let (src, dst, into, mv) = (
@@ -1834,28 +1896,28 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                 let script = remote::copie_queue_add(&src, &dst, into, mv, bw);
                 if mv {
                     app.ask_confirm(
-                        "Déplacement en file d'attente",
-                        &format!("{src} sera DÉPLACÉ vers l'OMV (originaux effacés du Synology) quand son tour viendra."),
-                        "Ajouter",
+                        tr("Déplacement en file d'attente"),
+                        &tf("{0} sera DÉPLACÉ vers l'OMV (originaux effacés du Synology) quand son tour viendra.", &[&src]),
+                        tr("Ajouter"),
                         true,
-                        Some("DEPLACER"),
-                        Box::new(move |app| app.action_toast(HostId::Syno, "Ajout", script, 30)),
+                        Some(tr("DEPLACER")),
+                        Box::new(move |app| app.action_toast(HostId::Syno, tr("Ajout"), script, 30)),
                     );
                 } else {
-                    app.action_toast(HostId::Syno, "Ajout", script, 30);
+                    app.action_toast(HostId::Syno, tr("Ajout"), script, 30);
                 }
             }
             });
         });
         if running {
-            ui.label(RichText::new("Une copie est en cours : ajoute les suivantes à la file d'attente, elles partiront après.").small().weak());
+            ui.label(RichText::new(tr("Une copie est en cours : ajoute les suivantes à la file d'attente, elles partiront après.")).small().weak());
         }
     });
     ui.add_space(10.0);
 
     // ---- file d'attente des copies
     if !c.file.is_empty() {
-        card(ui, &format!("File d'attente ({})", c.file.len()), |ui| {
+        card(ui, &tf("File d'attente ({0})", &[&(c.file.len())]), |ui| {
             let mut remove: Option<usize> = None;
             for (i, q) in c.file.iter().enumerate() {
                 ui.horizontal(|ui| {
@@ -1868,61 +1930,61 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                         if q.dans_dossier { format!("/{name}") } else { String::new() }
                     )).strong());
                     if q.deplacement {
-                        badge(ui, "déplacement", ERR);
+                        badge(ui, tr("déplacement"), ERR);
                     }
                     if !q.debit.is_empty() {
                         let mo = q.debit.parse::<f64>().map(|k| k / 1024.0).unwrap_or(0.0);
-                        badge(ui, &format!("{} Mo/s max", format!("{mo:.1}").trim_end_matches(".0").replace('.', ",")), IDLE);
+                        badge(ui, &tf("{0} Mo/s max", &[&(tf("{0}", &[&format!("{:.1}", mo)]).trim_end_matches(".0").replace('.', ","))]), IDLE);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_enabled(ready, egui::Button::new("✖").small()).on_hover_text("Retirer de la file").clicked() {
+                        if ui.add_enabled(ready, egui::Button::new("\u{E4F6}").small()).on_hover_text(tr("Retirer de la file")).clicked() {
                             remove = Some(i + 1);
                         }
                     });
                 });
             }
             if let Some(n) = remove {
-                app.action_toast(HostId::Syno, "Retrait", remote::copie_queue_remove(n), 30);
+                app.action_toast(HostId::Syno, tr("Retrait"), remote::copie_queue_remove(n), 30);
             }
-            if !running && ui.add_enabled(ready, egui::Button::new("▶ Lancer la file d'attente")).clicked() {
-                app.action_toast(HostId::Syno, "Lancement", remote::copie_queue_next(), 1200);
+            if !running && ui.add_enabled(ready, egui::Button::new(tr("\u{E3D0} Lancer la file d'attente"))).clicked() {
+                app.action_toast(HostId::Syno, tr("Lancement"), remote::copie_queue_next(), 1200);
             }
-            ui.label(RichText::new("La copie suivante part automatiquement quand la précédente se termine avec succès.").small().weak());
+            ui.label(RichText::new(tr("La copie suivante part automatiquement quand la précédente se termine avec succès.")).small().weak());
         });
     }
     ui.add_space(10.0);
 
-    egui::CollapsingHeader::new("🛠 Réparer les droits d'un dossier sur l'OMV").show(ui, |ui| {
+    egui::CollapsingHeader::new(tr("\u{E5D4} Réparer les droits d'un dossier sur l'OMV")).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut app.perms.dir).desired_width(380.0).hint_text("dossier de l'OMV"));
-            if ui.button("📁").clicked() {
+            ui.add(egui::TextEdit::singleline(&mut app.perms.dir).desired_width(380.0).hint_text(tr("dossier de l'OMV")));
+            if ui.button("\u{E24A}").clicked() {
                 app.open_browser(HostId::Omv, BrowsePurpose::PermsDir, "");
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Propriétaire");
+            ui.label(tr("Propriétaire"));
             ui.add(egui::TextEdit::singleline(&mut app.perms.owner).desired_width(90.0));
-            ui.label("Groupe");
+            ui.label(tr("Groupe"));
             ui.add(egui::TextEdit::singleline(&mut app.perms.group).desired_width(90.0));
-            if ui.add_enabled(!app.perms.dir.is_empty(), egui::Button::new("Appliquer")).clicked() {
+            if ui.add_enabled(!app.perms.dir.is_empty(), egui::Button::new(tr("Appliquer"))).clicked() {
                 let (d, o, g) = (app.perms.dir.clone(), app.perms.owner.clone(), app.perms.group.clone());
                 app.ask_confirm(
-                    "Réparer les droits",
-                    &format!("Sur tout le contenu de {d} : propriétaire {o}:{g}, dossiers 2775, fichiers 664."),
-                    "Appliquer",
+                    tr("Réparer les droits"),
+                    &tf("Sur tout le contenu de {0} : propriétaire {1}:{2}, dossiers 2775, fichiers 664.", &[&d, &o, &g]),
+                    tr("Appliquer"),
                     false,
                     None,
-                    Box::new(move |app| app.action_dialog(HostId::Omv, "Réparation des droits", remote::fix_perms(&d, &o, &g), 1800)),
+                    Box::new(move |app| app.action_dialog(HostId::Omv, tr("Réparation des droits"), remote::fix_perms(&d, &o, &g), 1800)),
                 );
             }
         });
-        ui.label(RichText::new("Groupe « users » = tous les utilisateurs du partage OMV.").small().weak());
+        ui.label(RichText::new(tr("Groupe « users » = tous les utilisateurs du partage OMV.")).small().weak());
     });
     ui.add_space(10.0);
 
-    card(ui, "Historique", |ui| {
+    card(ui, tr("Historique"), |ui| {
         if c.historique.is_empty() {
-            ui.label(RichText::new("Aucune copie.").weak());
+            ui.label(RichText::new(tr("Aucune copie.")).weak());
         }
         for l in c.historique.iter().rev() {
             let col = if l.contains("| OK |") {
@@ -1950,7 +2012,7 @@ fn hist_line(l: &str) -> String {
     let (src, dst) = p[p.len() - 2].split_once(" -> ").unwrap_or((p[p.len() - 2], ""));
     let dur = p.last().unwrap_or(&"");
     let extra = if p.len() >= 5 { format!(" · {}", p[2]) } else { String::new() };
-    format!("{when} · {}{extra} · {}  →  {} · {dur}", p[1], src, fmt::short_path(dst))
+    tf("{0} · {1}{2} · {3}  →  {4} · {5}", &[&when, &(p[1]), &extra, &src, &(fmt::short_path(dst)), &dur])
 }
 
 // =====================================================================
@@ -1958,7 +2020,7 @@ fn hist_line(l: &str) -> String {
 // =====================================================================
 
 pub fn migration(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, "Migration Synology Drive → oCIS", "Transfert des « Mon Drive » vers des espaces projets ownCloud Infinite Scale");
+    page_title(ui, tr("Migration Synology Drive → oCIS"), tr("Transfert des « Mon Drive » vers des espaces projets ownCloud Infinite Scale"));
     if !host_banner(app, ui, HostId::Syno) {
         return;
     }
@@ -1972,25 +2034,21 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // ---- Connexion oCIS
-    card(ui, "Connexion oCIS", |ui| {
+    card(ui, tr("Connexion oCIS"), |ui| {
         match &m.config {
             Some(c) => {
-                ui.label(format!("{}  ·  compte {}", c.url, c.utilisateur));
+                ui.label(tf("{0}  ·  compte {1}", &[&c.url, &c.utilisateur]));
                 ui.label(
-                    RichText::new(format!(
-                        "Transferts : {}  ·  mode {}",
-                        if c.locale.is_empty() { "via Internet".to_string() } else { format!("réseau local ({})", c.locale) },
-                        if c.mode == "owncloud" { "WebDAV classique".to_string() } else { c.mode.clone() }
-                    ))
+                    RichText::new(tf("Transferts : {0}  ·  mode {1}", &[&(if c.locale.is_empty() { tr("via Internet").to_string() } else { tf("réseau local ({0})", &[&c.locale]) }), &(if c.mode == "owncloud" { tr("WebDAV classique").to_string() } else { c.mode.clone() })]))
                     .small()
                     .weak(),
                 );
             }
             None => {
-                ui.colored_label(WARN, "Pas encore configurée.");
+                ui.colored_label(WARN, tr("Pas encore configurée."));
             }
         }
-        if ui.add_enabled(ready, egui::Button::new(if app.ocis.open { "Fermer" } else { "Modifier la connexion…" })).clicked() {
+        if ui.add_enabled(ready, egui::Button::new(if app.ocis.open { tr("Fermer") } else { tr("Modifier la connexion…") })).clicked() {
             app.ocis.open = !app.ocis.open;
             if app.ocis.open {
                 if let Some(c) = &m.config {
@@ -2006,31 +2064,31 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
         }
         if app.ocis.open {
             egui::Grid::new("ocisgrid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                ui.label("Adresse d'oCIS");
+                ui.label(tr("Adresse d'oCIS"));
                 ui.add(egui::TextEdit::singleline(&mut app.ocis.url).hint_text("https://cloud.maison.fr").desired_width(320.0));
                 ui.end_row();
-                ui.label("Utilisateur");
+                ui.label(tr("Utilisateur"));
                 ui.add(egui::TextEdit::singleline(&mut app.ocis.user).desired_width(200.0));
                 ui.end_row();
-                ui.label("Jeton d'application");
+                ui.label(tr("Jeton d'application"));
                 ui.add(egui::TextEdit::singleline(&mut app.ocis.token).password(true).desired_width(320.0));
                 ui.end_row();
-                ui.label("Adresse locale");
-                ui.add(egui::TextEdit::singleline(&mut app.ocis.local).hint_text("vide = passer par Internet").desired_width(320.0));
+                ui.label(tr("Adresse locale"));
+                ui.add(egui::TextEdit::singleline(&mut app.ocis.local).hint_text(tr("vide = passer par Internet")).desired_width(320.0));
                 ui.end_row();
                 ui.label("");
-                ui.checkbox(&mut app.ocis.insecure, "Accepter un certificat non reconnu (auto-signé)");
+                ui.checkbox(&mut app.ocis.insecure, tr("Accepter un certificat non reconnu (auto-signé)"));
                 ui.end_row();
             });
-            ui.label(RichText::new("Jeton : docker exec <conteneur-ocis> ocis auth-app create --user-name=<compte> --expiration=2160h").small().monospace().weak());
+            ui.label(RichText::new(tr("Jeton : docker exec <conteneur-ocis> ocis auth-app create --user-name=<compte> --expiration=2160h")).small().monospace().weak());
             let can = !app.ocis.url.trim().is_empty() && !app.ocis.user.trim().is_empty() && !app.ocis.token.trim().is_empty();
-            if ui.add_enabled(can, egui::Button::new("Tester et enregistrer")).clicked() {
+            if ui.add_enabled(can, egui::Button::new(tr("Tester et enregistrer"))).clicked() {
                 let f = app.ocis.clone();
                 app.ocis.open = false;
                 app.ocis.token.clear();
                 app.action_dialog(
                     HostId::Syno,
-                    "Connexion à oCIS",
+                    tr("Connexion à oCIS"),
                     remote::migre_configure(&f.url, &f.user, &f.token, &f.local, f.insecure),
                     300,
                 );
@@ -2041,50 +2099,50 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
 
     // ---- Migration en cours
     if m.en_cours {
-        card(ui, "Migration en cours", |ui| {
+        card(ui, tr("Migration en cours"), |ui| {
             if let Some(e) = &m.etape {
                 ui.label(RichText::new(format!("[{}/{}]  {}  →  {}", e.etape, m.nb, e.libelle, e.espace)).strong());
                 ui.label(RichText::new(format!("{} · {}", e.source, fmt::bytes(e.total))).small().weak());
                 let phase = match e.phase.as_str() {
-                    "verification" => "Contrôle des empreintes dans oCIS",
-                    "relecture" => "Contrôle par relecture depuis oCIS",
-                    "suppression" => "Suppression des originaux contrôlés",
-                    _ => "Transfert",
+                    "verification" => tr("Contrôle des empreintes dans oCIS"),
+                    "relecture" => tr("Contrôle par relecture depuis oCIS"),
+                    "suppression" => tr("Suppression des originaux contrôlés"),
+                    _ => tr("Transfert"),
                 };
                 ui.label(phase);
                 let line = if e.ligne.is_empty() {
-                    if e.phase.is_empty() { "Comparaison avec ce qui est déjà dans oCIS…".into() } else { "démarrage…".into() }
+                    if e.phase.is_empty() { tr("Comparaison avec ce qui est déjà dans oCIS…").into() } else { tr("démarrage…").into() }
                 } else {
                     fmt::stats_line(&e.ligne)
                 };
                 progress_bar(ui, e.pct, line);
                 let mut extra = Vec::new();
                 if let Some(r) = e.ram_mo {
-                    extra.push(format!("RAM rclone {r} Mo"));
+                    extra.push(tf("RAM rclone {0} Mo", &[&r]));
                 }
                 if e.reprise > 0 {
-                    extra.push(format!("reprise automatique {}/5", e.reprise));
+                    extra.push(tf("reprise automatique {0}/5", &[&e.reprise]));
                 }
                 if e.suppression == "oui" {
-                    extra.push("+ suppression des originaux contrôlés".into());
+                    extra.push(tr("+ suppression des originaux contrôlés").into());
                 } else if e.suppression == "verif" {
-                    extra.push("contrôle + suppression sans transfert".into());
+                    extra.push(tr("contrôle + suppression sans transfert").into());
                 }
                 if !extra.is_empty() {
                     ui.label(RichText::new(extra.join(" · ")).small().color(if e.reprise > 0 { WARN } else { IDLE }));
                 }
             }
             if m.debut > 0 {
-                ui.label(RichText::new(format!("Lancée {}", fmt::ago(m.debut, s.maintenant))).small().weak());
+                ui.label(RichText::new(tf("Lancée {0}", &[&(fmt::ago(m.debut, s.maintenant))])).small().weak());
             }
-            if danger_button(ui, "⏹ Arrêter la migration").clicked() {
+            if danger_button(ui, tr("\u{E46C} Arrêter la migration")).clicked() {
                 app.ask_confirm(
-                    "Arrêter la migration",
-                    "La migration s'arrête ; les éléments non terminés sont remis en file d'attente et reprendront là où ils en étaient.",
-                    "Arrêter",
+                    tr("Arrêter la migration"),
+                    tr("La migration s'arrête ; les éléments non terminés sont remis en file d'attente et reprendront là où ils en étaient."),
+                    tr("Arrêter"),
                     true,
                     None,
-                    Box::new(|app| app.action_toast(HostId::Syno, "Arrêt", remote::migre_stop(), 30)),
+                    Box::new(|app| app.action_toast(HostId::Syno, tr("Arrêt"), remote::migre_stop(), 30)),
                 );
             }
         });
@@ -2093,7 +2151,7 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
 
     // ---- Resultats
     if !m.resultats.is_empty() {
-        card(ui, "Résultats du dernier lancement", |ui| {
+        card(ui, tr("Résultats du dernier lancement"), |ui| {
             for r in &m.resultats {
                 ui.horizontal_wrapped(|ui| {
                     dot(ui, if r.etat == "OK" { OK } else { ERR });
@@ -2107,19 +2165,19 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             if m.resultats.iter().any(|r| r.detail.contains("quota")) {
-                ui.label(RichText::new("Espace plein : dans oCIS, ouvre l'espace > ⋯ > Modifier le quota > « Pas de restriction ».").small().color(WARN));
+                ui.label(RichText::new(tr("Espace plein : dans oCIS, ouvre l'espace > \u{E1FE} > Modifier le quota > « Pas de restriction ».")).small().color(WARN));
             }
             if m.resultats.iter().any(|r| r.detail.contains("401")) {
-                ui.label(RichText::new("Jeton refusé : recrée un jeton et mets à jour la connexion ci-dessus.").small().color(WARN));
+                ui.label(RichText::new(tr("Jeton refusé : recrée un jeton et mets à jour la connexion ci-dessus.")).small().color(WARN));
             }
         });
         ui.add_space(10.0);
     }
 
     // ---- File d'attente
-    card(ui, &format!("File d'attente ({})", m.file.len()), |ui| {
+    card(ui, &tf("File d'attente ({0})", &[&(m.file.len())]), |ui| {
         if m.file.is_empty() {
-            ui.label(RichText::new("Vide : ajoute une migration ci-dessous.").weak());
+            ui.label(RichText::new(tr("Vide : ajoute une migration ci-dessous.")).weak());
         }
         let mut remove: Option<usize> = None;
         for (i, q) in m.file.iter().enumerate() {
@@ -2133,58 +2191,54 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                 )).strong());
                 ui.label(RichText::new(fmt::bytes(q.total)).small());
                 match q.suppression.as_str() {
-                    "oui" => badge(ui, "+ suppression des originaux", ERR),
-                    "verif" => badge(ui, "contrôle + suppression", ERR),
+                    "oui" => badge(ui, tr("+ suppression des originaux"), ERR),
+                    "verif" => badge(ui, tr("contrôle + suppression"), ERR),
                     _ => {}
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(ready && !m.en_cours, egui::Button::new("✖").small()).on_hover_text("Retirer de la file").clicked() {
+                    if ui.add_enabled(ready && !m.en_cours, egui::Button::new("\u{E4F6}").small()).on_hover_text(tr("Retirer de la file")).clicked() {
                         remove = Some(i + 1);
                     }
                 });
             });
         }
         if let Some(n) = remove {
-            app.action_toast(HostId::Syno, "Retrait", remote::migre_remove(n), 30);
+            app.action_toast(HostId::Syno, tr("Retrait"), remote::migre_remove(n), 30);
         }
         ui.add_space(4.0);
         if ui
-            .add_enabled(ready && !m.en_cours && !m.file.is_empty(), egui::Button::new(RichText::new("▶ Lancer la file d'attente").color(Color32::WHITE)).fill(INFO))
+            .add_enabled(ready && !m.en_cours && !m.file.is_empty(), egui::Button::new(RichText::new(tr("\u{E3D0} Lancer la file d'attente")).color(Color32::WHITE)).fill(INFO))
             .clicked()
         {
             let has_delete = m.file.iter().any(|q| q.suppression != "non");
             app.ask_confirm(
-                "Lancer la migration",
-                &format!(
-                    "{} migration(s) vont être traitées l'une après l'autre, en arrière-plan sur le Synology.{}",
-                    m.file.len(),
-                    if has_delete { "\nCertaines suppriment les originaux du Synology après contrôle dans oCIS." } else { "" }
-                ),
-                "Lancer",
+                tr("Lancer la migration"),
+                &tf("{0} migration(s) vont être traitées l'une après l'autre, en arrière-plan sur le Synology.{1}", &[&(m.file.len()), &(if has_delete { tr("\nCertaines suppriment les originaux du Synology après contrôle dans oCIS.") } else { "" })]),
+                tr("Lancer"),
                 false,
                 None,
-                Box::new(|app| app.action_toast(HostId::Syno, "Lancement", remote::migre_start(), 120)),
+                Box::new(|app| app.action_toast(HostId::Syno, tr("Lancement"), remote::migre_start(), 120)),
             );
         }
     });
     ui.add_space(10.0);
 
     // ---- Ajouter
-    card(ui, "Ajouter une migration", |ui| {
+    card(ui, tr("Ajouter une migration"), |ui| {
         ui.add_enabled_ui(ready && m.config.is_some(), |ui| {
             if m.config.is_none() {
-                ui.colored_label(WARN, "Configure d'abord la connexion oCIS.");
+                ui.colored_label(WARN, tr("Configure d'abord la connexion oCIS."));
             }
             ui.horizontal(|ui| {
-                ui.label("Source :");
-                let sel = if app.mig.src.is_empty() { "Choisir…".to_string() } else { app.mig.src.clone() };
+                ui.label(tr("Source :"));
+                let sel = if app.mig.src.is_empty() { tr("Choisir…").to_string() } else { app.mig.src.clone() };
                 let mut picked: Option<(String, String)> = None;
                 egui::ComboBox::from_id_salt("migsrc").width(360.0).selected_text(sel).show_ui(ui, |ui| {
                     if app.mig.sources.is_empty() {
-                        ui.label(RichText::new("(clique sur ⟳ pour lister les Mon Drive)").weak());
+                        ui.label(RichText::new(tr("(clique sur \u{E094} pour lister les Mon Drive)")).weak());
                     }
                     for (p, l) in &app.mig.sources {
-                        if ui.selectable_label(app.mig.src == *p, format!("Mon Drive de {l}")).clicked() {
+                        if ui.selectable_label(app.mig.src == *p, tf("Mon Drive de {0}", &[&l])).clicked() {
                             picked = Some((p.clone(), l.clone()));
                         }
                     }
@@ -2193,28 +2247,28 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                     app.mig.src = p;
                     app.mig.label = l;
                 }
-                if ui.button("⟳").on_hover_text("Lister les « Mon Drive »").clicked() {
+                if ui.button("\u{E094}").on_hover_text(tr("Lister les « Mon Drive »")).clicked() {
                     load_mig_sources(app);
                 }
-                if ui.button("📁 Parcourir").clicked() {
+                if ui.button(tr("\u{E24A} Parcourir")).clicked() {
                     app.open_browser(HostId::Syno, BrowsePurpose::MigSource, "");
                 }
             });
             ui.horizontal(|ui| {
-                ui.label("Espace oCIS :");
+                ui.label(tr("Espace oCIS :"));
                 let sel = app
                     .mig
                     .space_idx
                     .and_then(|i| app.mig.spaces.get(i))
                     .map(|s| s.name.clone())
-                    .unwrap_or_else(|| "Choisir…".into());
+                    .unwrap_or_else(|| tr("Choisir…").into());
                 let mut pick: Option<usize> = None;
                 egui::ComboBox::from_id_salt("migspace").width(300.0).selected_text(sel).show_ui(ui, |ui| {
                     for (i, sp) in app.mig.spaces.iter().enumerate() {
                         let q = if sp.quota > 0 {
-                            format!("libre {} / quota {}", fmt::bytes(sp.free.max(0) as u64), fmt::bytes(sp.quota as u64))
+                            tf("libre {0} / quota {1}", &[&(fmt::bytes(sp.free.max(0) as u64)), &(fmt::bytes(sp.quota as u64))])
                         } else {
-                            "sans limite".into()
+                            tr("sans limite").into()
                         };
                         if ui.selectable_label(app.mig.space_idx == Some(i), format!("{}  ({q})", sp.name)).clicked() {
                             pick = Some(i);
@@ -2226,7 +2280,7 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                 }
                 if app.mig.loading_spaces {
                     ui.spinner();
-                } else if ui.button("⟳").on_hover_text("Lister les espaces projets").clicked() {
+                } else if ui.button("\u{E094}").on_hover_text(tr("Lister les espaces projets")).clicked() {
                     load_spaces(app);
                 }
             });
@@ -2234,21 +2288,21 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                 ui.colored_label(ERR, &app.mig.spaces_error);
             }
             ui.horizontal(|ui| {
-                ui.label("Sous-dossier dans l'espace :");
-                ui.add(egui::TextEdit::singleline(&mut app.mig.sub).hint_text("vide = racine de l'espace").desired_width(220.0));
-                ui.label("Libellé :");
+                ui.label(tr("Sous-dossier dans l'espace :"));
+                ui.add(egui::TextEdit::singleline(&mut app.mig.sub).hint_text(tr("vide = racine de l'espace")).desired_width(220.0));
+                ui.label(tr("Libellé :"));
                 ui.add(egui::TextEdit::singleline(&mut app.mig.label).desired_width(140.0));
             });
-            ui.label("Après le transfert :");
-            ui.radio_value(&mut app.mig.del_mode, 0, "Garder les originaux sur le Synology (copie)");
-            ui.radio_value(&mut app.mig.del_mode, 1, RichText::new("Contrôler chaque fichier dans oCIS, puis SUPPRIMER l'original du Synology").color(ERR));
-            ui.radio_value(&mut app.mig.del_mode, 2, RichText::new("Déjà migré : contrôler et supprimer les originaux, sans transfert").color(ERR));
+            ui.label(tr("Après le transfert :"));
+            ui.radio_value(&mut app.mig.del_mode, 0, tr("Garder les originaux sur le Synology (copie)"));
+            ui.radio_value(&mut app.mig.del_mode, 1, RichText::new(tr("Contrôler chaque fichier dans oCIS, puis SUPPRIMER l'original du Synology")).color(ERR));
+            ui.radio_value(&mut app.mig.del_mode, 2, RichText::new(tr("Déjà migré : contrôler et supprimer les originaux, sans transfert")).color(ERR));
             if app.mig.del_mode > 0 && app.mig.src.contains("/homes/") && app.mig.src.ends_with("/Drive") {
-                ui.label(RichText::new("C'est un « Mon Drive » : les ordinateurs synchronisés avec Synology Drive supprimeront aussi ces fichiers chez eux. Installe d'abord le client oCIS.").small().color(ERR));
+                ui.label(RichText::new(tr("C'est un « Mon Drive » : les ordinateurs synchronisés avec Synology Drive supprimeront aussi ces fichiers chez eux. Installe d'abord le client oCIS.")).small().color(ERR));
             }
             let sp = app.mig.space_idx.and_then(|i| app.mig.spaces.get(i)).cloned();
             let can = !app.mig.src.is_empty() && sp.is_some();
-            if ui.add_enabled(can, egui::Button::new("+ Ajouter à la file d'attente")).clicked() {
+            if ui.add_enabled(can, egui::Button::new(tr("+ Ajouter à la file d'attente"))).clicked() {
                 let sp = sp.unwrap();
                 let (src, sub, label, mode) = (app.mig.src.clone(), app.mig.sub.trim().trim_matches('/').to_string(), app.mig.label.trim().to_string(), app.mig.del_mode);
                 let del = match mode {
@@ -2260,29 +2314,29 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                 let script = remote::migre_add(&src, &sp.id, &sub, &del, &label);
                 if mode > 0 {
                     app.ask_confirm(
-                        "Suppression des originaux",
-                        "Seuls les fichiers dont la copie dans oCIS est contrôlée identique (empreinte) seront supprimés du Synology. Un fichier absent, différent ou modifié entre-temps est gardé.",
-                        "Ajouter",
+                        tr("Suppression des originaux"),
+                        tr("Seuls les fichiers dont la copie dans oCIS est contrôlée identique (empreinte) seront supprimés du Synology. Un fichier absent, différent ou modifié entre-temps est gardé."),
+                        tr("Ajouter"),
                         true,
-                        Some("SUPPRIMER"),
-                        Box::new(move |app| app.action_toast(HostId::Syno, "Ajout", script, 900)),
+                        Some(tr("SUPPRIMER")),
+                        Box::new(move |app| app.action_toast(HostId::Syno, tr("Ajout"), script, 900)),
                     );
                 } else {
-                    app.action_toast(HostId::Syno, "Ajout (calcul de la taille)", script, 900);
+                    app.action_toast(HostId::Syno, tr("Ajout (calcul de la taille)"), script, 900);
                 }
             }
         });
     });
     ui.add_space(10.0);
 
-    egui::CollapsingHeader::new("Journal de la migration (dernières lignes)").show(ui, |ui| {
+    egui::CollapsingHeader::new(tr("Journal de la migration (dernières lignes)")).show(ui, |ui| {
         for l in &m.journal {
             ui.label(RichText::new(l).monospace().size(12.0));
         }
     });
-    card(ui, "Historique", |ui| {
+    card(ui, tr("Historique"), |ui| {
         if m.historique.is_empty() {
-            ui.label(RichText::new("Aucune migration.").weak());
+            ui.label(RichText::new(tr("Aucune migration.")).weak());
         }
         for l in m.historique.iter().rev() {
             ui.horizontal(|ui| {
@@ -2298,7 +2352,7 @@ fn load_spaces(app: &mut App) {
     app.mig.spaces_error.clear();
     app.exec(
         HostId::Syno,
-        "Espaces oCIS",
+        tr("Espaces oCIS"),
         remote::migre_spaces(),
         60,
         Box::new(|app, r| {
@@ -2319,7 +2373,7 @@ fn load_spaces(app: &mut App) {
                         })
                         .collect();
                     if app.mig.spaces.is_empty() {
-                        app.mig.spaces_error = "Aucun espace projet visible : ajoute le compte comme membre des espaces (Peut modifier / Gestionnaire).".into();
+                        app.mig.spaces_error = tr("Aucun espace projet visible : ajoute le compte comme membre des espaces (Peut modifier / Gestionnaire).").into();
                     }
                     app.mig.space_idx = None;
                 }
@@ -2333,7 +2387,7 @@ fn load_spaces(app: &mut App) {
 fn load_mig_sources(app: &mut App) {
     app.exec(
         HostId::Syno,
-        "Mon Drive",
+        tr("Mon Drive"),
         remote::migre_sources(),
         30,
         Box::new(|app, r| match r {
@@ -2344,7 +2398,7 @@ fn load_mig_sources(app: &mut App) {
                     .filter_map(|l| l.split_once('|').map(|(a, b)| (a.to_string(), b.to_string())))
                     .collect();
                 if app.mig.sources.is_empty() {
-                    app.toast(false, "Aucun « Mon Drive » trouvé (/volume*/homes/*/Drive).".into());
+                    app.toast(false, tr("Aucun « Mon Drive » trouvé (/volume*/homes/*/Drive).").into());
                 }
             }
             Err(e) => app.toast(false, e.to_string()),
@@ -2364,32 +2418,32 @@ pub struct LogSource {
 
 pub fn log_sources(app: &App) -> Vec<LogSource> {
     let mut v = vec![LogSource {
-        label: "Sauvegardes (nas-backup.log)".into(),
+        label: tr("Sauvegardes (nas-backup.log)").into(),
         host: HostId::Omv,
         path: "/var/log/nas-backup.log".into(),
     }];
     if let Some(s) = &app.omv.status {
         for j in &s.sauvegardes {
             v.push(LogSource {
-                label: format!("Sauvegarde « {} »{}", j.nom, if j.en_cours { " (en cours)" } else { " (dernière)" }),
+                label: tf("Sauvegarde « {0} »{1}", &[&j.nom, &(if j.en_cours { tr(" (en cours)") } else { tr(" (dernière)") })]),
                 host: HostId::Omv,
                 path: format!("/var/lib/nas-backup/{}.run.log", j.nom),
             });
         }
     }
-    v.push(LogSource { label: "Caméras (cam-sync.log)".into(), host: HostId::Omv, path: "/var/log/cam-sync.log".into() });
-    v.push(LogSource { label: "Restauration".into(), host: HostId::Omv, path: "/var/lib/nas-backup/restauration.log".into() });
+    v.push(LogSource { label: tr("Caméras (cam-sync.log)").into(), host: HostId::Omv, path: "/var/log/cam-sync.log".into() });
+    v.push(LogSource { label: tr("Restauration").into(), host: HostId::Omv, path: "/var/lib/nas-backup/restauration.log".into() });
     if app.settings.syno.is_set() {
-        v.push(LogSource { label: "Copie → OMV : progression".into(), host: HostId::Syno, path: "/root/.copie-omv/progression.log".into() });
-        v.push(LogSource { label: "Copie → OMV : historique".into(), host: HostId::Syno, path: "/root/.copie-omv/historique.log".into() });
-        v.push(LogSource { label: "Migration oCIS : progression".into(), host: HostId::Syno, path: "/root/.migre-ocis/progression.log".into() });
-        v.push(LogSource { label: "Migration oCIS : historique".into(), host: HostId::Syno, path: "/root/.migre-ocis/historique.log".into() });
+        v.push(LogSource { label: tr("Copie → OMV : progression").into(), host: HostId::Syno, path: "/root/.copie-omv/progression.log".into() });
+        v.push(LogSource { label: tr("Copie → OMV : historique").into(), host: HostId::Syno, path: "/root/.copie-omv/historique.log".into() });
+        v.push(LogSource { label: tr("Migration oCIS : progression").into(), host: HostId::Syno, path: "/root/.migre-ocis/progression.log".into() });
+        v.push(LogSource { label: tr("Migration oCIS : historique").into(), host: HostId::Syno, path: "/root/.migre-ocis/historique.log".into() });
     }
     v
 }
 
 pub fn logs(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, "Journaux", "Dernières lignes des journaux des scripts");
+    page_title(ui, tr("Journaux"), tr("Dernières lignes des journaux des scripts"));
     let sources = log_sources(app);
     if app.logs.source >= sources.len() {
         app.logs.source = 0;
@@ -2406,11 +2460,11 @@ pub fn logs(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             });
-        if ui.button("⟳").clicked() {
+        if ui.button("\u{E094}").clicked() {
             changed = true;
         }
-        ui.checkbox(&mut app.logs.auto, "Suivre en direct");
-        ui.add(egui::TextEdit::singleline(&mut app.logs.filter).hint_text("filtrer…").desired_width(160.0));
+        ui.checkbox(&mut app.logs.auto, tr("Suivre en direct"));
+        ui.add(egui::TextEdit::singleline(&mut app.logs.filter).hint_text(tr("filtrer…")).desired_width(160.0));
         if app.logs.loading {
             ui.spinner();
         }
@@ -2423,7 +2477,7 @@ pub fn logs(app: &mut App, ui: &mut egui::Ui) {
         app.logs.last_fetch = Some(std::time::Instant::now());
         app.exec(
             host,
-            "Lecture du journal",
+            tr("Lecture du journal"),
             remote::tail_file(&path, 600),
             30,
             Box::new(move |app, r| {
@@ -2433,7 +2487,7 @@ pub fn logs(app: &mut App, ui: &mut egui::Ui) {
                 }
                 app.logs.text = match r {
                     Ok(o) => crate::ssh::strip_ansi(&o.stdout),
-                    Err(e) => format!("(lecture impossible : {e})"),
+                    Err(e) => tf("(lecture impossible : {0})", &[&e]),
                 };
             }),
         );
@@ -2471,10 +2525,10 @@ pub fn logs(app: &mut App, ui: &mut egui::Ui) {
 
 fn host_settings(ui: &mut egui::Ui, id: &str, h: &mut crate::config::HostCfg, sudo_hint: &str) {
     egui::Grid::new(id).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-        ui.label("Adresse IP / nom");
+        ui.label(tr("Adresse IP / nom"));
         ui.add(egui::TextEdit::singleline(&mut h.host).desired_width(220.0).hint_text("192.168.1.x"));
         ui.end_row();
-        ui.label("Port SSH");
+        ui.label(tr("Port SSH"));
         let mut p = h.port.to_string();
         if ui.add(egui::TextEdit::singleline(&mut p).desired_width(70.0)).changed() {
             if let Ok(v) = p.trim().parse() {
@@ -2482,28 +2536,28 @@ fn host_settings(ui: &mut egui::Ui, id: &str, h: &mut crate::config::HostCfg, su
             }
         }
         ui.end_row();
-        ui.label("Utilisateur");
+        ui.label(tr("Utilisateur"));
         ui.add(egui::TextEdit::singleline(&mut h.user).desired_width(160.0));
         ui.end_row();
         ui.label("");
-        ui.checkbox(&mut h.sudo, "Passer par sudo").on_hover_text(sudo_hint);
+        ui.checkbox(&mut h.sudo, tr("Passer par sudo")).on_hover_text(sudo_hint);
         ui.end_row();
     });
 }
 
 pub fn settings(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, "Paramètres", "Connexion aux NAS, clé SSH et scripts");
+    page_title(ui, tr("Paramètres"), tr("Connexion aux NAS, clé SSH et scripts"));
 
-    card(ui, "1. Clé SSH de l'application", |ui| {
+    card(ui, tr("1. Clé SSH de l'application"), |ui| {
         if app.ssh.key_exists() {
-            dot_label(ui, OK, "Clé créée sur ce PC");
+            dot_label(ui, OK, tr("Clé créée sur ce PC"));
             ui.label(RichText::new(app.ssh.key.to_string_lossy()).small().weak());
         } else {
-            dot_label(ui, ERR, "Clé absente");
+            dot_label(ui, ERR, tr("Clé absente"));
             if !app.key_msg.is_empty() {
                 ui.colored_label(ERR, &app.key_msg);
             }
-            if ui.button("Créer la clé").clicked() {
+            if ui.button(tr("Créer la clé")).clicked() {
                 match app.ssh.generate_key() {
                     Ok(()) => app.key_msg.clear(),
                     Err(e) => app.key_msg = e,
@@ -2511,7 +2565,7 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
             }
         }
         ui.label(
-            RichText::new("L'application se connecte aux NAS avec cette clé : le mot de passe des comptes n'est demandé qu'une fois, pour l'autoriser.")
+            RichText::new(tr("L'application se connecte aux NAS avec cette clé : le mot de passe des comptes n'est demandé qu'une fois, pour l'autoriser."))
                 .small()
                 .weak(),
         );
@@ -2520,44 +2574,57 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
 
     let mut save = false;
     ui.columns(2, |cols| {
-        card(&mut cols[0], "2. OMV (sauvegardes, caméras, alertes)", |ui| {
-            host_settings(ui, "omvset", &mut app.edit.omv, "Si l'utilisateur n'est pas root");
+        card(&mut cols[0], tr("2. OMV (sauvegardes, caméras, alertes)"), |ui| {
+            host_settings(ui, "omvset", &mut app.edit.omv, tr("Si l'utilisateur n'est pas root"));
         });
-        card(&mut cols[1], "3. Synology (copie vers l'OMV, migration oCIS)", |ui| {
-            host_settings(ui, "synoset", &mut app.edit.syno, "Compte administrateur du Synology (la connexion root est désactivée par défaut sur DSM)");
-            ui.label(RichText::new("Service SSH à activer : DSM > Panneau de configuration > Terminal & SNMP.").small().weak());
+        card(&mut cols[1], tr("3. Synology (copie vers l'OMV, migration oCIS)"), |ui| {
+            host_settings(ui, "synoset", &mut app.edit.syno, tr("Compte administrateur du Synology (la connexion root est désactivée par défaut sur DSM)"));
+            ui.label(RichText::new(tr("Service SSH à activer : DSM > Panneau de configuration > Terminal & SNMP.")).small().weak());
         });
     });
     ui.add_space(10.0);
-    card(ui, "Préférences", |ui| {
+    card(ui, tr("Préférences"), |ui| {
         ui.horizontal(|ui| {
-            ui.label("Actualisation toutes les");
+            ui.label(tr("Actualisation toutes les"));
             let mut r = app.edit.refresh_secs.to_string();
             if ui.add(egui::TextEdit::singleline(&mut r).desired_width(40.0)).changed() {
                 if let Ok(v) = r.trim().parse() {
                     app.edit.refresh_secs = v;
                 }
             }
-            ui.label("secondes (4 s pendant un transfert)");
+            ui.label(tr("secondes (4 s pendant un transfert)"));
         });
-        egui::CollapsingHeader::new("Avancé").show(ui, |ui| {
+        egui::CollapsingHeader::new(tr("Avancé")).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Client ssh :");
-                ui.add(egui::TextEdit::singleline(&mut app.edit.ssh_bin).hint_text("ssh (client OpenSSH de Windows)").desired_width(320.0));
+                ui.label(tr("Client ssh :"));
+                ui.add(egui::TextEdit::singleline(&mut app.edit.ssh_bin).hint_text(tr("ssh (client OpenSSH de Windows)")).desired_width(320.0));
             });
         });
         ui.horizontal(|ui| {
-            ui.label("Thème :");
-            for (v, l) in [("systeme", "Automatique (Windows)"), ("clair", "Clair"), ("sombre", "Sombre")] {
+            ui.label(tr("Thème :"));
+            for (v, l) in [("systeme", tr("Automatique (Windows)")), ("clair", tr("Clair")), ("sombre", tr("Sombre"))] {
                 ui.radio_value(&mut app.edit.theme, v.to_string(), l);
             }
         });
-        ui.checkbox(&mut app.edit.read_only, "Mode lecture seule (consultation uniquement, aucune action sur les NAS)");
-        ui.checkbox(&mut app.edit.notifications, "Notifications Windows (fin de sauvegarde, de copie, de migration, alertes, NAS injoignable)");
-        ui.checkbox(&mut app.edit.close_to_tray, "Fermer la fenêtre = la réduire dans la zone de notification (la surveillance continue)");
+        ui.horizontal(|ui| {
+        ui.label(tr("Langue :"));
+        ui.radio_value(&mut app.edit.language, String::new(), tr("Automatique (Windows)"));
+        ui.radio_value(&mut app.edit.language, "fr".to_string(), tr("Français"));
+        ui.radio_value(&mut app.edit.language, "en".to_string(), tr("English"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(tr("Taille du texte :"));
+        ui.add(egui::Slider::new(&mut app.edit.zoom, 0.8..=1.8).step_by(0.1).custom_formatter(|v, _| format!("{:.0} %", v * 100.0)));
+        if ui.small_button("100 %").clicked() {
+            app.edit.zoom = 1.0;
+        }
+    });
+    ui.checkbox(&mut app.edit.read_only, tr("Mode lecture seule (consultation uniquement, aucune action sur les NAS)"));
+        ui.checkbox(&mut app.edit.notifications, tr("Notifications Windows (fin de sauvegarde, de copie, de migration, alertes, NAS injoignable)"));
+        ui.checkbox(&mut app.edit.close_to_tray, tr("Fermer la fenêtre = la réduire dans la zone de notification (la surveillance continue)"));
         if crate::tray::autostart_supported() {
             let mut a = app.autostart;
-            if ui.checkbox(&mut a, "Lancer NAS Manager au démarrage de Windows (dans la zone de notification)").changed() {
+            if ui.checkbox(&mut a, tr("Lancer NAS Manager au démarrage de Windows (dans la zone de notification)")).changed() {
                 match crate::tray::set_autostart(a) {
                     Ok(()) => {
                         app.autostart = a;
@@ -2567,8 +2634,8 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
         }
-        if ui.small_button("Tester une notification").clicked() {
-            crate::tray::notify(&app.ctx, "NAS Manager", "Les notifications fonctionnent.");
+        if ui.small_button(tr("Tester une notification")).clicked() {
+            crate::tray::notify(&app.ctx, tr("NAS Manager"), tr("Les notifications fonctionnent."));
         }
     });
     ui.add_space(6.0);
@@ -2579,13 +2646,16 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
         || app.edit.theme != app.settings.theme
         || app.edit.read_only != app.settings.read_only
         || app.edit.notifications != app.settings.notifications
-        || app.edit.close_to_tray != app.settings.close_to_tray;
+        || app.edit.close_to_tray != app.settings.close_to_tray
+        || app.edit.site != app.settings.site
+        || (app.edit.zoom - app.settings.zoom).abs() > 0.01
+        || app.edit.language != app.settings.language;
     ui.horizontal(|ui| {
-        if ui.add_enabled(dirty, egui::Button::new(RichText::new("💾 Enregistrer").color(Color32::WHITE)).fill(INFO)).clicked() {
+        if ui.add_enabled(dirty, egui::Button::new(RichText::new(tr("\u{E248} Enregistrer")).color(Color32::WHITE)).fill(INFO)).clicked() {
             save = true;
         }
         if dirty {
-            ui.label(RichText::new("Modifications non enregistrées").color(WARN));
+            ui.label(RichText::new(tr("Modifications non enregistrées")).color(WARN));
         }
     });
     if save {
@@ -2593,27 +2663,27 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
     }
     ui.add_space(10.0);
 
-    card(ui, "4. Autoriser la clé et tester", |ui| {
+    card(ui, tr("4. Autoriser la clé et tester"), |ui| {
         for h in [HostId::Omv, HostId::Syno] {
             let cfg = app.host_cfg(h).clone();
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{} ({})", h.label(), if cfg.is_set() { cfg.target() } else { "non configuré".into() })).strong());
+                ui.label(RichText::new(format!("{} ({})", h.label(), if cfg.is_set() { cfg.target() } else { tr("non configuré").into() })).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(cfg.is_set(), egui::Button::new("Oublier l'identité")).on_hover_text("Après une réinstallation du NAS").clicked() {
+                    if ui.add_enabled(cfg.is_set(), egui::Button::new(tr("Oublier l'identité"))).on_hover_text(tr("Après une réinstallation du NAS")).clicked() {
                         match app.ssh.forget_host(&cfg) {
                             Ok(()) => {
                                 crate::log::info(&format!("identité oubliée pour {}", cfg.target()));
-                                app.toast(true, "Identité oubliée : la nouvelle empreinte va être demandée.".into());
+                                app.toast(true, tr("Identité oubliée : la nouvelle empreinte va être demandée.").into());
                                 app.fp_dismissed[crate::extras::idx(h)] = false;
                                 app.refresh(h);
                             }
                             Err(e) => app.toast(false, e),
                         }
                     }
-                    if ui.add_enabled(cfg.is_set(), egui::Button::new("🔌 Tester")).clicked() {
+                    if ui.add_enabled(cfg.is_set(), egui::Button::new(tr("\u{E946} Tester"))).clicked() {
                         test_connection(app, h);
                     }
-                    if ui.add_enabled(cfg.is_set(), egui::Button::new("🔑 Autoriser la clé…")).clicked() {
+                    if ui.add_enabled(cfg.is_set(), egui::Button::new(tr("\u{E2D6} Autoriser la clé…"))).clicked() {
                         crate::extras::authorize_key(app, h);
                     }
                 });
@@ -2623,9 +2693,9 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
             } else if let Some(e) = app.host_error(h) {
                 (ERR, e.to_string())
             } else if app.host_connected(h) {
-                (OK, "Connecté".to_string())
+                (OK, tr("Connecté").to_string())
             } else {
-                (IDLE, "Pas encore testé".to_string())
+                (IDLE, tr("Pas encore testé").to_string())
             };
             dot_label(ui, col, RichText::new(txt).small());
             if cfg.sudo {
@@ -2634,8 +2704,8 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
                     HostId::Syno => app.syno.pass.is_some(),
                 };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(if has { "Mot de passe sudo : en mémoire" } else { "Mot de passe sudo : non saisi" }).small().weak());
-                    if has && ui.small_button("Oublier").clicked() {
+                    ui.label(RichText::new(if has { tr("Mot de passe sudo : en mémoire") } else { tr("Mot de passe sudo : non saisi") }).small().weak());
+                    if has && ui.small_button(tr("Oublier")).clicked() {
                         match h {
                             HostId::Omv => {
                                 app.omv.pass = None;
@@ -2651,44 +2721,44 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
                         let _ = crate::config::save(&app.settings);
                     }
                     if !has && secret::can_store() {
-                        ui.label(RichText::new("(il sera demandé et pourra être mémorisé)").small().weak());
+                        ui.label(RichText::new(tr("(il sera demandé et pourra être mémorisé)")).small().weak());
                     }
                 });
             }
             ui.separator();
         }
         ui.label(
-            RichText::new("« Autoriser la clé » ouvre une fenêtre où tu tapes une seule fois le mot de passe du compte. Ensuite plus besoin de SSH.")
+            RichText::new(tr("« Autoriser la clé » ouvre une fenêtre où tu tapes une seule fois le mot de passe du compte. Ensuite plus besoin de SSH."))
                 .small()
                 .weak(),
         );
     });
     ui.add_space(10.0);
 
-    card(ui, "5. Scripts sur les NAS", |ui| {
+    card(ui, tr("5. Scripts sur les NAS"), |ui| {
         let omv = app.omv.status.clone();
         let syno = app.syno.status.clone();
         let ver = |inst: bool, api: u32, expected: u32| -> (Color32, String) {
             if !inst {
-                (IDLE, "non installé".into())
+                (IDLE, tr("non installé").into())
             } else if api >= expected {
-                (OK, "à jour".into())
+                (OK, tr("à jour").into())
             } else {
-                (WARN, "ancienne version : mise à jour disponible".into())
+                (WARN, tr("ancienne version : mise à jour disponible").into())
             }
         };
         ui.horizontal(|ui| {
             match &omv {
                 Some(s) => {
                     let (c, t) = ver(s.nb_installe, s.nb_api, remote::nb_api());
-                    dot_label(ui, c, format!("OMV · nas-backup : {t}"));
+                    dot_label(ui, c, tf("OMV · nas-backup : {0}", &[&t]));
                 }
                 None => {
-                    dot_label(ui, IDLE, "OMV · nas-backup : (non connecté)");
+                    dot_label(ui, IDLE, tr("OMV · nas-backup : (non connecté)"));
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(omv.is_some(), egui::Button::new("⬆ Installer / mettre à jour")).clicked() {
+                if ui.add_enabled(omv.is_some(), egui::Button::new(tr("\u{E08E} Installer / mettre à jour"))).clicked() {
                     install_omv_script(app);
                 }
             });
@@ -2699,79 +2769,179 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
                     let (c1, t1) = ver(s.copie.installe, s.copie.api, remote::copie_api());
                     let (c2, t2) = ver(s.migration.installe, s.migration.api, remote::migre_api());
                     ui.vertical(|ui| {
-                        dot_label(ui, c1, format!("Synology · copie-omv : {t1}"));
-                        dot_label(ui, c2, format!("Synology · migre-drive-ocis : {t2}"));
+                        dot_label(ui, c1, tf("Synology · copie-omv : {0}", &[&t1]));
+                        dot_label(ui, c2, tf("Synology · migre-drive-ocis : {0}", &[&t2]));
                     });
                 }
                 None => {
-                    dot_label(ui, IDLE, "Synology : (non connecté)");
+                    dot_label(ui, IDLE, tr("Synology : (non connecté)"));
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(syno.is_some(), egui::Button::new("⬆ Installer / mettre à jour")).clicked() {
+                if ui.add_enabled(syno.is_some(), egui::Button::new(tr("\u{E08E} Installer / mettre à jour"))).clicked() {
                     install_syno_scripts(app);
                 }
             });
         });
         ui.label(
             RichText::new(
-                "Installe les versions fournies avec l'application (avec les commandes sans question qu'elle utilise). \
-L'ancienne version est gardée en .bak. Les copies, migrations et réglages en cours sont conservés.",
+                tr("Installe les versions fournies avec l'application (avec les commandes sans question qu'elle utilise). \
+L'ancienne version est gardée en .bak. Les copies, migrations et réglages en cours sont conservés."),
             )
             .small()
             .weak(),
         );
     });
     ui.add_space(10.0);
+    sites_card(app, ui);
+    ui.add_space(10.0);
+    update_card(app, ui);
+    ui.add_space(10.0);
     maintenance_card(app, ui);
 }
 
+fn sites_card(app: &mut App, ui: &mut egui::Ui) {
+    card(ui, tr("Sites (plusieurs NAS)"), |ui| {
+        ui.label(
+            RichText::new(tr("Un site = un OMV et un Synology (le tien, celui d'un proche…). Les réglages ci-dessus sont ceux du site actif."))
+                .small()
+                .weak(),
+        );
+        ui.horizontal(|ui| {
+            ui.label(tr("Site actif :"));
+            ui.add(egui::TextEdit::singleline(&mut app.edit.site).desired_width(160.0));
+        });
+        let mut switch: Option<String> = None;
+        let mut delete: Option<String> = None;
+        for s in app.settings.sites.clone() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("\u{E2C2} {}", s.name)).strong());
+                ui.label(
+                    RichText::new(tf("OMV {0} · Synology {1}", &[&(if s.omv.is_set() { s.omv.host.clone() } else { "—".into() }), &(if s.syno.is_set() { s.syno.host.clone() } else { "—".into() })]))
+                    .small()
+                    .weak(),
+                );
+                if ui.small_button(tr("Activer")).clicked() {
+                    switch = Some(s.name.clone());
+                }
+                if ui.small_button(tr("Supprimer")).clicked() {
+                    delete = Some(s.name.clone());
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut app.new_site).hint_text(tr("nom du nouveau site")).desired_width(180.0));
+            let name = app.new_site.trim().to_string();
+            let taken = app.settings.site_names().iter().any(|n| n.eq_ignore_ascii_case(&name));
+            if ui.add_enabled(!name.is_empty() && !taken, egui::Button::new(tr("+ Ajouter un site"))).clicked() {
+                app.settings.sites.push(crate::config::Site {
+                    name: name.clone(),
+                    omv: crate::config::HostCfg { host: String::new(), port: 22, user: "root".into(), sudo: false, saved_pass: String::new() },
+                    syno: crate::config::HostCfg { host: String::new(), port: 22, user: String::new(), sudo: true, saved_pass: String::new() },
+                });
+                app.edit.sites = app.settings.sites.clone();
+                let _ = crate::config::save(&app.settings);
+                app.new_site.clear();
+                switch = Some(name);
+            }
+        });
+        if let Some(n) = switch {
+            app.switch_site(&n);
+        }
+        if let Some(n) = delete {
+            app.ask_confirm(
+                tr("Supprimer le site"),
+                &tf("Le site « {0} » et ses réglages de connexion sont oubliés (rien n'est modifié sur ses NAS).", &[&n]),
+                tr("Supprimer"),
+                true,
+                None,
+                Box::new(move |app| {
+                    app.settings.sites.retain(|s| s.name != n);
+                    app.edit.sites = app.settings.sites.clone();
+                    let _ = crate::config::save(&app.settings);
+                }),
+            );
+        }
+    });
+}
+
+fn update_card(app: &mut App, ui: &mut egui::Ui) {
+    card(ui, tr("Mises à jour de NAS Manager"), |ui| {
+        ui.horizontal(|ui| {
+            ui.label(tf("Version installée : {0}", &[&(crate::extras::VERSION)]));
+            if app.update.checking {
+                ui.spinner();
+            } else if ui.button(tr("Rechercher une mise à jour")).clicked() {
+                crate::update::start_check(app, true);
+            }
+            if let Some(u) = app.update.available.clone() {
+                if app.update.installing {
+                    ui.spinner();
+                    ui.label(tr("installation…"));
+                } else if primary_button(ui, &tf("Installer la version {0}", &[&u.version])).clicked() {
+                    crate::update::start_install(app);
+                }
+            }
+        });
+        if !app.update.message.is_empty() {
+            ui.label(RichText::new(&app.update.message).small().weak());
+        }
+        let mut a = app.settings.auto_update;
+        if ui.checkbox(&mut a, tr("Rechercher automatiquement les mises à jour (une fois par jour)")).changed() {
+            app.settings.auto_update = a;
+            app.edit.auto_update = a;
+            let _ = crate::config::save(&app.settings);
+        }
+        ui.label(RichText::new(tr("La mise à jour remplace l'exécutable et relance l'application ; les paramètres sont conservés.")).small().weak());
+    });
+}
+
 fn maintenance_card(app: &mut App, ui: &mut egui::Ui) {
-    card(ui, "6. Diagnostic et sauvegarde des paramètres", |ui| {
+    card(ui, tr("6. Diagnostic et sauvegarde des paramètres"), |ui| {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("🩺 Exporter un rapport de diagnostic…").on_hover_text("Versions, état des connexions, dernières erreurs — sans aucun mot de passe").clicked() {
+            if ui.button(tr("\u{E7EA} Exporter un rapport de diagnostic…")).on_hover_text(tr("Versions, état des connexions, dernières erreurs — sans aucun mot de passe")).clicked() {
                 crate::extras::export_diagnostic(app);
             }
-            if ui.button("📜 Journal de l'application").clicked() {
+            if ui.button(tr("\u{EB7A} Journal de l'application")).clicked() {
                 app.output = Some(OutputDialog {
-                    title: "Journal de l'application".into(),
+                    title: tr("Journal de l'application").into(),
                     text: {
                         let t = crate::log::tail(300);
-                        if t.is_empty() { "(vide)".into() } else { t }
+                        if t.is_empty() { tr("(vide)").into() } else { t }
                     },
                     ok: true,
                 });
             }
-            if ui.button("📤 Exporter les paramètres…").clicked() {
+            if ui.button(tr("\u{EAF0} Exporter les paramètres…")).clicked() {
                 crate::extras::export_settings(app);
             }
-            if ui.button("📥 Importer des paramètres…").clicked() {
+            if ui.button(tr("\u{E20C} Importer des paramètres…")).clicked() {
                 crate::extras::import_settings(app);
             }
-            if ui.button("✨ Nouveautés").clicked() {
+            if ui.button(tr("\u{E6A2} Nouveautés")).clicked() {
                 app.show_news = true;
             }
         });
-        ui.label(RichText::new(format!("Dossier de l'application : {}", crate::config::app_dir().display())).small().weak());
-        ui.label(RichText::new("Raccourcis : F5 actualiser · Ctrl+1 à Ctrl+9 changer de page").small().weak());
+        ui.label(RichText::new(tf("Dossier de l'application : {0}", &[&(crate::config::app_dir().display())])).small().weak());
+        ui.label(RichText::new(tr("Raccourcis : F5 actualiser · Ctrl+1 à Ctrl+9 changer de page")).small().weak());
     });
 }
 
 fn test_connection(app: &mut App, h: HostId) {
     let script = "echo \"Connecté à $(hostname) en tant que $(id -un)\"\ncommand -v python3 >/dev/null && echo 'python3 : OK' || echo 'python3 : ABSENT (nécessaire)'\ncommand -v rclone >/dev/null && echo 'rclone : OK' || echo 'rclone : absent'\n".to_string();
-    app.action_dialog(h, &format!("Test de connexion — {}", h.label()), script, 30);
+    app.action_dialog(h, &tf("Test de connexion — {0}", &[&(h.label())]), script, 30);
 }
 
 fn install_omv_script(app: &mut App) {
     app.ask_confirm(
-        "Installer nas-backup sur l'OMV",
-        "Le script /usr/local/bin/nas-backup est remplacé par la version fournie avec l'application (l'ancienne est gardée en nas-backup.bak).\nLes sauvegardes en cours continuent avec l'ancienne version.",
-        "Installer",
+        tr("Installer nas-backup sur l'OMV"),
+        tr("Le script /usr/local/bin/nas-backup est remplacé par la version fournie avec l'application (l'ancienne est gardée en nas-backup.bak).\nLes sauvegardes en cours continuent avec l'ancienne version."),
+        tr("Installer"),
         false,
         None,
         Box::new(|app| {
             let script = remote::install_file(remote::NB_BIN, remote::NAS_BACKUP_SH) + &format!("{} gen-cron >/dev/null 2>&1 && echo 'Planification régénérée.' || true\n", remote::NB_BIN);
-            app.action_dialog(HostId::Omv, "Installation de nas-backup", script, 60);
+            app.action_dialog(HostId::Omv, tr("Installation de nas-backup"), script, 60);
         }),
     );
 }
@@ -2779,17 +2949,15 @@ fn install_omv_script(app: &mut App) {
 fn install_syno_scripts(app: &mut App) {
     let omv_host = app.settings.omv.host.clone();
     app.ask_confirm(
-        "Installer les scripts sur le Synology",
-        &format!(
-            "copie-omv et migre-drive-ocis sont installés dans /usr/local/bin du Synology (adresse de l'OMV : {omv_host}).\nLes copies et migrations en cours ne sont pas interrompues."
-        ),
-        "Installer",
+        tr("Installer les scripts sur le Synology"),
+        &tf("copie-omv et migre-drive-ocis sont installés dans /usr/local/bin du Synology (adresse de l'OMV : {0}).\nLes copies et migrations en cours ne sont pas interrompues.", &[&omv_host]),
+        tr("Installer"),
         false,
         None,
         Box::new(move |app| {
             let script = remote::install_file(remote::COPIE_BIN, &remote::copie_script_for(&omv_host))
                 + &remote::install_file(remote::MIGRE_BIN, remote::MIGRE_OCIS_SH);
-            app.action_dialog(HostId::Syno, "Installation des scripts", script, 60);
+            app.action_dialog(HostId::Syno, tr("Installation des scripts"), script, 60);
         }),
     );
 }
@@ -2799,21 +2967,21 @@ fn authorize_syno_to_omv(app: &mut App) {
     let script = "[ -f /root/.ssh/id_copie_omv ] || { mkdir -p /root/.ssh && chmod 700 /root/.ssh && ssh-keygen -t ed25519 -N '' -C \"copie-omv@$(hostname)\" -f /root/.ssh/id_copie_omv -q; }\ncat /root/.ssh/id_copie_omv.pub\n".to_string();
     app.exec(
         HostId::Syno,
-        "Clé du Synology",
+        tr("Clé du Synology"),
         script,
         30,
         Box::new(|app, r| match r {
             Ok(o) if o.code == 0 => {
                 let key = o.stdout.lines().find(|l| l.starts_with("ssh-")).unwrap_or("").trim().to_string();
                 if key.is_empty() {
-                    app.toast(false, "Clé du Synology illisible.".into());
+                    app.toast(false, tr("Clé du Synology illisible.").into());
                     return;
                 }
                 let s = format!(
                     "umask 077; mkdir -p /root/.ssh; touch /root/.ssh/authorized_keys\nk={}\ngrep -qxF \"$k\" /root/.ssh/authorized_keys || echo \"$k\" >> /root/.ssh/authorized_keys\nchmod 600 /root/.ssh/authorized_keys\necho 'Le Synology peut maintenant écrire sur l OMV (clé autorisée pour root).'\n",
                     crate::ssh::sq(&key)
                 );
-                app.action_dialog(HostId::Omv, "Autorisation sur l'OMV", s, 30);
+                app.action_dialog(HostId::Omv, tr("Autorisation sur l'OMV"), s, 30);
                 app.refresh(HostId::Syno);
             }
             Ok(o) => app.toast(false, o.text()),

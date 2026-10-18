@@ -1,0 +1,2 @@
+Phosphor.ttf : police d'icones Phosphor (https://phosphoricons.com), licence MIT,
+reprise du paquet egui-phosphor (licences MIT / Apache-2.0).

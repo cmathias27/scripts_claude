@@ -1,5 +1,7 @@
 //! Petits graphiques dessines a la main (barres et courbes), sans dependance.
 
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind};
 
 /// Barres verticales ; chaque barre : (etiquette sous l'axe, valeur, couleur, infobulle)
@@ -20,7 +22,7 @@ pub fn bars(ui: &mut egui::Ui, items: &[(String, f64, Color32, String)], height:
         painter.text(Pos2::new(plot.left() - 6.0, y), egui::Align2::RIGHT_CENTER, unit(v), egui::FontId::proportional(10.5), text);
     }
     if items.is_empty() {
-        painter.text(plot.center(), egui::Align2::CENTER_CENTER, "Pas encore de données", egui::FontId::proportional(13.0), text);
+        painter.text(plot.center(), egui::Align2::CENTER_CENTER, tr("Pas encore de données"), egui::FontId::proportional(13.0), text);
         return;
     }
     let n = items.len() as f32;
@@ -69,7 +71,7 @@ pub fn lines(
     let pts: Vec<&(f64, f64)> = series.iter().flat_map(|s| s.points.iter()).collect();
     if pts.len() < 2 {
         painter.rect_stroke(plot, 0.0, Stroke::new(0.5, grid), StrokeKind::Inside);
-        painter.text(plot.center(), egui::Align2::CENTER_CENTER, "Pas encore assez de relevés (un toutes les 6 h)", egui::FontId::proportional(13.0), text);
+        painter.text(plot.center(), egui::Align2::CENTER_CENTER, tr("Pas encore assez de relevés (un toutes les 6 h)"), egui::FontId::proportional(13.0), text);
         return;
     }
     let x0 = pts.iter().map(|p| p.0).fold(f64::MAX, f64::min);

@@ -2,6 +2,8 @@
 //! demarrage avec Windows. Hors Windows : sans effet (journal uniquement).
 
 #![cfg_attr(not(windows), allow(dead_code))]
+#[allow(unused_imports)]
+use crate::i18n::{tf, tr};
 
 use crate::app::{App, HostId};
 use crate::model::{OmvStatus, SynoStatus};
@@ -37,28 +39,25 @@ pub fn summary(app: &App) -> (Level, String) {
         let ko = s.sauvegardes.iter().filter(|j| !j.en_cours && j.dernier_etat.as_deref() == Some("ECHEC")).count();
         let run: Vec<&str> = s.sauvegardes.iter().filter(|j| j.en_cours).map(|j| j.nom.as_str()).collect();
         if ko > 0 {
-            problems.push(format!("{ko} sauvegarde(s) en échec"));
+            problems.push(tf("{0} sauvegarde(s) en échec", &[&ko]));
         }
         if !run.is_empty() {
-            busy.push(format!("sauvegarde {}", run.join(", ")));
+            busy.push(tf("sauvegarde {0}", &[&(run.join(", "))]));
         }
         if s.cameras.installe && !s.cameras.actif {
-            problems.push("caméras arrêtées".into());
+            problems.push(tr("caméras arrêtées").into());
         }
         if !s.alertes.is_empty() {
-            problems.push(format!("{} alerte(s)", s.alertes.len()));
+            problems.push(tf("{0} alerte(s)", &[&(s.alertes.len())]));
         }
-        lines.push(format!("{n} sauvegarde(s), {} OK", n - ko));
+        lines.push(tf("{0} sauvegarde(s), {1} OK", &[&n, &(n - ko)]));
     }
     if let Some(s) = &app.syno.status {
         if s.copie.en_cours {
-            busy.push(format!(
-                "copie {}",
-                s.copie.avancement.as_ref().map(|p| format!("{} %", p.pct)).unwrap_or_default()
-            ));
+            busy.push(tf("copie {0}", &[&(s.copie.avancement.as_ref().map(|p| format!("{} %", p.pct)).unwrap_or_default())]));
         }
         if s.migration.en_cours {
-            busy.push("migration oCIS".into());
+            busy.push(tr("migration oCIS").into());
         }
     }
     let level = if !problems.is_empty() {
@@ -70,7 +69,7 @@ pub fn summary(app: &App) -> (Level, String) {
     } else {
         Level::Ok
     };
-    let mut tip = String::from("NAS Manager");
+    let mut tip = String::from(tr("NAS Manager"));
     for p in problems.iter().take(3) {
         tip.push_str(&format!("\n⚠ {p}"));
     }
@@ -140,33 +139,33 @@ pub fn diff_omv(prev: &OmvStatus, new: &OmvStatus) -> Vec<(String, String)> {
         if p.en_cours && !j.en_cours {
             match j.dernier_etat.as_deref() {
                 Some("OK") => ev.push((
-                    format!("✅ Sauvegarde « {} » terminée", j.nom),
+                    tf("✅ Sauvegarde « {0} » terminée", &[&j.nom]),
                     j.bilan
                         .as_ref()
-                        .map(|b| format!("{} fichier(s) envoyé(s), {}", b.fichiers_envoyes, crate::fmt::bytes(b.volume_octets.max(0) as u64)))
+                        .map(|b| tf("{0} fichier(s) envoyé(s), {1}", &[&b.fichiers_envoyes, &(crate::fmt::bytes(b.volume_octets.max(0) as u64))]))
                         .unwrap_or_default(),
                 )),
-                Some("ECHEC") => ev.push((format!("❌ Sauvegarde « {} » en échec", j.nom), "Voir le journal dans NAS Manager.".into())),
-                Some("ARRETE") => ev.push((format!("⏹ Sauvegarde « {} » arrêtée", j.nom), String::new())),
+                Some("ECHEC") => ev.push((tf("❌ Sauvegarde « {0} » en échec", &[&j.nom]), tr("Voir le journal dans NAS Manager.").into())),
+                Some("ARRETE") => ev.push((tf("⏹ Sauvegarde « {0} » arrêtée", &[&j.nom]), String::new())),
                 _ => {}
             }
         }
     }
     for a in &new.alertes {
         if !prev.alertes.iter().any(|p| p.tag == a.tag) {
-            ev.push(("🔔 Nouvelle alerte".into(), crate::pages::alert_label(&a.tag)));
+            ev.push((tr("🔔 Nouvelle alerte").into(), crate::pages::alert_label(&a.tag)));
         }
     }
     if prev.cameras.installe && prev.cameras.actif && !new.cameras.actif {
-        ev.push(("📹 Caméras : synchro arrêtée".into(), "Les vidéos ne partent plus vers le Drive en temps réel.".into()));
+        ev.push((tr("📹 Caméras : synchro arrêtée").into(), tr("Les vidéos ne partent plus vers le Drive en temps réel.").into()));
     }
     if prev.cameras.installe && !prev.cameras.actif && new.cameras.actif {
-        ev.push(("📹 Caméras : synchro relancée".into(), String::new()));
+        ev.push((tr("📹 Caméras : synchro relancée").into(), String::new()));
     }
     if let (Some(p), Some(n)) = (&prev.restauration, &new.restauration) {
         if p.etat == "en_cours" && n.etat != "en_cours" {
             ev.push((
-                if n.etat == "ok" { "✅ Restauration terminée".into() } else { "❌ Restauration en échec".into() },
+                if n.etat == "ok" { tr("✅ Restauration terminée").into() } else { tr("❌ Restauration en échec").into() },
                 n.cible.clone(),
             ));
         }
@@ -179,17 +178,17 @@ pub fn diff_syno(prev: &SynoStatus, new: &SynoStatus) -> Vec<(String, String)> {
     if prev.copie.en_cours && !new.copie.en_cours {
         let name = new.copie.source.as_deref().unwrap_or("").rsplit('/').next().unwrap_or("").to_string();
         match new.copie.code.as_deref() {
-            Some("0") => ev.push(("✅ Copie vers l'OMV terminée".into(), name)),
-            Some("stop") => ev.push(("⏹ Copie vers l'OMV arrêtée".into(), name)),
-            _ => ev.push(("❌ Copie vers l'OMV en échec".into(), format!("{name} — la relancer reprendra où elle s'est arrêtée"))),
+            Some("0") => ev.push((tr("✅ Copie vers l'OMV terminée").into(), name)),
+            Some("stop") => ev.push((tr("⏹ Copie vers l'OMV arrêtée").into(), name)),
+            _ => ev.push((tr("❌ Copie vers l'OMV en échec").into(), tf("{0} — la relancer reprendra où elle s'est arrêtée", &[&name]))),
         }
     }
     if prev.migration.en_cours && !new.migration.en_cours {
         let ko = new.migration.resultats.iter().filter(|r| r.etat != "OK").count();
         let ok = new.migration.resultats.len() - ko;
         ev.push((
-            if ko == 0 { "✅ Migration oCIS terminée".into() } else { "⚠ Migration oCIS terminée avec des erreurs".into() },
-            format!("{ok} réussie(s), {ko} en échec"),
+            if ko == 0 { tr("✅ Migration oCIS terminée").into() } else { tr("⚠ Migration oCIS terminée avec des erreurs").into() },
+            tf("{0} réussie(s), {1} en échec", &[&ok, &ko]),
         ));
     }
     ev
@@ -251,9 +250,9 @@ pub struct Tray;
 pub fn create(app: &App) -> Option<Tray> {
     use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
     let (level, tip) = summary(app);
-    let open = MenuItem::new("Ouvrir NAS Manager", true, None);
-    let refresh = MenuItem::new("Actualiser", true, None);
-    let quit = MenuItem::new("Quitter", true, None);
+    let open = MenuItem::new(tr("Ouvrir NAS Manager"), true, None);
+    let refresh = MenuItem::new(tr("Actualiser"), true, None);
+    let quit = MenuItem::new(tr("Quitter"), true, None);
     let menu = Menu::new();
     let ok = menu.append(&open).is_ok()
         && menu.append(&refresh).is_ok()
@@ -407,13 +406,13 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
         if ok {
             Ok(())
         } else {
-            Err("modification du registre impossible".into())
+            Err(tr("modification du registre impossible").into())
         }
     }
     #[cfg(not(windows))]
     {
         let _ = (on, RUN_KEY, RUN_NAME);
-        Err("disponible uniquement sous Windows".into())
+        Err(tr("disponible uniquement sous Windows").into())
     }
 }
 
