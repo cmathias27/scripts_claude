@@ -14,6 +14,7 @@ mod remote;
 mod secret;
 mod ssh;
 mod theme;
+mod tray;
 
 use eframe::egui;
 
@@ -56,7 +57,8 @@ fn main() -> eframe::Result {
             .with_title("NAS Manager")
             .with_inner_size([1240.0, 800.0])
             .with_min_inner_size([900.0, 560.0])
-            .with_icon(icon()),
+            .with_icon(icon())
+            .with_visible(!std::env::args().any(|a| a == "--minimise")),
         persist_window: true,
         ..Default::default()
     };

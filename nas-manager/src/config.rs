@@ -42,6 +42,16 @@ pub struct Settings {
     /// Derniere version lancee (affichage des nouveautes apres une mise a jour)
     #[serde(default)]
     pub last_version: String,
+    /// Notifications Windows (fin de transfert, alertes, connexion perdue)
+    #[serde(default = "yes")]
+    pub notifications: bool,
+    /// Fermer la fenetre = reduire dans la zone de notification
+    #[serde(default = "yes")]
+    pub close_to_tray: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn default_theme() -> String {
@@ -70,6 +80,8 @@ impl Default for Settings {
             theme: default_theme(),
             read_only: false,
             last_version: String::new(),
+            notifications: true,
+            close_to_tray: true,
         }
     }
 }

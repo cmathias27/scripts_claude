@@ -219,6 +219,12 @@ pub struct App {
     /// Identite refusee par l'utilisateur : ne plus la redemander automatiquement
     pub fp_dismissed: [bool; 2],
     pub show_news: bool,
+    pub tray: Option<crate::tray::Tray>,
+    pub hidden: bool,
+    pub quitting: bool,
+    /// Erreurs de connexion consecutives (notification "NAS injoignable")
+    pub err_streak: [u32; 2],
+    pub autostart: bool,
 }
 
 impl App {
@@ -271,7 +277,13 @@ impl App {
             fingerprint: None,
             fp_dismissed: [false, false],
             show_news: false,
+            tray: None,
+            hidden: std::env::args().any(|a| a == "--minimise"),
+            quitting: false,
+            err_streak: [0, 0],
+            autostart: crate::tray::autostart_enabled(),
         };
+        app.tray = crate::tray::create(&app);
         crate::extras::apply_theme(&app.ctx, &app.settings.theme);
         crate::log::info(&format!("démarrage de NAS Manager {}", crate::extras::VERSION));
         // Nouveautes affichees apres une mise a jour
@@ -654,6 +666,13 @@ impl App {
                             if let Some(e) = &s.erreur {
                                 Err(SshError::Other(e.clone()))
                             } else {
+                                if let Some(prev) = &self.omv.status {
+                                    if self.settings.notifications {
+                                        for (t, b) in crate::tray::diff_omv(prev, &s) {
+                                            crate::tray::notify(&self.ctx, &t, &b);
+                                        }
+                                    }
+                                }
                                 self.omv.status = Some(s);
                                 Ok(())
                             }
@@ -665,6 +684,13 @@ impl App {
                             if let Some(e) = &s.erreur {
                                 Err(SshError::Other(e.clone()))
                             } else {
+                                if let Some(prev) = &self.syno.status {
+                                    if self.settings.notifications {
+                                        for (t, b) in crate::tray::diff_syno(prev, &s) {
+                                            crate::tray::notify(&self.ctx, &t, &b);
+                                        }
+                                    }
+                                }
                                 self.syno.status = Some(s);
                                 Ok(())
                             }
@@ -680,6 +706,21 @@ impl App {
             HostId::Omv => self.omv.error.clone(),
             HostId::Syno => self.syno.error.clone(),
         };
+        // NAS injoignable depuis 3 actualisations / de nouveau joignable
+        let k = crate::extras::idx(host);
+        let conn_err = matches!(st_err, Some(SshError::Unreachable(_)) | Some(SshError::Timeout) | Some(SshError::KeyRefused) | Some(SshError::HostKeyChanged));
+        if conn_err {
+            self.err_streak[k] += 1;
+            if self.err_streak[k] == 3 && self.settings.notifications {
+                let msg = st_err.as_ref().map(|e| e.to_string()).unwrap_or_default();
+                crate::tray::notify(&self.ctx, &format!("⚠ {} injoignable", host.label()), &msg);
+            }
+        } else if st_err.is_none() {
+            if self.err_streak[k] >= 3 && self.settings.notifications {
+                crate::tray::notify(&self.ctx, &format!("✅ {} de nouveau joignable", host.label()), "");
+            }
+            self.err_streak[k] = 0;
+        }
         if prev != st_err {
             match &st_err {
                 Some(e) => crate::log::warn(&format!("{} : {e}", host.label())),
@@ -1113,14 +1154,28 @@ fn bad_output(o: &CmdOut, err: &str) -> String {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
+    /// Appele avant chaque affichage, et aussi fenetre cachee (zone de notification)
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_messages();
-        crate::extras::shortcuts(self, &ctx);
         self.maybe_poll(HostId::Omv);
         if self.settings.syno.is_set() {
             self.maybe_poll(HostId::Syno);
         }
+        crate::tray::update(self, ctx);
+        ctx.request_repaint_after(Duration::from_secs(1));
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        // fermeture : reduire dans la zone de notification
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.settings.close_to_tray && self.tray.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            crate::tray::hide_window(self, &ctx);
+            if !self.settings.last_version.is_empty() && !self.toasts.iter().any(|t| t.text.contains("zone de notification")) {
+                crate::log::info("fenêtre réduite dans la zone de notification");
+            }
+        }
+        crate::extras::shortcuts(self, &ctx);
         crate::pages::top_bar(self, ui);
         crate::pages::nav(self, ui);
         egui::CentralPanel::default_margins().show(ui, |ui| {

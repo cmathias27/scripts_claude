@@ -1359,7 +1359,7 @@ pub fn alerts(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-fn alert_label(tag: &str) -> String {
+pub fn alert_label(tag: &str) -> String {
     if let Some(n) = tag.strip_prefix("job-") {
         return format!("Sauvegarde « {n} » en échec");
     }
@@ -2269,36 +2269,58 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
             ui.label(RichText::new("Service SSH à activer : DSM > Panneau de configuration > Terminal & SNMP.").small().weak());
         });
     });
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label("Actualisation toutes les");
-        let mut r = app.edit.refresh_secs.to_string();
-        if ui.add(egui::TextEdit::singleline(&mut r).desired_width(40.0)).changed() {
-            if let Ok(v) = r.trim().parse() {
-                app.edit.refresh_secs = v;
+    ui.add_space(10.0);
+    card(ui, "Préférences", |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Actualisation toutes les");
+            let mut r = app.edit.refresh_secs.to_string();
+            if ui.add(egui::TextEdit::singleline(&mut r).desired_width(40.0)).changed() {
+                if let Ok(v) = r.trim().parse() {
+                    app.edit.refresh_secs = v;
+                }
+            }
+            ui.label("secondes (4 s pendant un transfert)");
+        });
+        egui::CollapsingHeader::new("Avancé").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Client ssh :");
+                ui.add(egui::TextEdit::singleline(&mut app.edit.ssh_bin).hint_text("ssh (client OpenSSH de Windows)").desired_width(320.0));
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Thème :");
+            for (v, l) in [("systeme", "Automatique (Windows)"), ("clair", "Clair"), ("sombre", "Sombre")] {
+                ui.radio_value(&mut app.edit.theme, v.to_string(), l);
+            }
+        });
+        ui.checkbox(&mut app.edit.read_only, "Mode lecture seule (consultation uniquement, aucune action sur les NAS)");
+        ui.checkbox(&mut app.edit.notifications, "Notifications Windows (fin de sauvegarde, de copie, de migration, alertes, NAS injoignable)");
+        ui.checkbox(&mut app.edit.close_to_tray, "Fermer la fenêtre = la réduire dans la zone de notification (la surveillance continue)");
+        if crate::tray::autostart_supported() {
+            let mut a = app.autostart;
+            if ui.checkbox(&mut a, "Lancer NAS Manager au démarrage de Windows (dans la zone de notification)").changed() {
+                match crate::tray::set_autostart(a) {
+                    Ok(()) => {
+                        app.autostart = a;
+                        crate::log::info(&format!("démarrage avec Windows : {}", if a { "activé" } else { "désactivé" }));
+                    }
+                    Err(e) => app.toast(false, e),
+                }
             }
         }
-        ui.label("secondes (4 s pendant un transfert)");
-    });
-    egui::CollapsingHeader::new("Avancé").show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Client ssh :");
-            ui.add(egui::TextEdit::singleline(&mut app.edit.ssh_bin).hint_text("ssh (client OpenSSH de Windows)").desired_width(320.0));
-        });
-    });
-    ui.horizontal(|ui| {
-        ui.label("Thème :");
-        for (v, l) in [("systeme", "Automatique (Windows)"), ("clair", "Clair"), ("sombre", "Sombre")] {
-            ui.radio_value(&mut app.edit.theme, v.to_string(), l);
+        if ui.small_button("Tester une notification").clicked() {
+            crate::tray::notify(&app.ctx, "NAS Manager", "Les notifications fonctionnent.");
         }
     });
-    ui.checkbox(&mut app.edit.read_only, "Mode lecture seule (consultation uniquement, aucune action sur les NAS)");
+    ui.add_space(6.0);
     let dirty = app.edit.omv != app.settings.omv
         || app.edit.syno != app.settings.syno
         || app.edit.refresh_secs != app.settings.refresh_secs
         || app.edit.ssh_bin != app.settings.ssh_bin
         || app.edit.theme != app.settings.theme
-        || app.edit.read_only != app.settings.read_only;
+        || app.edit.read_only != app.settings.read_only
+        || app.edit.notifications != app.settings.notifications
+        || app.edit.close_to_tray != app.settings.close_to_tray;
     ui.horizontal(|ui| {
         if ui.add_enabled(dirty, egui::Button::new(RichText::new("💾 Enregistrer").color(Color32::WHITE)).fill(INFO)).clicked() {
             save = true;
