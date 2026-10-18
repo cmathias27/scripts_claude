@@ -336,7 +336,12 @@ pub fn diagnostic_report(app: &App) -> String {
             s.migration.file.len()
         ));
     }
-    r.push_str(&format!("\nScripts fournis : API {}\n", remote::API_VERSION));
+    r.push_str(&format!(
+        "\nScripts fournis : nas-backup API {} · copie-omv API {} · migre-drive-ocis API {}\n",
+        remote::nb_api(),
+        remote::copie_api(),
+        remote::migre_api()
+    ));
     r.push_str("\n=== Journal de l'application (200 dernières lignes)\n");
     r.push_str(&crate::log::tail(200));
     r.push('\n');
@@ -407,6 +412,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     let pages = [
         Page::Dashboard,
         Page::Backups,
+        Page::History,
         Page::Cameras,
         Page::Alerts,
         Page::Copy,
@@ -423,6 +429,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         egui::Key::Num6,
         egui::Key::Num7,
         egui::Key::Num8,
+        egui::Key::Num9,
     ];
     ctx.input_mut(|i| {
         if i.consume_key(egui::Modifiers::NONE, egui::Key::F5) {

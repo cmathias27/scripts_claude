@@ -4,6 +4,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod charts;
+mod explain;
+mod history;
 mod config;
 mod extras;
 mod fmt;

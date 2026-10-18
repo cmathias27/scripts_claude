@@ -26,6 +26,14 @@ fn dot_label(ui: &mut egui::Ui, col: Color32, text: impl Into<RichText>) -> egui
     .response
 }
 
+pub fn card_pub<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    card(ui, title, add)
+}
+
+pub fn info_banner(ui: &mut egui::Ui, text: &str) {
+    banner(ui, INFO, text);
+}
+
 fn card<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     theme::card_frame(ui)
         .show(ui, |ui| {
@@ -327,6 +335,7 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
                     None
                 },
             ),
+            (Page::History, "📈  Historique", None),
             (Page::Cameras, "📹  Caméras", if cam_bad { Some(("arrêtée".into(), ERR)) } else { None }),
             (Page::Alerts, "🔔  Alertes", if alerts > 0 { Some((alerts.to_string(), ERR)) } else { None }),
             (Page::Copy, "📦  Copie → OMV", if copy_run { Some(("en cours".into(), INFO)) } else { None }),
@@ -615,7 +624,7 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     let s = app.omv.status.clone().unwrap();
-    if !s.nb_installe || s.nb_api < remote::API_VERSION {
+    if !s.nb_installe || s.nb_api < remote::nb_api() {
         banner(
             ui,
             WARN,
@@ -799,6 +808,11 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
         .on_hover_text(&j.source);
         if !j.source_existe {
             ui.colored_label(ERR, "⚠ Dossier source introuvable (disque démonté ?)");
+        }
+        if !j.en_cours && j.dernier_etat.as_deref() == Some("ECHEC") {
+            if let Some(e) = &j.derniere_erreur {
+                crate::explain::show(ui, e);
+            }
         }
         if j.en_cours {
             match &j.avancement {
@@ -1250,7 +1264,8 @@ pub fn cameras(app: &mut App, ui: &mut egui::Ui) {
     }
     ui.add_space(8.0);
     if let Some(e) = &c.derniere_erreur {
-        banner(ui, ERR, &format!("Dernière erreur : {e}"));
+        ui.label(RichText::new("Dernière erreur").strong());
+        crate::explain::show(ui, e);
         ui.add_space(6.0);
     }
     card(ui, "Derniers événements", |ui| {
@@ -1408,7 +1423,8 @@ pub fn passwords_window(app: &mut App, ctx: &egui::Context) {
 // =====================================================================
 
 fn syno_script_banner(app: &mut App, ui: &mut egui::Ui, installed: bool, api: u32, name: &str) -> bool {
-    if installed && api >= remote::API_VERSION {
+    let expected = if name == "copie-omv" { remote::copie_api() } else { remote::migre_api() };
+    if installed && api >= expected {
         return true;
     }
     banner(
@@ -1486,6 +1502,9 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                     Some(code) => dot_label(ui, ERR, format!("Terminée avec une erreur (code {code}) — la relancer reprendra où elle s'est arrêtée")),
                     None => dot_label(ui, WARN, "Interrompue"),
                 };
+                if let Some(l) = c.erreurs.iter().rev().find(|l| crate::explain::explain(l).is_some()) {
+                    crate::explain::show(ui, l);
+                }
                 for l in &c.erreurs {
                     ui.label(RichText::new(l).monospace().size(12.0).color(ERR));
                 }
@@ -1842,10 +1861,13 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                 ui.horizontal_wrapped(|ui| {
                     dot(ui, if r.etat == "OK" { OK } else { ERR });
                     ui.label(RichText::new(format!("{} → {}", r.libelle, r.espace)).strong());
-                    if !r.detail.is_empty() {
+                    if !r.detail.is_empty() && r.etat == "OK" {
                         ui.label(RichText::new(&r.detail).small());
                     }
                 });
+                if r.etat != "OK" && !r.detail.is_empty() {
+                    crate::explain::show(ui, &r.detail);
+                }
             }
             if m.resultats.iter().any(|r| r.detail.contains("quota")) {
                 ui.label(RichText::new("Espace plein : dans oCIS, ouvre l'espace > ⋯ > Modifier le quota > « Pas de restriction ».").small().color(WARN));
@@ -2409,19 +2431,19 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
     card(ui, "5. Scripts sur les NAS", |ui| {
         let omv = app.omv.status.clone();
         let syno = app.syno.status.clone();
-        let ver = |inst: bool, api: u32| -> (Color32, String) {
+        let ver = |inst: bool, api: u32, expected: u32| -> (Color32, String) {
             if !inst {
                 (IDLE, "non installé".into())
-            } else if api >= remote::API_VERSION {
+            } else if api >= expected {
                 (OK, "à jour".into())
             } else {
-                (WARN, "ancienne version (sans commandes pour l'application)".into())
+                (WARN, "ancienne version : mise à jour disponible".into())
             }
         };
         ui.horizontal(|ui| {
             match &omv {
                 Some(s) => {
-                    let (c, t) = ver(s.nb_installe, s.nb_api);
+                    let (c, t) = ver(s.nb_installe, s.nb_api, remote::nb_api());
                     dot_label(ui, c, format!("OMV · nas-backup : {t}"));
                 }
                 None => {
@@ -2437,8 +2459,8 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             match &syno {
                 Some(s) => {
-                    let (c1, t1) = ver(s.copie.installe, s.copie.api);
-                    let (c2, t2) = ver(s.migration.installe, s.migration.api);
+                    let (c1, t1) = ver(s.copie.installe, s.copie.api, remote::copie_api());
+                    let (c2, t2) = ver(s.migration.installe, s.migration.api, remote::migre_api());
                     ui.vertical(|ui| {
                         dot_label(ui, c1, format!("Synology · copie-omv : {t1}"));
                         dot_label(ui, c2, format!("Synology · migre-drive-ocis : {t2}"));
@@ -2494,7 +2516,7 @@ fn maintenance_card(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         ui.label(RichText::new(format!("Dossier de l'application : {}", crate::config::app_dir().display())).small().weak());
-        ui.label(RichText::new("Raccourcis : F5 actualiser · Ctrl+1 à Ctrl+8 changer de page").small().weak());
+        ui.label(RichText::new("Raccourcis : F5 actualiser · Ctrl+1 à Ctrl+9 changer de page").small().weak());
     });
 }
 

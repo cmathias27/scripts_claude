@@ -28,6 +28,7 @@ impl HostId {
 pub enum Page {
     Dashboard,
     Backups,
+    History,
     Cameras,
     Alerts,
     Copy,
@@ -225,6 +226,7 @@ pub struct App {
     /// Erreurs de connexion consecutives (notification "NAS injoignable")
     pub err_streak: [u32; 2],
     pub autostart: bool,
+    pub history: crate::history::HistoryState,
 }
 
 impl App {
@@ -282,6 +284,7 @@ impl App {
             quitting: false,
             err_streak: [0, 0],
             autostart: crate::tray::autostart_enabled(),
+            history: Default::default(),
         };
         app.tray = crate::tray::create(&app);
         crate::extras::apply_theme(&app.ctx, &app.settings.theme);
@@ -316,6 +319,7 @@ impl App {
         if let Ok(p) = std::env::var("NAS_MANAGER_PAGE") {
             app.page = match p.as_str() {
                 "sauvegardes" => Page::Backups,
+                "historique" => Page::History,
                 "cameras" => Page::Cameras,
                 "alertes" => Page::Alerts,
                 "copie" => Page::Copy,
@@ -1184,6 +1188,7 @@ impl eframe::App for App {
                 match self.page {
                     Page::Dashboard => crate::pages::dashboard(self, ui),
                     Page::Backups => crate::pages::backups(self, ui),
+                    Page::History => crate::history::page(self, ui),
                     Page::Cameras => crate::pages::cameras(self, ui),
                     Page::Alerts => crate::pages::alerts(self, ui),
                     Page::Copy => crate::pages::copy(self, ui),

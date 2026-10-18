@@ -62,6 +62,7 @@ pub struct Job {
     pub en_cours: bool,
     pub debut: Option<i64>,
     pub avancement: Option<Progress>,
+    pub derniere_erreur: Option<String>,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -256,4 +257,45 @@ pub struct Space {
     pub name: String,
     pub free: i64,
     pub quota: i64,
+}
+
+/// Une execution de sauvegarde (historique.jsonl)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Run {
+    pub nom: String,
+    pub etat: String,
+    pub erreur: String,
+    pub debut: i64,
+    pub fin: i64,
+    pub duree_min: f64,
+    pub fichiers_envoyes: i64,
+    pub retires: i64,
+    pub erreurs: i64,
+    pub volume_octets: i64,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct DiskPoint {
+    pub p: String,
+    pub u: u64,
+    pub s: u64,
+}
+
+/// Releve d'espace (espace.jsonl)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct SpacePoint {
+    pub t: i64,
+    pub drive_go: Option<f64>,
+    pub drive_total_go: Option<f64>,
+    pub disques: Vec<DiskPoint>,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct History {
+    pub executions: Vec<Run>,
+    pub espace: Vec<SpacePoint>,
 }

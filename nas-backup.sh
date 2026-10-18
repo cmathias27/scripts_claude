@@ -405,7 +405,7 @@ run_job() {
   ( while sleep "$HA_LIVE"; do
       [ -f "$runf" ] && kill -0 $$ 2>/dev/null || exit 0
       ha_status
-    done ) &
+    done ) 9>&- &   # 9>&- : ne pas garder le verrou de la sauvegarde apres sa fin
   local live=$!
 
   if [ "$J_MODE" = sync ]; then
@@ -444,8 +444,30 @@ run_job() {
     local err; err=$(grep -E 'ERROR|CRITICAL' "$runlog" | tail -n 1 | sed -E 's/^[0-9\/ :]+//' | cut -c1-200)
     notify critique "job-$J_NAME" "Sauvegarde « $J_NAME » en échec" "Code $rc. ${err:-Voir $LOG sur le NAS.}"
   fi
+  historise "$runlog"
   ha_status
   return "$rc"
+}
+
+# Historique : une ligne JSON par execution (bilan + etat + derniere erreur), 3000 au plus
+historise() {
+  local h="$STATE_DIR/historique.jsonl" st err
+  st=$(awk '{print $NF}' "$STATE_DIR/$J_NAME.status" 2>/dev/null)
+  err=$(grep -E 'ERROR|CRITICAL' "$1" 2>/dev/null | grep -v 'Attempt [0-9]' | tail -n 1 | sed -E 's/^[0-9\/ :]+//' | cut -c1-300)
+  python3 - "$STATE_DIR/$J_NAME.bilan.json" "$J_NAME" "${st:-?}" "$err" "$h" <<'PY2' 2>/dev/null
+import json, sys
+bilan, nom, etat, err, out = sys.argv[1:6]
+try:
+    d = json.load(open(bilan))
+except Exception:
+    d = {}
+d.update({"nom": nom, "etat": etat, "erreur": err})
+with open(out, "a") as f:
+    f.write(json.dumps(d, ensure_ascii=False) + "\n")
+PY2
+  if [ "$(wc -l < "$h" 2>/dev/null || echo 0)" -gt 3000 ]; then
+    tail -n 2500 "$h" > "$h.tmp" && mv -f "$h.tmp" "$h"
+  fi
 }
 
 run_job_locked() {
@@ -559,7 +581,7 @@ menu() {
 
 # =========================== Commandes non interactives ==============
 # Utilisees par l'application Windows "NAS Manager" (aucune question posee).
-API_VERSION=1
+API_VERSION=2
 
 api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER_DRIVE MODE CHIFFRE HORAIRE CORBEILLE
   local kind="$1"; shift

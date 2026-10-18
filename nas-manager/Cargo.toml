@@ -1,6 +1,6 @@
 [package]
 name = "nas-manager"
-version = "1.0.0-beta.2"
+version = "1.0.0-beta.3"
 edition = "2021"
 description = "Suivi et gestion des sauvegardes et synchronisations du NAS (OMV + Synology) sans SSH"
 publish = false

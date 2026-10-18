@@ -8,8 +8,22 @@ use base64::Engine;
 pub const NAS_BACKUP_SH: &str = include_str!("../../nas-backup.sh");
 pub const COPIE_OMV_SH: &str = include_str!("../../copie-omv.sh");
 pub const MIGRE_OCIS_SH: &str = include_str!("../../migre-drive-ocis.sh");
-/// Version des commandes sans question attendue dans les scripts
-pub const API_VERSION: u32 = 1;
+/// Version des commandes sans question d'un script (ligne API_VERSION=N)
+pub fn api_of(script: &str) -> u32 {
+    script
+        .lines()
+        .find_map(|l| l.strip_prefix("API_VERSION=").and_then(|v| v.trim().parse().ok()))
+        .unwrap_or(0)
+}
+pub fn nb_api() -> u32 {
+    api_of(NAS_BACKUP_SH)
+}
+pub fn copie_api() -> u32 {
+    api_of(COPIE_OMV_SH)
+}
+pub fn migre_api() -> u32 {
+    api_of(MIGRE_OCIS_SH)
+}
 
 pub const NB_BIN: &str = "/usr/local/bin/nas-backup";
 pub const COPIE_BIN: &str = "/usr/local/bin/copie-omv";
@@ -172,6 +186,11 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
     j["en_cours"] = running
     if running:
         j["avancement"] = progress(tail(f"{S}/{name}.run.log", 262144))
+    elif j.get("dernier_etat") == "ECHEC":
+        errs = [l for l in tail(f"{S}/{name}.run.log", 262144).splitlines()
+                if (" ERROR " in l or "CRITICAL" in l) and "Attempt " not in l]
+        if errs:
+            j["derniere_erreur"] = re.sub(r"^[0-9/ :]+", "", errs[-1])[:300]
     jobs.append(j)
 out["sauvegardes"] = jobs
 
@@ -227,6 +246,28 @@ out["alertes"] = al
 out["alertes_installees"] = os.path.exists("/usr/local/bin/nas-check")
 out["nas_check_en_cours"] = rc("pgrep -f '/usr/local/bin/nas-chec[k]' >/dev/null") == 0
 out["suivi_ha"] = os.path.exists("/usr/local/bin/nas-ha-status")
+
+# ---------------- Evolution de l'espace (un point toutes les 6 h, 1500 au plus)
+try:
+    E = S + "/espace.jsonl"
+    last = 0
+    if os.path.exists(E):
+        lines = tail(E, 4000).splitlines()
+        if lines:
+            last = json.loads(lines[-1]).get("t", 0)
+    if time.time() - last > 6 * 3600 and os.path.isdir(S):
+        h = out.get("sante") or {}
+        pt = {"t": int(time.time()), "drive_go": h.get("used_go"), "drive_total_go": h.get("total_go"),
+              "disques": [{"p": d["point"], "u": d["utilise"], "s": d["taille"]} for d in disques]}
+        with open(E, "a") as f:
+            f.write(json.dumps(pt) + "\n")
+        with open(E) as f:
+            all_lines = f.readlines()
+        if len(all_lines) > 1500:
+            with open(E, "w") as f:
+                f.writelines(all_lines[-1500:])
+except Exception:
+    pass
 print(json.dumps(out, ensure_ascii=False))
 PYEOF
 "#####;
@@ -362,6 +403,29 @@ mg["historique"] = [l for l in rd(M + "/historique.log").splitlines() if l.strip
 mg["journal"] = [l for l in tail(M + "/progression.log", 12000).splitlines() if l.strip()][-14:]
 out["migration"] = mg
 print(json.dumps(out, ensure_ascii=False))
+PYEOF
+"#####;
+
+/// Historique des sauvegardes et evolution de l'espace (OMV), a la demande
+pub const OMV_HISTORY: &str = r#####"
+export LC_ALL=C
+python3 - <<'PYEOF'
+import json
+def load(p, n):
+    try:
+        with open(p, errors="ignore") as f:
+            lines = f.readlines()[-n:]
+    except OSError:
+        return []
+    out = []
+    for l in lines:
+        try:
+            out.append(json.loads(l))
+        except ValueError:
+            pass
+    return out
+print(json.dumps({"executions": load("/var/lib/nas-backup/historique.jsonl", 1500),
+                  "espace": load("/var/lib/nas-backup/espace.jsonl", 1500)}, ensure_ascii=False))
 PYEOF
 "#####;
 
@@ -688,11 +752,19 @@ mod live {
         assert_eq!(run(true, &ack_alert("job-Documents; rm -rf /")).code, 0);
         run(true, &show_passwords());
         run(true, &tail_file("/var/log/cam-sync.log", 3));
+        // execution reelle (faux rclone) : historique + verrou libere des la fin
+        let o = run(true, &format!("n=$(wc -l < /var/lib/nas-backup/historique.jsonl 2>/dev/null || echo 0)\nFAKE_DUR=2 {NB_BIN} run Musique >/dev/null 2>&1\nflock -n /run/nas-backup-Musique.lock true && echo LIBRE\necho $(( $(wc -l < /var/lib/nas-backup/historique.jsonl) - n ))\ntail -n 1 /var/lib/nas-backup/historique.jsonl\n"));
+        assert!(o.stdout.contains("LIBRE"), "verrou encore tenu : {}", o.text());
+        assert!(o.stdout.lines().nth(1) == Some("1"), "historique : {}", o.text());
+        assert!(o.stdout.contains("\"nom\": \"Musique\"") && o.stdout.contains("\"etat\": \"OK\""));
+        let o = run(true, OMV_HISTORY);
+        let h: crate::model::History = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json historique");
+        assert!(h.executions.iter().any(|r| r.nom == "Musique"));
         // collecte de l'etat : JSON valide et coherent
         let o = run(true, OMV_STATUS);
         let st: crate::model::OmvStatus = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json OMV");
         assert!(st.erreur.is_none());
-        assert_eq!(st.nb_api, API_VERSION);
+        assert_eq!(st.nb_api, nb_api());
         assert!(st.sauvegardes.iter().any(|j| j.nom == "Photos" && j.dernier_etat.as_deref() == Some("OK")));
         assert!(st.cameras.installe);
     }
