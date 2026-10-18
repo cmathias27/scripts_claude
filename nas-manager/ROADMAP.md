@@ -86,6 +86,9 @@ Idées en attente, à décider selon l'usage.
 - [ ] **Ouvrir le temps réel à n'importe quel dossier** : la synchro caméras devient un cas parmi d'autres.
   - Choisir **un ou plusieurs dossiers à surveiller**.
   - La synchro caméras existante est reprise comme une sauvegarde temps réel parmi les autres.
+- [ ] **Renommer les pages en conséquence** (menu, raccourcis, aide, traduction anglaise) :
+  - « Caméras » → **« Sauvegardes temps réel »** (*Real-time backups*).
+  - « Sauvegardes » → **« Sauvegardes programmées »** (*Scheduled backups*).
 
 ### Écarté
 - Signature du `.exe` (certificat payant).
