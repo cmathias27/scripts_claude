@@ -7,6 +7,9 @@
 #    sans argument : menu
 #    suivi         : reprendre l'affichage de la migration en cours
 #    stop          : arreter la migration en cours
+#  Sans question (application Windows NAS Manager) :
+#    espaces | sources | ajouter <src> <id espace> <sous-dossier|-> <non|oui|verif> [libelle]
+#    retirer <n> | lancer | arreter | configurer (5 lignes sur l'entree standard)
 #
 #  - Les fichiers passent par l'API WebDAV d'oCIS (jamais d'ecriture
 #    directe dans le stockage oCIS), avec les dates de modification.
@@ -727,11 +730,128 @@ stop_run() {
   echo -e "${J}Migration arretee. Les migrations non terminees sont remises en file d'attente.${N}"
 }
 
+# =========================== Commandes sans question =================
+# Utilisees par l'application Windows "NAS Manager".
+API_VERSION=1
+
+api_spaces() {  # id|nom|webDavUrl|libre|quota
+  load_conf || die "connexion oCIS non configuree."
+  list_spaces || { echo "HTTP $HTTP"; http_hint "$HTTP"; exit 2; }
+  printf '%s\n' "${SPACES[@]}"
+}
+
+api_sources() {  # chemin|libelle des « Mon Drive »
+  local d u
+  for d in /volume[0-9]*/homes/*/Drive; do
+    [ -d "$d" ] || continue
+    u="${d%/Drive}"; u="${u##*/}"
+    echo "$d|$u"
+  done
+}
+
+api_add() {  # api_add <source> <id espace> <sous-dossier|-> <non|oui|verif> [libelle]
+  local src="${1%/}" sid="$2" sub="${3:-}" del="${4:-non}" lab="${5:-}" line found=""
+  [ -d "$src" ] || die "dossier source introuvable : $src"
+  [[ "$del" =~ ^(non|oui|verif)$ ]] || die "option de suppression invalide (non, oui ou verif)."
+  [ "$sub" = - ] && sub=""; sub="${sub#/}"; sub="${sub%/}"
+  [[ "$src$sub$lab" == *"|"* ]] && die "caractere | interdit."
+  load_conf || die "connexion oCIS non configuree."
+  list_spaces || { http_hint "$HTTP"; exit 2; }
+  for line in "${SPACES[@]}"; do [ "${line%%|*}" = "$sid" ] && { found="$line"; break; }; done
+  [ -n "$found" ] || die "espace oCIS introuvable (id $sid)."
+  IFS='|' read -r SP_ID SP_NAME SP_DAV SP_FREE SP_QUOTA <<< "$found"
+  if [ -z "$lab" ]; then
+    lab="${src##*/}"; [[ "$src" =~ /homes/([^/]+)/Drive$ ]] && lab="${BASH_REMATCH[1]}"
+  fi
+  local total
+  total=$(du -sb --exclude='@eaDir' --exclude='#SynoRecycle' --exclude='.SynologyWorkingDirectory' "$src" 2>/dev/null | cut -f1)
+  printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$src" "$lab" "$SP_ID" "$SP_NAME" "$SP_DAV" "$sub" "${total:-0}" "$del" >> "$QUEUE"
+  echo "Ajoute a la file d'attente : $lab -> $SP_NAME${sub:+/$sub} ($(hsize "${total:-0}"))"
+  if [ "${SP_QUOTA:-0}" -gt 0 ] 2>/dev/null && [ "${total:-0}" -gt "${SP_FREE:-0}" ]; then
+    echo "Attention : l'espace n'a que $(hsize "$SP_FREE") de libre (quota $(hsize "$SP_QUOTA")) : la migration s'arretera quand il sera plein."
+  fi
+}
+
+api_remove() {  # api_remove <numero>
+  [[ "${1:-}" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le "$(grep -c '' "$QUEUE" 2>/dev/null || echo 0)" ] \
+    || die "numero invalide."
+  sed -i "${1}d" "$QUEUE"; echo "Retire de la file d'attente."
+}
+
+api_start() {
+  running && die "une migration est deja en cours."
+  [ -s "$QUEUE" ] || die "la file d'attente est vide."
+  load_conf || die "connexion oCIS non configuree."
+  ensure_rclone
+  cp "$QUEUE" "$STATE/lot"; : > "$QUEUE"
+  [ -s "$LOGF" ] && mv -f "$LOGF" "$LOGF.precedent"; : > "$LOGF"
+  rm -f "$STATE/code" "$STATE/etape" "$STATE/resultats" "$STATE/rss"
+  printf 'NB=%s\nDEBUT=%s\n' "$(wc -l < "$STATE/lot")" "$(date +%s)" > "$RUN"
+  nohup setsid bash "$SELF" _worker >/dev/null 2>&1 &
+  echo "PID=$!" >> "$RUN"
+  echo "Migration lancee ($(wc -l < "$STATE/lot") element(s))."
+}
+
+api_stop() {
+  running || { echo "Aucune migration en cours."; return 0; }
+  pkill -TERM -s "$(ps -o sid= -p "$PID" | tr -d ' ')" 2>/dev/null || kill "$PID"
+  if [ -f "$STATE/etape" ]; then . "$STATE/etape"; tail -n +"$ETAPE" "$STATE/lot" >> "$QUEUE"; fi
+  echo "Migration arretee. Les migrations non terminees sont remises en file d'attente."
+}
+
+# Configuration sans question : 5 lignes sur l'entree standard
+#   adresse, utilisateur, jeton, adresse locale (ou -), certificat non reconnu accepte (0/1)
+api_configure() {
+  local u usr pw lu insecure
+  read -r u; read -r usr; read -r pw; read -r lu; read -r insecure
+  u="${u%/}"; [[ "$u" =~ ^https?:// ]] || u="https://$u"
+  [ -n "$usr" ] && [ -n "$pw" ] || die "utilisateur et jeton obligatoires."
+  [ "$insecure" = 1 ] || insecure=0
+  CURL_K=""; [ $insecure = 1 ] && CURL_K="-k"
+  if ! curl -s $CURL_K -o /dev/null -m 15 "$u/status.php"; then
+    if [ $insecure = 0 ] && curl -s -k -o /dev/null -m 15 "$u/status.php"; then
+      die "certificat HTTPS d'oCIS non reconnu : coche « accepter le certificat » pour continuer."
+    fi
+    die "oCIS injoignable a l'adresse $u"
+  fi
+  OCIS_URL="$u"; BASE="$u"; OCIS_USER="$usr"; OCIS_PASS="$pw"
+  api GET /graph/v1.0/me/drives
+  case "$HTTP" in
+    200) echo "Connexion a oCIS reussie." ;;
+    401) die "identifiants refuses (401) : verifie le jeton (OCIS_ADD_RUN_SERVICES=auth-app et PROXY_ENABLE_APP_AUTH=true)." ;;
+    *)   die "reponse inattendue d'oCIS (HTTP $HTTP)." ;;
+  esac
+  RCLONE_K=(); [ $insecure = 1 ] && RCLONE_K=(--no-check-certificate)
+  ensure_rclone
+  if [ -n "$lu" ] && [ "$lu" != "-" ]; then
+    lu="${lu%/}"; [[ "$lu" =~ ^https?:// ]] || lu="https://$lu"
+    local sb="$BASE" sk="$CURL_K"; local -a sr=("${RCLONE_K[@]}")
+    BASE="$lu"; CURL_K="-k"; RCLONE_K=(--no-check-certificate)
+    api GET /graph/v1.0/me/drives
+    if [ "$HTTP" = 200 ]; then echo "Adresse locale OK : $lu"
+    else echo "L'adresse locale ne repond pas (HTTP $HTTP) : les transferts passeront par $u."; lu=""; BASE="$sb"; CURL_K="$sk"; RCLONE_K=("${sr[@]}"); fi
+  else
+    lu=""
+  fi
+  detect_vendor || exit 1
+  printf 'OCIS_URL=%q\nLOCAL_URL=%q\nOCIS_USER=%q\nOCIS_PASS=%q\nOCIS_INSECURE=%s\nOCIS_VENDOR=%s\n' "$u" "$lu" "$usr" "$pw" "$insecure" "$OCIS_VENDOR" > "$CONF"
+  chmod 600 "$CONF"
+  echo "Configuration enregistree."
+}
+
 # =========================== Point d'entree ==========================
 case "${1:-}" in
   _worker) worker; exit ;;
   suivi)   follow; exit ;;
   stop)    stop_run; exit ;;
+  espaces)     api_spaces; exit ;;
+  sources)     api_sources; exit ;;
+  ajouter)     api_add "${2:-}" "${3:-}" "${4:-}" "${5:-non}" "${6:-}"; exit ;;
+  retirer)     api_remove "${2:-}"; exit ;;
+  lancer)      api_start; exit ;;
+  arreter)     api_stop; exit ;;
+  configurer)  api_configure; exit ;;
+  api-version) echo "$API_VERSION"; exit ;;
 esac
 
 ensure_conf

@@ -9,6 +9,12 @@
 #  Arreter celles en cours      : nas-backup stop
 #  Lister                       : nas-backup list
 #
+#  Commandes sans question (utilisees par l'application Windows NAS Manager) :
+#    nas-backup save <nouveau|modif> NOM SOURCE DOSSIER sync|copy oui|non HH:MM|manuel JOURS
+#    nas-backup delete <NOM> [effacer-drive]
+#    nas-backup restore <NOM> <DOSSIER>
+#    nas-backup gen-cron
+#
 #  Prerequis : rclone + remote "gdrive" fonctionnel
 #  Au premier lancement, le script s'installe dans /usr/local/bin/nas-backup
 #
@@ -551,6 +557,90 @@ menu() {
   done
 }
 
+# =========================== Commandes non interactives ==============
+# Utilisees par l'application Windows "NAS Manager" (aucune question posee).
+API_VERSION=1
+
+api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER_DRIVE MODE CHIFFRE HORAIRE CORBEILLE
+  local kind="$1"; shift
+  [ $# -eq 7 ] || die "usage : nas-backup save <nouveau|modif> NOM SOURCE DOSSIER MODE CHIFFRE HORAIRE CORBEILLE"
+  J_NAME="$1" J_SRC="${2%/}" J_SUB="$3" J_MODE="$4" J_ENC="$5" J_SCHED="$6" J_RET="$7"
+  J_SUB="${J_SUB#/}"; J_SUB="${J_SUB%/}"
+  [[ "$J_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || die "nom invalide (lettres, chiffres, - et _)."
+  case "$kind" in
+    nouveau) job_exists "$J_NAME" && die "une sauvegarde '$J_NAME' existe deja." ;;
+    modif)   job_exists "$J_NAME" || die "sauvegarde '$J_NAME' introuvable." ;;
+    *)       die "type inconnu : $kind" ;;
+  esac
+  [[ "$J_SRC" != *"|"* && -d "$J_SRC" ]] || die "dossier source introuvable : $J_SRC"
+  [[ -z "$J_SUB" || "$J_SUB" == *"|"* || "$J_SUB" == _corbeille* ]] && die "dossier Drive invalide."
+  [[ "$J_MODE" =~ ^(sync|copy)$ ]] || die "mode invalide (sync ou copy)."
+  [[ "$J_ENC" =~ ^(oui|non)$ ]] || die "chiffrement invalide (oui ou non)."
+  [ "$J_SCHED" = manuel ] || [[ "$J_SCHED" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "horaire invalide (HH:MM ou manuel)."
+  [[ "$J_RET" =~ ^[0-9]+$ ]] || die "nombre de jours de corbeille invalide."
+  [ "$J_MODE" = copy ] && J_RET=0
+  local n s sub m e sch r
+  while IFS='|' read -r n s sub m e sch r || [ -n "$n" ]; do
+    [[ -z "$n" || "$n" == \#* || "$n" == "$J_NAME" ]] && continue
+    if [ "$e" = "$J_ENC" ] && { [[ "$sub" == "$J_SUB" ]] || [[ "$sub" == "$J_SUB/"* ]] || [[ "$J_SUB" == "$sub/"* ]]; }; then
+      jaune "Attention : la sauvegarde '$n' utilise deja le dossier Drive '$sub'."
+    fi
+  done < "$JOBS"
+  local old_dest=""
+  if [ "$kind" = modif ]; then
+    local nm="$J_NAME" a b c d f g h
+    IFS='|' read -r a b c d f g h <<< "$(grep -m1 "^$nm|" "$JOBS")"
+    old_dest=$(dest_of "$f" "$c")
+  fi
+  [ "$J_ENC" = oui ] && ensure_crypt
+  job_save; gen_cron
+  logl "$J_NAME : configuration enregistree (application)"
+  vert "Sauvegarde '$J_NAME' enregistree -> $(dest_of "$J_ENC" "$J_SUB")"
+  if [ -n "$old_dest" ] && [ "$old_dest" != "$(dest_of "$J_ENC" "$J_SUB")" ]; then
+    jaune "La destination a change : les fichiers deja envoyes restent dans $old_dest"
+  fi
+}
+
+api_delete() {  # api_delete NOM [effacer-drive]
+  job_get "$1" || die "sauvegarde '$1' introuvable."
+  local dest trash; dest=$(dest_of "$J_ENC" "$J_SUB"); trash=$(trash_of "$J_ENC" "$J_NAME")
+  job_del "$J_NAME"; gen_cron
+  logl "$J_NAME : sauvegarde supprimee (application)"
+  vert "Sauvegarde '$J_NAME' supprimee (plus de planification)."
+  if [ "${2:-}" = effacer-drive ]; then
+    rclone purge "$dest" -q 2>/dev/null; rclone purge "$trash" -q 2>/dev/null
+    logl "$J_NAME : donnees supprimees du Drive"
+    vert "Fichiers effaces du Drive : $dest"
+  else
+    jaune "Les fichiers sur le Drive sont conserves : $dest"
+  fi
+}
+
+api_restore() {  # api_restore NOM DOSSIER_CIBLE   (a lancer en arriere-plan)
+  local st="$STATE_DIR/restauration.status" rlog="$STATE_DIR/restauration.log"
+  job_get "$1" || die "sauvegarde '$1' introuvable."
+  local target="${2%/}" dest rc
+  [ -n "$target" ] || die "dossier de restauration manquant."
+  dest=$(dest_of "$J_ENC" "$J_SUB")
+  exec 9>/run/nas-backup-restauration.lock
+  flock -n 9 || die "une restauration est deja en cours."
+  mkdir -p "$target" || die "impossible de creer $target"
+  : > "$rlog"
+  printf 'ETAT=en_cours\nNOM=%q\nCIBLE=%q\nDEBUT=%s\n' "$J_NAME" "$target" "$(date +%s)" > "$st"
+  logl "$J_NAME : restauration vers $target"
+  rclone copy "$dest" "$target" "${EXCLUDES[@]}" --stats 10s --log-file "$rlog" --log-level INFO; rc=$?
+  if [ $rc -eq 0 ]; then
+    printf 'ETAT=ok\nNOM=%q\nCIBLE=%q\nFIN=%s\n' "$J_NAME" "$target" "$(date +%s)" > "$st"
+    logl "$J_NAME : restauration terminee ($target)"
+    notify info "restore-$J_NAME" "Restauration « $J_NAME » terminée" "Fichiers restaurés dans $target"
+  else
+    printf 'ETAT=echec\nNOM=%q\nCIBLE=%q\nFIN=%s\nCODE=%s\n' "$J_NAME" "$target" "$(date +%s)" "$rc" > "$st"
+    logl "$J_NAME : restauration en ECHEC (code $rc)"
+    notify critique "restore-$J_NAME" "Restauration « $J_NAME » en échec" "Code $rc. Détails : $rlog"
+  fi
+  return $rc
+}
+
 # =========================== Point d'entree ==========================
 init
 case "${1:-}" in
@@ -560,5 +650,10 @@ case "${1:-}" in
   run-all)  run_all ;;
   list)     list_jobs ;;
   stop)     stop_all ;;
-  *)        echo "Usage : nas-backup [run <NOM> | run-at <HH:MM> | run-all | list | stop]"; exit 1 ;;
+  save)     shift; api_save "$@" ;;
+  delete)   [ -n "${2:-}" ] || die "usage : nas-backup delete <NOM> [effacer-drive]"; api_delete "$2" "${3:-}" ;;
+  restore)  [ -n "${3:-}" ] || die "usage : nas-backup restore <NOM> <DOSSIER>"; api_restore "$2" "$3" ;;
+  gen-cron) gen_cron ;;
+  api-version) echo "$API_VERSION" ;;
+  *)        echo "Usage : nas-backup [run <NOM> | run-at <HH:MM> | run-all | list | stop | save ... | delete <NOM> | restore <NOM> <DOSSIER>]"; exit 1 ;;
 esac

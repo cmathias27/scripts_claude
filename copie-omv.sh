@@ -7,6 +7,9 @@
 #    sans argument : menu
 #    suivi         : reprendre l'affichage de la copie en cours
 #    stop          : arreter la copie en cours
+#  Sans question (application Windows NAS Manager) :
+#    lancer <source> <dossier OMV> <dossier|contenu> <copie|deplacement>
+#    arreter
 #
 #  La copie tourne en arriere-plan : fermer la fenetre SSH ou faire
 #  Ctrl+C pendant le suivi ne l'arrete PAS. Une copie interrompue
@@ -151,6 +154,45 @@ follow() {
   trap - INT
 }
 
+# --------------------------- Lancement (commun menu / application) ---
+# start_copy <source> <dossier OMV parent> <source rsync> <destination finale> <copie|deplacement> <total> <nb fichiers>
+start_copy() {
+  local src="$1" dst="$2" rsrc="$3" final="$4" mode="$5" total="$6" nbf="$7"
+  # Droits OMV : les fichiers prennent le proprietaire et le groupe du dossier
+  # de destination (dossiers 2775, fichiers 664) au lieu des droits Synology
+  local own; own=$(osh "stat -c %U:%G $(q "$dst")" 2>/dev/null); own="${own:-root:users}"
+  [ "${own#*:}" = root ] && own="${own%%:*}:users"
+  local -a extra=(-p "--chmod=D2775,F664" "--chown=$own")
+  [ "$mode" = deplacement ] && extra+=(--remove-source-files)
+  cat > "$RUN" <<EOF
+SRC=$(q "$src")
+DST=$(q "$final")
+MODE=$mode
+TOTAL=${total:-0}
+NBF=$nbf
+DEBUT=$(date +%s)
+EOF
+  : > "$LOGF"; rm -f "$STATE/code"
+
+  # Copie en arriere-plan, independante de la session SSH
+  nohup setsid bash -c '
+    rsync -rlt --partial --no-inc-recursive --info=progress2 --human-readable \
+      "${@:6}" -e "ssh ${5}" "$1" "$2:$3/" >>"'"$LOGF"'" 2>&1
+    rc=$?
+    echo $rc > "'"$STATE/code"'"
+    if [ $rc -eq 0 ] && [ "$4" = deplacement ]; then
+      find "$1" -mindepth 1 -depth -type d -empty -delete 2>/dev/null
+    fi
+  ' _ "$rsrc" "$OMV_USER@$OMV_HOST" "$dst" "$mode" "${SSH_OPTS[*]}" "${EXCL[@]}" "${extra[@]}" >/dev/null 2>&1 &
+  echo "PID=$!" >> "$RUN"
+
+  # Surveillance de fin (historique + notification Home Assistant),
+  # independante elle aussi de la session SSH
+  nohup setsid bash "$SELF" _fin >/dev/null 2>&1 &
+
+  echo "Copie lancee : $src -> $OMV_HOST:$final ($mode)"
+}
+
 # --------------------------- Nouvelle copie --------------------------
 new_copy() {
   if running; then echo -e "${J}Une copie est deja en cours.${N}"; follow; return; fi
@@ -208,38 +250,7 @@ new_copy() {
   read -r -p "Lancer ? [O/n] : " go
   [[ "${go:-o}" =~ ^[oOyY] ]] || return
 
-  # Droits OMV : les fichiers prennent le proprietaire et le groupe du dossier
-  # de destination (dossiers 2775, fichiers 664) au lieu des droits Synology
-  local own; own=$(osh "stat -c %U:%G $(q "$dst")" 2>/dev/null); own="${own:-root:users}"
-  [ "${own#*:}" = root ] && own="${own%%:*}:users"
-  local -a extra=(-p "--chmod=D2775,F664" "--chown=$own")
-  [ "$mode" = deplacement ] && extra+=(--remove-source-files)
-  cat > "$RUN" <<EOF
-SRC=$(q "$src")
-DST=$(q "$final")
-MODE=$mode
-TOTAL=${total:-0}
-NBF=$nbf
-DEBUT=$(date +%s)
-EOF
-  : > "$LOGF"; rm -f "$STATE/code"
-
-  # Copie en arriere-plan, independante de la session SSH
-  nohup setsid bash -c '
-    rsync -rlt --partial --no-inc-recursive --info=progress2 --human-readable \
-      "${@:6}" -e "ssh ${5}" "$1" "$2:$3/" >>"'"$LOGF"'" 2>&1
-    rc=$?
-    echo $rc > "'"$STATE/code"'"
-    if [ $rc -eq 0 ] && [ "$4" = deplacement ]; then
-      find "$1" -mindepth 1 -depth -type d -empty -delete 2>/dev/null
-    fi
-  ' _ "$rsrc" "$OMV_USER@$OMV_HOST" "$dst" "$mode" "${SSH_OPTS[*]}" "${EXCL[@]}" "${extra[@]}" >/dev/null 2>&1 &
-  echo "PID=$!" >> "$RUN"
-
-  # Surveillance de fin (historique + notification Home Assistant),
-  # independante elle aussi de la session SSH
-  nohup setsid bash "$SELF" _fin >/dev/null 2>&1 &
-
+  start_copy "$src" "$dst" "$rsrc" "$final" "$mode" "${total:-0}" "$nbf" >/dev/null
   echo -e "${V}Copie lancee.${N}"; sleep 1
   follow
 }
@@ -278,7 +289,41 @@ stop_copy() {
   echo -e "${J}Copie arretee. La relancer reprendra la ou elle s'est arretee.${N}"
 }
 
+# --------------------------- Commandes sans question -----------------
+# Utilisees par l'application Windows "NAS Manager".
+API_VERSION=1
+
+api_launch() {  # api_launch <source NAS> <dossier OMV> <dossier|contenu> <copie|deplacement>
+  local src="${1%/}" dst="${2%/}" place="${3:-dossier}" mode="${4:-copie}"
+  running && die "une copie est deja en cours."
+  [ -d "$src" ] || die "dossier source introuvable : $src"
+  [[ "$mode" =~ ^(copie|deplacement)$ ]] || die "mode invalide (copie ou deplacement)."
+  [ -f "$KEY" ] && osh true 2>/dev/null \
+    || die "la connexion automatique NAS -> OMV n'est pas configuree : lance une fois 'sudo bash copie-omv.sh' en SSH (Nouvelle copie) pour autoriser la cle."
+  osh "[ -d $(q "$dst") ]" || die "dossier introuvable sur l'OMV : $dst"
+  osh "command -v rsync >/dev/null" || osh "apt-get install -y -qq rsync >/dev/null" || die "rsync manquant sur l'OMV."
+  local rsrc="$src" final="$dst/${src##*/}"
+  [ "$place" = contenu ] && { rsrc="$src/"; final="$dst"; }
+  local total nbf
+  total=$(du -sb --exclude='@eaDir' --exclude='#recycle' "$src" 2>/dev/null | cut -f1)
+  nbf=$(find "$src" -type f ! -path '*/@eaDir/*' ! -path '*/#recycle/*' 2>/dev/null | wc -l)
+  start_copy "$src" "$dst" "$rsrc" "$final" "$mode" "${total:-0}" "$nbf"
+}
+
+api_stop() {
+  running || { echo "Aucune copie en cours."; return 0; }
+  echo stop > "$STATE/code.stop"
+  pkill -TERM -s "$(ps -o sid= -p "$PID" | tr -d ' ')" 2>/dev/null || kill "$PID"
+  sleep 1; mv -f "$STATE/code.stop" "$STATE/code"
+  echo "Copie arretee. La relancer reprendra la ou elle s'est arretee."
+}
+
 # --------------------------- Point d'entree --------------------------
+case "${1:-}" in
+  lancer)      api_launch "${2:-}" "${3:-}" "${4:-dossier}" "${5:-copie}"; exit ;;
+  arreter)     api_stop; exit ;;
+  api-version) echo "$API_VERSION"; exit ;;
+esac
 case "${1:-}" in
   suivi) follow; exit ;;
   stop)  stop_copy; exit ;;

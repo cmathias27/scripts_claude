@@ -350,3 +350,10 @@ Prérequis : le broker MQTT de HA (`MQTT_HOST`, `MQTT_PORT`), la version de `nas
 - Les fichiers de mots de passe et de configuration sont en `chmod 600`, réservés à root.
 - Les sauvegardes chiffrées utilisent `rclone crypt` (noms et contenus) : **perdre les mots de passe = perdre les données**.
 - Les adresses IP, l'identifiant de webhook Home Assistant et les chemins de disques sont propres à cette installation : adapter les paramètres en tête de chaque script avant de les réutiliser ailleurs.
+
+## Application Windows : NAS Manager
+
+Le dossier [`nas-manager/`](nas-manager/README.md) contient une application Windows (Rust) qui suit et gère
+toutes ces synchros sans session SSH : sauvegardes Drive, caméras, alertes, copie Synology → OMV et migration
+oCIS. Elle utilise les commandes « sans question » ajoutées à `nas-backup`, `copie-omv` et `migre-drive-ocis`
+(les menus interactifs sont inchangés). Le `.exe` est compilé par GitHub Actions (onglet *Actions*).
