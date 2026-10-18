@@ -213,6 +213,19 @@ Idées en attente, à décider selon l'usage.
   - Identifiants des clouds déposés chiffrés sur la machine qui exécute ; mode déplacement
     uniquement avec confirmation explicite.
 
+- **Application Android** (préférée au dashboard web) :
+  - Le téléphone parle directement aux NAS en SSH, comme l'application Windows : rien à installer
+    ni à exposer sur le NAS. Hors de la maison : via l'application Tailscale.
+  - Réutiliser le code Rust / egui (modèle, lecture de l'état, explications d'erreurs, traductions).
+  - SSH par une bibliothèque Rust (ex. russh) au lieu du `ssh.exe` de Windows ;
+    clé rangée dans le coffre sécurisé d'Android (Keystore).
+  - Écrans repensés pour le tactile.
+  - Périmètre : **consulter** (état, historique, alertes, espace) et **piloter** (lancer, arrêter,
+    mettre en pause). Configuration et mots de passe de chiffrement restent dans l'application Windows.
+  - Notifications envoyées par le NAS via ntfy (pas d'interrogation permanente qui vide la batterie).
+  - Distribution : APK publié sur GitHub (comme le `.exe`), mise à jour depuis l'application.
+    Pas de Play Store pour l'instant. iPhone non couvert.
+
 ### Pas pour l'instant
 - Sauvegarde des volumes Docker (arrêt / relance du conteneur pendant la copie).
 - Rétention indépendante des vidéos caméras sur la destination.
