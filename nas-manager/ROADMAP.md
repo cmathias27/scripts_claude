@@ -49,3 +49,31 @@ migration oCIS, journaux, installation / mise à jour des scripts sur les NAS.
       export dans un fichier protégé.
 - [ ] **Mode lecture seule** (actions masquées).
 - [ ] **Thème clair / sombre forcé**.
+
+### Versions
+- [ ] **Numéros de version** (1.0.0, 1.1.0…) : une Release GitHub par version avec sa page
+      « Nouveautés », version affichée dans l'application. Base de la mise à jour automatique.
+
+### Fiabilité
+- [ ] **Journal de l'application** sur le PC et bouton **« Exporter un rapport de diagnostic »**
+      (versions, état des connexions, dernières erreurs, sans aucun mot de passe).
+- [ ] **Tests automatiques dans GitHub** à chaque envoi : tests unitaires + tests contre un faux NAS
+      (OMV et Synology simulés), avant de publier le `.exe`.
+- [ ] **Vérification de l'identité du NAS** : empreinte SSH affichée et confirmée à la première connexion
+      (au lieu de l'accepter automatiquement), alerte claire si elle change.
+- [ ] **Connexion SSH persistante** au lieu d'une connexion par actualisation (plus rapide, moins de charge).
+
+### Ergonomie
+- [ ] **Assistant de premier lancement** : adresses → autorisation de la clé → test → installation des scripts.
+- [ ] **Raccourcis clavier** (F5 actualiser, Ctrl+1…8 pages) et mémorisation de la fenêtre.
+- [ ] **Icônes dessinées** à la place des emojis (rendu identique quelles que soient les polices).
+- [ ] **Accessibilité** : contrastes vérifiés, taille du texte réglable, lecteur d'écran.
+
+### Ouverture
+- [ ] **Plusieurs NAS** : plusieurs OMV / Synology (ex. chez un proche), sélecteur en haut de l'application.
+- [ ] **Accès à distance sécurisé** via Tailscale ou WireGuard, sans ouvrir de port SSH sur Internet.
+- [ ] **Documentation utilisateur** illustrée (captures, FAQ des erreurs courantes) et bouton « Aide ».
+
+### Écarté
+- Signature du `.exe` (certificat payant).
+- Installateur MSI / setup : l'application reste un `.exe` unique, sans installation.
