@@ -151,12 +151,31 @@ Idées en attente, à décider selon l'usage.
       avant une sauvegarde ou un transfert, option pour le laisser se rendormir ensuite.
 - [ ] **Retour à une date précise** : grâce aux corbeilles datées, restaurer un dossier tel qu'il
       était à une date choisie (« mes documents au 3 octobre »).
+- [ ] **Test de restauration à blanc** : régulièrement, quelques fichiers au hasard sont restaurés
+      dans un dossier temporaire, comparés aux originaux puis effacés ; alerte en cas d'écart.
 
 #### PC Windows
 - [ ] **Sauvegarde du PC vers le NAS** depuis l'application : dossiers au choix (Documents, Bureau…),
       programmée ou en temps réel, mêmes options que les autres sauvegardes.
 
+#### Notifications
+- [ ] **Autres canaux que Home Assistant** : ntfy, Telegram, Discord, e-mail, au choix et combinables.
+      Home Assistant devient une option : l'outil doit fonctionner sans lui.
+
+#### Plus aucune ligne de commande
+- [ ] **Connexion aux clouds depuis l'application** : la page de connexion (Google, OneDrive,
+      Dropbox…) s'ouvre sur le PC, l'application récupère le jeton et l'envoie au NAS.
+      Remplace `rclone config reconnect gdrive:` en SSH.
+- [ ] **Entretien des outils** : vérification de la version de rclone sur chaque machine avec mise à
+      jour proposée ; alerte avant l'expiration d'un jeton (Google, mot de passe d'application oCIS…).
+
 #### Confort
+- [ ] **Débit selon l'heure** : limites différentes jour / nuit (ex. 2 Mo/s de 8 h à 23 h,
+      sans limite la nuit), réglées une fois pour toutes.
+- [ ] **Estimation avant la première sauvegarde** : volume à envoyer et durée estimée selon
+      le débit réel de la connexion.
+- [ ] **Détection des doublons** sur le NAS (photos notamment), pour libérer de la place et
+      réduire le volume envoyé. Suppression uniquement après confirmation.
 - [ ] **Réglages fins du temps réel** : exclusions par dossier, filtre par type de fichier,
       regroupement des envois d'un fichier modifié en boucle (document en cours d'édition).
 - [ ] **Actions depuis Home Assistant** : boutons MQTT pour lancer une sauvegarde, mettre en pause
@@ -179,6 +198,7 @@ Idées en attente, à décider selon l'usage.
 ### Pas pour l'instant
 - Sauvegarde des volumes Docker (arrêt / relance du conteneur pendant la copie).
 - Rétention indépendante des vidéos caméras sur la destination.
+- Interface web servie par le NAS (consultation depuis le téléphone, Mac, Linux).
 
 ### Écarté
 - Signature du `.exe` (certificat payant).
