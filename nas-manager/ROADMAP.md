@@ -78,6 +78,15 @@ migration oCIS, journaux, installation / mise à jour des scripts sur les NAS.
 
 Idées en attente, à décider selon l'usage.
 
+### Prochaine mise à jour (demandé)
+- [ ] **Distinguer deux types de sauvegardes** dans l'application :
+  - **Sauvegardes programmées** : celles d'aujourd'hui (`nas-backup`, lancées à horaire fixe ou à la main).
+  - **Sauvegardes temps réel** : envoi au fil de l'eau dès qu'un fichier est créé, modifié ou supprimé
+    (fonctionnement actuel de la synchro caméras : `inotifywait` + rattrapage périodique).
+- [ ] **Ouvrir le temps réel à n'importe quel dossier** : la synchro caméras devient un cas parmi d'autres.
+  - Choisir **un ou plusieurs dossiers à surveiller**.
+  - La synchro caméras existante est reprise comme une sauvegarde temps réel parmi les autres.
+
 ### Écarté
 - Signature du `.exe` (certificat payant).
 - Installateur MSI / setup : l'application reste un `.exe` unique, sans installation.
