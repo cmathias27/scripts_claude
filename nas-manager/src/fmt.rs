@@ -128,18 +128,6 @@ pub fn parse_status_ts(s: &str) -> Option<i64> {
     Local.from_local_datetime(&t).single().map(|d| d.timestamp())
 }
 
-/// Prochaine execution d'un horaire quotidien "HH:MM"
-pub fn next_run(sched: &str) -> Option<String> {
-    let (h, m) = sched.split_once(':')?;
-    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
-    let now = Local::now();
-    let today = now.date_naive().and_hms_opt(h, m, 0)?;
-    if today > now.naive_local() {
-        Some(format!("aujourd'hui {:02}:{:02}", h, m))
-    } else {
-        Some(format!("demain {:02}:{:02}", h, m))
-    }
-}
 
 /// Raccourcit les chemins OMV /srv/dev-disk-by-uuid-xxxx/Dossier -> …/Dossier
 pub fn short_path(p: &str) -> String {
@@ -150,6 +138,78 @@ pub fn short_path(p: &str) -> String {
         return format!("disque {}", &rest[..rest.len().min(8)]);
     }
     p.to_string()
+}
+
+/// Horaire nas-backup en clair : "03:30/135;15:00" -> "lun, mer, ven 03:30 · tous les jours 15:00"
+pub fn schedule_human(s: &str) -> String {
+    if s == "manuel" || s.is_empty() {
+        return "Manuel".into();
+    }
+    let names = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+    s.split(';')
+        .map(|sl| match sl.split_once('/') {
+            Some((t, d)) => {
+                let days: Vec<&str> = d.chars().filter_map(|c| c.to_digit(10)).filter(|n| (1..=7).contains(n)).map(|n| names[n as usize - 1]).collect();
+                let label = match d {
+                    "12345" => "en semaine".to_string(),
+                    "67" => "le week-end".to_string(),
+                    _ => days.join(", "),
+                };
+                format!("{label} {t}")
+            }
+            None => format!("chaque jour {sl}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Prochaine execution d'un horaire nas-backup (plusieurs creneaux, jours)
+pub fn next_run_sched(s: &str) -> Option<String> {
+    use chrono::{Datelike, Duration};
+    if s == "manuel" {
+        return None;
+    }
+    let now = Local::now().naive_local();
+    let mut best: Option<chrono::NaiveDateTime> = None;
+    for sl in s.split(';') {
+        let (t, d) = sl.split_once('/').unwrap_or((sl, "1234567"));
+        let (h, m) = t.split_once(':')?;
+        let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+        for add in 0..8 {
+            let day = now.date() + Duration::days(add);
+            let dow = day.weekday().number_from_monday();
+            if !d.contains(char::from_digit(dow, 10)?) {
+                continue;
+            }
+            let at = day.and_hms_opt(h, m, 0)?;
+            if at > now {
+                if best.map(|b| at < b).unwrap_or(true) {
+                    best = Some(at);
+                }
+                break;
+            }
+        }
+    }
+    let b = best?;
+    let days = (b.date() - now.date()).num_days();
+    let jour = match days {
+        0 => "aujourd'hui".to_string(),
+        1 => "demain".to_string(),
+        _ => ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"][b.weekday().num_days_from_monday() as usize].to_string(),
+    };
+    Some(format!("{jour} {}", b.format("%H:%M")))
+}
+
+/// Limite de debit rclone en clair
+pub fn bw_human(s: &str) -> String {
+    let s = s.trim();
+    if let Some(v) = s.strip_suffix('M').filter(|v| v.parse::<f64>().is_ok()) {
+        return format!("{} Mo/s", v.replace('.', ","));
+    }
+    if let Some(v) = s.strip_prefix("08:00,").and_then(|r| r.strip_suffix("M 23:00,off")) {
+        return format!("{} Mo/s de 8 h à 23 h, sans limite la nuit", v.replace('.', ","));
+    }
+    s.to_string()
 }
 
 pub fn now() -> i64 {
@@ -167,6 +227,10 @@ mod tests {
         assert_eq!(rclone_dur("1h2m3s"), "1 h 2 min 3 s");
         assert_eq!(bytes(1288490188), "1,2 Go");
         assert_eq!(short_path("/srv/dev-disk-by-uuid-7cd5/Photos/2024"), "…/Photos/2024");
+        assert_eq!(schedule_human("03:30/135;15:00"), "lun, mer, ven 03:30 · chaque jour 15:00");
+        assert_eq!(schedule_human("03:30/67"), "le week-end 03:30");
+        assert!(next_run_sched("03:30").is_some());
+        assert!(next_run_sched("manuel").is_none());
     }
 }
 

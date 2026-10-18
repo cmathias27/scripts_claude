@@ -124,8 +124,8 @@ pub struct JobFormState {
     pub folder_touched: bool,
     pub mirror: bool,
     pub encrypt: bool,
-    pub manual: bool,
-    pub hour: String,
+    pub sched: crate::sched::SchedEdit,
+    pub bw: crate::sched::BwEdit,
     pub trash_days: String,
     pub error: String,
 }
@@ -141,6 +141,8 @@ pub struct RestoreState {
 pub struct CopyForm {
     pub src: String,
     pub dst: String,
+    /// limite de debit en Mo/s (vide = aucune)
+    pub bw: String,
     pub into_folder: bool,
     pub move_files: bool,
     pub src_size: Option<(u64, u64)>,

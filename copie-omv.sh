@@ -8,8 +8,10 @@
 #    suivi         : reprendre l'affichage de la copie en cours
 #    stop          : arreter la copie en cours
 #  Sans question (application Windows NAS Manager) :
-#    lancer <source> <dossier OMV> <dossier|contenu> <copie|deplacement>
+#    lancer <source> <dossier OMV> <dossier|contenu> <copie|deplacement> [debit Ko/s]
 #    arreter
+#    ajouter <source> <dossier OMV> <dossier|contenu> <copie|deplacement> [debit]  (file d'attente)
+#    retirer <n> | lancer-file
 #
 #  La copie tourne en arriere-plan : fermer la fenetre SSH ou faire
 #  Ctrl+C pendant le suivi ne l'arrete PAS. Une copie interrompue
@@ -155,14 +157,15 @@ follow() {
 }
 
 # --------------------------- Lancement (commun menu / application) ---
-# start_copy <source> <dossier OMV parent> <source rsync> <destination finale> <copie|deplacement> <total> <nb fichiers>
+# start_copy <source> <dossier OMV parent> <source rsync> <destination finale> <copie|deplacement> <total> <nb fichiers> [debit Ko/s]
 start_copy() {
-  local src="$1" dst="$2" rsrc="$3" final="$4" mode="$5" total="$6" nbf="$7"
+  local src="$1" dst="$2" rsrc="$3" final="$4" mode="$5" total="$6" nbf="$7" bw="${8:-}"
   # Droits OMV : les fichiers prennent le proprietaire et le groupe du dossier
   # de destination (dossiers 2775, fichiers 664) au lieu des droits Synology
   local own; own=$(osh "stat -c %U:%G $(q "$dst")" 2>/dev/null); own="${own:-root:users}"
   [ "${own#*:}" = root ] && own="${own%%:*}:users"
   local -a extra=(-p "--chmod=D2775,F664" "--chown=$own")
+  [ -n "$bw" ] && extra+=("--bwlimit=$bw")
   [ "$mode" = deplacement ] && extra+=(--remove-source-files)
   cat > "$RUN" <<EOF
 SRC=$(q "$src")
@@ -170,6 +173,7 @@ DST=$(q "$final")
 MODE=$mode
 TOTAL=${total:-0}
 NBF=$nbf
+BW=$bw
 DEBUT=$(date +%s)
 EOF
   : > "$LOGF"; rm -f "$STATE/code"
@@ -291,10 +295,11 @@ stop_copy() {
 
 # --------------------------- Commandes sans question -----------------
 # Utilisees par l'application Windows "NAS Manager".
-API_VERSION=1
+API_VERSION=2
 
-api_launch() {  # api_launch <source NAS> <dossier OMV> <dossier|contenu> <copie|deplacement>
-  local src="${1%/}" dst="${2%/}" place="${3:-dossier}" mode="${4:-copie}"
+api_launch() {  # api_launch <source NAS> <dossier OMV> <dossier|contenu> <copie|deplacement> [debit Ko/s]
+  local src="${1%/}" dst="${2%/}" place="${3:-dossier}" mode="${4:-copie}" bw="${5:-}"
+  [[ -z "$bw" || "$bw" =~ ^[0-9]+$ ]] || die "limite de debit invalide (Ko/s)."
   running && die "une copie est deja en cours."
   [ -d "$src" ] || die "dossier source introuvable : $src"
   [[ "$mode" =~ ^(copie|deplacement)$ ]] || die "mode invalide (copie ou deplacement)."
@@ -307,7 +312,35 @@ api_launch() {  # api_launch <source NAS> <dossier OMV> <dossier|contenu> <copie
   local total nbf
   total=$(du -sb --exclude='@eaDir' --exclude='#recycle' "$src" 2>/dev/null | cut -f1)
   nbf=$(find "$src" -type f ! -path '*/@eaDir/*' ! -path '*/#recycle/*' 2>/dev/null | wc -l)
-  start_copy "$src" "$dst" "$rsrc" "$final" "$mode" "${total:-0}" "$nbf"
+  start_copy "$src" "$dst" "$rsrc" "$final" "$mode" "${total:-0}" "$nbf" "$bw"
+}
+
+# File d'attente : copies lancees l'une apres l'autre (source|destination|placement|mode|debit)
+QUEUE="$STATE/file-attente"
+
+api_queue_add() {  # api_queue_add <source> <dossier OMV> <dossier|contenu> <copie|deplacement> [debit]
+  local src="${1%/}" dst="${2%/}" place="${3:-dossier}" mode="${4:-copie}" bw="${5:-}"
+  [ -d "$src" ] || die "dossier source introuvable : $src"
+  [[ "$mode" =~ ^(copie|deplacement)$ && "$place" =~ ^(dossier|contenu)$ ]] || die "parametres invalides."
+  [[ -z "$bw" || "$bw" =~ ^[0-9]+$ ]] || die "limite de debit invalide (Ko/s)."
+  [[ "$src$dst" == *"|"* ]] && die "caractere | interdit."
+  echo "$src|$dst|$place|$mode|$bw" >> "$QUEUE"
+  echo "Ajoute a la file d'attente : ${src##*/} -> $dst"
+}
+
+api_queue_remove() {
+  [[ "${1:-}" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le "$(grep -c '' "$QUEUE" 2>/dev/null || echo 0)" ] || die "numero invalide."
+  sed -i "${1}d" "$QUEUE"; echo "Retire de la file d'attente."
+}
+
+# lance la premiere copie de la file (rien si une copie tourne deja)
+api_queue_next() {
+  running && { echo "Une copie est en cours : la file continuera apres elle."; return 0; }
+  [ -s "$QUEUE" ] || { echo "File d'attente vide."; return 0; }
+  local line s d p m b
+  line=$(head -n 1 "$QUEUE"); sed -i '1d' "$QUEUE"
+  IFS='|' read -r s d p m b <<< "$line"
+  api_launch "$s" "$d" "$p" "$m" "$b"
 }
 
 api_stop() {
@@ -320,7 +353,10 @@ api_stop() {
 
 # --------------------------- Point d'entree --------------------------
 case "${1:-}" in
-  lancer)      api_launch "${2:-}" "${3:-}" "${4:-dossier}" "${5:-copie}"; exit ;;
+  lancer)      api_launch "${2:-}" "${3:-}" "${4:-dossier}" "${5:-copie}" "${6:-}"; exit ;;
+  ajouter)     api_queue_add "${2:-}" "${3:-}" "${4:-dossier}" "${5:-copie}" "${6:-}"; exit ;;
+  retirer)     api_queue_remove "${2:-}"; exit ;;
+  lancer-file) api_queue_next; exit ;;
   arreter)     api_stop; exit ;;
   api-version) echo "$API_VERSION"; exit ;;
 esac
@@ -339,6 +375,10 @@ case "${1:-}" in
       notify info "Copie vers l'OMV terminée" "« ${SRC##*/} » ($(hsize "$TOTAL"), $MODE) est sur l'OMV dans $DST."
     else
       notify critique "Copie vers l'OMV en échec" "« ${SRC##*/} » : erreur code $rc. Relancer la copie reprendra où elle s'est arrêtée."
+    fi
+    # copie suivante de la file d'attente (seulement apres un succes)
+    if [ "$rc" = 0 ] && [ -s "$STATE/file-attente" ]; then
+      bash "$SELF" lancer-file >> "$STATE/file-attente.log" 2>&1
     fi
     exit ;;
 esac

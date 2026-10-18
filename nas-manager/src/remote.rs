@@ -161,7 +161,14 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
     name, src, sub, mode, enc, sched, ret = p[:7]
     j = {"nom": name, "source": src, "dossier": sub, "mode": mode, "chiffre": enc == "oui",
          "horaire": sched, "corbeille": int(ret) if ret.isdigit() else 0,
-         "source_existe": os.path.isdir(src)}
+         "debit": p[7] if len(p) > 7 else "", "source_existe": os.path.isdir(src)}
+    sim = src_vars(f"{S}/{name}.simulation.status", ["ETAT", "DEBUT", "FIN", "ENVOIS", "SUPPRESSIONS", "OCTETS"])
+    if sim:
+        etat = sim["ETAT"]
+        if etat == "en_cours" and rc(f"flock -n /run/nas-backup-simulation-{name}.lock true") != 1:
+            etat = "interrompue"
+        j["simulation"] = {"etat": etat, "fin": int(sim["FIN"] or 0), "envois": int(sim["ENVOIS"] or 0),
+                           "suppressions": int(sim["SUPPRESSIONS"] or 0), "octets": int(sim["OCTETS"] or 0)}
     st = rd(f"{S}/{name}.status")
     if st:
         parts = st.split()
@@ -335,6 +342,7 @@ v = src_vars(C + "/en-cours", ["SRC", "DST", "MODE", "TOTAL", "NBF", "DEBUT", "P
 if v:
     cp["source"] = v["SRC"]; cp["destination"] = v["DST"]; cp["mode"] = v["MODE"]
     cp["total"] = ival(v["TOTAL"]); cp["nb_fichiers"] = ival(v["NBF"]); cp["debut"] = ival(v["DEBUT"])
+    cp["debit"] = src_vars(C + "/en-cours", ["BW"]).get("BW", "")
     cp["en_cours"] = alive(v["PID"]) if v["PID"] else False
     code = rd(C + "/code")
     cp["code"] = code if code else None
@@ -349,6 +357,13 @@ if v:
         cp["erreurs"] = lines[-8:]
 hist = [l for l in rd(C + "/historique.log").splitlines() if l.strip()]
 cp["historique"] = hist[-30:]
+cq = []
+for line in rd(C + "/file-attente").splitlines():
+    p = line.split("|")
+    if len(p) >= 4:
+        cq.append({"source": p[0], "destination": p[1], "dans_dossier": p[2] == "dossier", "deplacement": p[3] == "deplacement",
+                   "debit": p[4] if len(p) > 4 else ""})
+cp["file"] = cq
 out["copie"] = cp
 
 # ---------------- Migration oCIS ----------------
@@ -464,11 +479,13 @@ pub struct JobForm<'a> {
     pub encrypt: bool,
     pub schedule: &'a str,
     pub trash_days: u32,
+    /// limite de debit rclone (vide = aucune)
+    pub bwlimit: &'a str,
 }
 
 pub fn nb_save(new: bool, f: &JobForm) -> String {
     format!(
-        "{NB_BIN} save {} {} {} {} {} {} {} {} 2>&1\n",
+        "{NB_BIN} save {} {} {} {} {} {} {} {} {} 2>&1\n",
         if new { "nouveau" } else { "modif" },
         sq(f.name),
         sq(f.source),
@@ -476,7 +493,19 @@ pub fn nb_save(new: bool, f: &JobForm) -> String {
         if f.mirror { "sync" } else { "copy" },
         if f.encrypt { "oui" } else { "non" },
         sq(f.schedule),
-        f.trash_days
+        f.trash_days,
+        sq(f.bwlimit)
+    )
+}
+
+pub fn nb_stop_job(name: &str) -> String {
+    format!("{NB_BIN} stop {} 2>&1\n", sq(name))
+}
+
+pub fn nb_simulate(name: &str) -> String {
+    background(
+        &format!("{NB_BIN} simulate {}", sq(name)),
+        &format!("Simulation de « {name} » lancée : le résultat s'affichera sur sa carte."),
     )
 }
 
@@ -602,14 +631,34 @@ chown -R {og} \"$d\" && find \"$d\" -type d -exec chmod 2775 {{}} + && find \"$d
 }
 
 // ---------------- Synology : copie ----------------
-pub fn copie_launch(src: &str, dst: &str, into_folder: bool, move_files: bool) -> String {
+pub fn copie_launch(src: &str, dst: &str, into_folder: bool, move_files: bool, bw_kbps: Option<u32>) -> String {
     format!(
-        "{COPIE_BIN} lancer {} {} {} {} 2>&1\n",
+        "{COPIE_BIN} lancer {} {} {} {} {} 2>&1\n",
         sq(src),
         sq(dst),
         if into_folder { "dossier" } else { "contenu" },
-        if move_files { "deplacement" } else { "copie" }
+        if move_files { "deplacement" } else { "copie" },
+        bw_kbps.map(|b| b.to_string()).unwrap_or_default()
     )
+}
+
+pub fn copie_queue_add(src: &str, dst: &str, into_folder: bool, move_files: bool, bw_kbps: Option<u32>) -> String {
+    format!(
+        "{COPIE_BIN} ajouter {} {} {} {} {} 2>&1\n",
+        sq(src),
+        sq(dst),
+        if into_folder { "dossier" } else { "contenu" },
+        if move_files { "deplacement" } else { "copie" },
+        bw_kbps.map(|b| b.to_string()).unwrap_or_default()
+    )
+}
+
+pub fn copie_queue_remove(n: usize) -> String {
+    format!("{COPIE_BIN} retirer {n} 2>&1\n")
+}
+
+pub fn copie_queue_next() -> String {
+    format!("{COPIE_BIN} lancer-file 2>&1\n")
 }
 
 pub fn copie_stop() -> String {
@@ -726,11 +775,11 @@ mod live {
         // nouvelle sauvegarde avec apostrophe et espace dans le chemin
         let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Film's d'été";
         run(true, &format!("mkdir -p {}\n", sq(d)));
-        let f = JobForm { name: "Films", source: d, folder: "Films d'été", mirror: true, encrypt: false, schedule: "05:10", trash_days: 14 };
+        let f = JobForm { name: "Films", source: d, folder: "Films d'été", mirror: true, encrypt: false, schedule: "05:10", trash_days: 14, bwlimit: "" };
         let o = run(true, &nb_save(true, &f));
         assert_eq!(o.code, 0, "{}", o.text());
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf; cat /etc/cron.d/nas-backup");
-        assert!(o.stdout.contains("Films|/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Film's d'été|Films d'été|sync|non|05:10|14"));
+        assert!(o.stdout.contains("Films|/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Film's d'été|Films d'été|sync|non|05:10|14|"));
         assert!(o.stdout.contains("run-at 05:10"));
         // doublon refuse
         let o = run(true, &nb_save(true, &f));
@@ -740,13 +789,21 @@ mod live {
         let o = run(true, &nb_save(false, &f2));
         assert_eq!(o.code, 0);
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf");
-        assert!(o.stdout.trim().ends_with("|copy|non|manuel|0"));
+        assert!(o.stdout.trim().ends_with("|copy|non|manuel|0|"), "{}", o.stdout);
+        // horaires sur certains jours + limite de debit
+        let f4 = JobForm { schedule: "03:30/135;22:15", bwlimit: "08:00,2M 23:00,off", ..f2 };
+        let o = run(true, &nb_save(false, &f4));
+        assert_eq!(o.code, 0, "{}", o.text());
+        let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf; cat /etc/cron.d/nas-backup; cat /var/lib/nas-backup/Films.maxage");
+        assert!(o.stdout.contains("|03:30/135;22:15|0|08:00,2M 23:00,off"), "{}", o.stdout);
+        assert!(o.stdout.contains("15 22 * * * root /usr/local/bin/nas-backup run-at 22:15"));
+        assert!(o.stdout.trim().ends_with("50"));
         // horaire invalide
         let f3 = JobForm { schedule: "25:00", ..f2 };
         assert_ne!(run(true, &nb_save(false, &f3)).code, 0);
         // suppression
         let o = run(true, &nb_delete("Films", false));
-        assert_eq!(o.code, 0);
+        assert_eq!(o.code, 0, "suppression : {}", o.text());
         assert!(!run(true, "cat /etc/nas-backup/jobs.conf").stdout.contains("Films|"));
         // acquittement / mots de passe
         assert_eq!(run(true, &ack_alert("job-Documents; rm -rf /")).code, 0);
@@ -760,12 +817,23 @@ mod live {
         let o = run(true, OMV_HISTORY);
         let h: crate::model::History = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json historique");
         assert!(h.executions.iter().any(|r| r.nom == "Musique"));
+        // simulation : bilan lu par la collecte
+        let o = run(true, &format!("{NB_BIN} simulate Musique 2>&1; cat /var/lib/nas-backup/Musique.simulation.status; cat /var/lib/nas-backup/Musique.simulation.txt"));
+        assert!(o.stdout.contains("ETAT=ok") && o.stdout.contains("ENVOIS=2") && o.stdout.contains("SUPPRESSIONS=1"), "{}", o.text());
+        assert!(o.stdout.contains("+ 2024/IMG_2.jpg") && o.stdout.contains("- vieux.txt"));
+        // arret d'une seule sauvegarde : etat ARRETE (pas ECHEC)
+        run(true, &format!("FAKE_DUR=40 nohup setsid {NB_BIN} run Musique >/dev/null 2>&1 </dev/null &\nsleep 3"));
+        let o = run(true, &format!("{NB_BIN} stop Musique 2>&1; cat /var/lib/nas-backup/Musique.status"));
+        assert!(o.stdout.contains("ARRETE"), "{}", o.text());
         // collecte de l'etat : JSON valide et coherent
         let o = run(true, OMV_STATUS);
         let st: crate::model::OmvStatus = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json OMV");
         assert!(st.erreur.is_none());
         assert_eq!(st.nb_api, nb_api());
         assert!(st.sauvegardes.iter().any(|j| j.nom == "Photos" && j.dernier_etat.as_deref() == Some("OK")));
+        let sim = st.sauvegardes.iter().find(|j| j.nom == "Musique").and_then(|j| j.simulation.clone()).expect("simulation");
+        assert_eq!((sim.envois, sim.suppressions), (2, 1));
+        assert!(sim.octets > 1_000_000_000);
         assert!(st.cameras.installe);
     }
 
@@ -851,6 +919,18 @@ mod live {
         run(false, &syno_list_dirs(""));
         run(false, &syno_size("/volume1/photo"));
         run(false, &migre_remove(9));
+        // file d'attente de copies : deux copies l'une apres l'autre (vrai rsync vers « l'OMV »)
+        let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Archives";
+        let o = run(false, &format!(
+            "rm -rf {d}; mkdir -p {d} /volume1/photo/2023 /volume4/utils/archives; echo x > /volume4/utils/archives/a.txt\n: > /root/.copie-omv/file-attente; : > /root/.copie-omv/historique.log\n{}{}{}",
+            copie_queue_add("/volume1/photo", d, true, false, Some(50000)),
+            copie_queue_add("/volume4/utils/archives", d, false, false, None),
+            copie_queue_next()
+        ));
+        assert_eq!(o.code, 0, "{}", o.text());
+        let o = run(false, &format!("for i in $(seq 60); do [ $(grep -c OK /root/.copie-omv/historique.log 2>/dev/null || echo 0) -ge 2 ] && break; sleep 1; done; cat /root/.copie-omv/historique.log; ls {d} {d}/photo"));
+        assert!(o.stdout.matches("| OK |").count() >= 2, "{}", o.text());
+        assert!(o.stdout.contains("a.txt") && o.stdout.contains("2023"), "{}", o.text());
         let o = run(false, SYNO_STATUS);
         let st: crate::model::SynoStatus = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json Synology");
         assert!(st.erreur.is_none());

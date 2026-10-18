@@ -63,6 +63,28 @@ pub struct Job {
     pub debut: Option<i64>,
     pub avancement: Option<Progress>,
     pub derniere_erreur: Option<String>,
+    pub debit: String,
+    pub simulation: Option<Simulation>,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Simulation {
+    pub etat: String,
+    pub fin: i64,
+    pub envois: i64,
+    pub suppressions: i64,
+    pub octets: u64,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct CopyQueueItem {
+    pub source: String,
+    pub destination: String,
+    pub dans_dossier: bool,
+    pub deplacement: bool,
+    pub debit: String,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -174,6 +196,8 @@ pub struct Copie {
     pub avancement: Option<CopyProgress>,
     pub erreurs: Vec<String>,
     pub historique: Vec<String>,
+    pub debit: String,
+    pub file: Vec<CopyQueueItem>,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]

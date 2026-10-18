@@ -14,6 +14,9 @@
 #    nas-backup delete <NOM> [effacer-drive]
 #    nas-backup restore <NOM> <DOSSIER>
 #    nas-backup gen-cron
+#    nas-backup stop <NOM>          (arret d'une seule sauvegarde)
+#    nas-backup simulate <NOM>      (ce qui serait envoye / supprime, sans rien faire)
+#  Horaire : HH:MM, HH:MM/JOURS (1 = lundi, ex. 03:30/135), plusieurs separes par ;, ou manuel
 #
 #  Prerequis : rclone + remote "gdrive" fonctionnel
 #  Au premier lancement, le script s'installe dans /usr/local/bin/nas-backup
@@ -111,13 +114,13 @@ job_exists() { grep -q "^$1|" "$JOBS"; }
 
 job_get() {
   local line; line=$(grep -m1 "^$1|" "$JOBS") || return 1
-  IFS='|' read -r J_NAME J_SRC J_SUB J_MODE J_ENC J_SCHED J_RET <<< "$line"
+  IFS='|' read -r J_NAME J_SRC J_SUB J_MODE J_ENC J_SCHED J_RET J_BW <<< "$line"
 }
 
 job_save() {
   local tmp; tmp=$(mktemp)
   grep -v "^$J_NAME|" "$JOBS" > "$tmp"
-  echo "$J_NAME|$J_SRC|$J_SUB|$J_MODE|$J_ENC|$J_SCHED|$J_RET" >> "$tmp"
+  echo "$J_NAME|$J_SRC|$J_SUB|$J_MODE|$J_ENC|$J_SCHED|$J_RET|${J_BW:-}" >> "$tmp"
   cat "$tmp" > "$JOBS"; rm -f "$tmp"
 }
 
@@ -132,23 +135,79 @@ dest_of()  { [ "$1" = oui ] && echo "${CRYPT}:$2" || echo "${GDRIVE}:${PLAIN_FOL
 trash_of() { [ "$1" = oui ] && echo "${CRYPT}:_corbeille/$2" || echo "${GDRIVE}:${PLAIN_FOLDER}/_corbeille/$2"; }
 short()    { echo "$1" | sed -E 's#^/srv/dev-disk-by-uuid-[^/]+/#…/#'; }
 
+# Horaire d'une sauvegarde : "manuel", ou un ou plusieurs creneaux separes par ";"
+#   HH:MM          tous les jours
+#   HH:MM/JOURS    certains jours (chiffres 1 a 7, 1 = lundi) : 03:30/135 = lun, mer, ven
+valid_sched() {
+  [ "$1" = manuel ] && return 0
+  [ -n "$1" ] || return 1
+  local IFS=';' sl
+  for sl in $1; do [[ "$sl" =~ ^([01][0-9]|2[0-3]):[0-5][0-9](/[1-7]+)?$ ]] || return 1; done
+  return 0
+}
+
+# slot_matches <horaire> <HH:MM> <jour 1-7> : la sauvegarde est-elle prevue a cet instant ?
+slot_matches() {
+  [ "$1" = manuel ] && return 1
+  local IFS=';' sl
+  for sl in $1; do
+    [ "${sl%%/*}" = "$2" ] || continue
+    [[ "$sl" != */* ]] && return 0
+    [[ "${sl#*/}" == *"$3"* ]] && return 0
+  done
+  return 1
+}
+
+# max_age <horaire> : heures sans succes au-dela desquelles la sauvegarde est en retard
+max_age() {
+  python3 - "$1" <<'PYAGE'
+import sys
+s = sys.argv[1]
+if s == "manuel":
+    print(0); sys.exit()
+days = set()
+for sl in s.split(";"):
+    days |= {int(c) for c in sl.split("/")[1]} if "/" in sl else set(range(1, 8))
+d = sorted(days)
+gaps = [((d[(i + 1) % len(d)] - d[i]) % 7) or 7 for i in range(len(d))]
+print(max(gaps) * 24 + 26)
+PYAGE
+}
+
+# nas-check (install-alertes.sh) : seuil de retard propre a chaque sauvegarde
+patch_nas_check() {
+  local f=/usr/local/bin/nas-check
+  [ -f "$f" ] || return 0
+  grep -q 'if \[ "$age" -ge "${LATE_HOURS:-50}" \]' "$f" || return 0
+  sed -i 's|if \[ "$age" -ge "${LATE_HOURS:-50}" \]|lim=$(cat "/var/lib/nas-backup/$n.maxage" 2>/dev/null); if [ "$age" -ge "${lim:-${LATE_HOURS:-50}}" ]|' "$f"
+  sed -i 's|(prévue chaque jour à $sch)|(horaire : $sch)|' "$f"
+}
+
 gen_cron() {
   {
     echo "# Genere automatiquement par nas-backup - ne pas modifier a la main"
     echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    # Une seule ligne par horaire : les sauvegardes prevues a la meme heure
-    # sont lancees l'une apres l'autre (run-at), pas toutes en meme temps
-    local n s sub m e sch r h mi
+    # Une ligne par heure de lancement : les sauvegardes prevues a la meme heure
+    # sont lancees l'une apres l'autre (run-at), qui tient compte des jours
+    local n s sub m e sch r h mi sl t
+    local -a slots
     local -A seen=()
     while IFS='|' read -r n s sub m e sch r || [ -n "$n" ]; do
-      [[ -z "$n" || "$n" == \#* || "$sch" == manuel ]] && continue
-      [ -n "${seen[$sch]:-}" ] && continue
-      seen[$sch]=1
-      h=${sch%%:*}; mi=${sch##*:}
-      echo "$((10#$mi)) $((10#$h)) * * * root $SELF run-at $sch >/dev/null 2>&1"
+      [[ -z "$n" || "$n" == \#* ]] && continue
+      if [ "$sch" = manuel ]; then rm -f "$STATE_DIR/$n.maxage"; continue; fi
+      max_age "$sch" > "$STATE_DIR/$n.maxage" 2>/dev/null
+      IFS=';' read -ra slots <<< "$sch"
+      for sl in "${slots[@]}"; do
+        t=${sl%%/*}
+        [ -n "${seen[$t]:-}" ] && continue
+        seen[$t]=1
+        h=${t%%:*}; mi=${t##*:}
+        echo "$((10#$mi)) $((10#$h)) * * * root $SELF run-at $t >/dev/null 2>&1"
+      done
     done < "$JOBS"
   } > "$CRON_FILE"
   chmod 644 "$CRON_FILE"
+  patch_nas_check
   ha_status
 }
 
@@ -227,9 +286,9 @@ form() {  # remplit J_* (valeurs actuelles = defauts)
   fi
 
   while true; do
-    ask "Horaire quotidien HH:MM, ou 'manuel'" "${J_SCHED:-$DEFAULT_SCHED}"
-    if [ "$ANS" = manuel ] || [[ "$ANS" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then J_SCHED="$ANS"; break; fi
-    rouge "Format invalide (ex : 03:30 ou manuel)."
+    ask "Horaire HH:MM (tous les jours), HH:MM/JOURS (1=lundi, ex. 03:30/135), plusieurs separes par ; ou 'manuel'" "${J_SCHED:-$DEFAULT_SCHED}"
+    if valid_sched "$ANS"; then J_SCHED="$ANS"; break; fi
+    rouge "Format invalide (ex : 03:30, 03:30/67, 03:30;15:00 ou manuel)."
   done
 }
 
@@ -386,6 +445,9 @@ run_job() {
   local runlog="$STATE_DIR/$J_NAME.run.log" runf="$STATE_DIR/$J_NAME.running"
   local -a opts=("${EXCLUDES[@]}" --log-file "$runlog" --log-level INFO)
   if [ -t 1 ]; then opts+=(-P); else opts+=(--stats 30s); fi   # --stats : avancement (%) pour Home Assistant
+  [ -n "${J_BW:-}" ] && opts+=(--bwlimit "$J_BW")                # limite de debit (ex. 5M, ou "08:00,2M 23:00,off")
+  local jstop="$STATE_DIR/$J_NAME.stop"
+  rm -f "$jstop"
 
   if [ ! -d "$J_SRC" ]; then
     rouge "Source introuvable : $J_SRC"; logl "$J_NAME : ECHEC (source introuvable)"
@@ -411,7 +473,7 @@ run_job() {
   if [ "$J_MODE" = sync ]; then
     if [ "${J_RET:-0}" -gt 0 ]; then
       rclone sync "$J_SRC" "$dest" --backup-dir "$trash/$jour" "${opts[@]}"; rc=$?
-      if [ ! -f "$STOPF" ]; then
+      if [ ! -f "$STOPF" ] && [ ! -f "$jstop" ]; then
         rclone delete "$trash" --min-age "${J_RET}d" -q 2>/dev/null
         rclone rmdirs "$trash" --leave-root -q 2>/dev/null
       fi
@@ -427,7 +489,7 @@ run_job() {
   local resume; resume=$(bilan "$runlog" "$t0" "$rc")
 
   local duree=$(( ($(date +%s) - t0) / 60 ))
-  if [ "$rc" -ne 0 ] && [ -f "$STOPF" ]; then
+  if [ "$rc" -ne 0 ] && { [ -f "$STOPF" ] || [ -f "$jstop" ]; }; then
     # Arret demande : ni echec ni alerte critique, la prochaine execution reprendra
     echo "$(date '+%Y-%m-%d %H:%M') ARRETE" > "$STATE_DIR/$J_NAME.status"
     logl "$J_NAME : ARRETEE manuellement apres ${duree} min${resume:+ - $resume}"
@@ -444,9 +506,65 @@ run_job() {
     local err; err=$(grep -E 'ERROR|CRITICAL' "$runlog" | tail -n 1 | sed -E 's/^[0-9\/ :]+//' | cut -c1-200)
     notify critique "job-$J_NAME" "Sauvegarde « $J_NAME » en échec" "Code $rc. ${err:-Voir $LOG sur le NAS.}"
   fi
+  rm -f "$jstop"
   historise "$runlog"
   ha_status
   return "$rc"
+}
+
+# Arret d'une seule sauvegarde (les autres continuent)
+stop_job() {
+  local pat="rclone .*--log-file $STATE_DIR/$1.run.log" i
+  job_exists "$1" || die "sauvegarde '$1' introuvable."
+  if ! pgrep -f "$pat" >/dev/null; then vert "La sauvegarde '$1' n'est pas en cours."; return 0; fi
+  touch "$STATE_DIR/$1.stop"
+  logl "$1 : arret demande"
+  pkill -TERM -f "$pat"
+  for i in $(seq 30); do pgrep -f "$pat" >/dev/null || break; sleep 1; done
+  if pgrep -f "$pat" >/dev/null; then pkill -KILL -f "$pat"; sleep 2; fi
+  # attendre que la sauvegarde ait enregistre son etat (verrou libere en dernier)
+  for i in $(seq 40); do flock -n "/run/nas-backup-$1.lock" true 2>/dev/null && break; sleep 1; done
+  vert "Sauvegarde '$1' arretee. Elle reprendra a sa prochaine execution."
+}
+
+# Simulation : ce que la sauvegarde enverrait / supprimerait, sans rien faire
+api_simulate() {
+  job_get "$1" || die "sauvegarde '$1' introuvable."
+  local out="$STATE_DIR/$J_NAME.simulation" dest cmd=sync rc
+  dest=$(dest_of "$J_ENC" "$J_SUB")
+  [ "$J_MODE" = copy ] && cmd=copy
+  exec 8>"/run/nas-backup-simulation-$J_NAME.lock"
+  flock -n 8 || die "une simulation de '$J_NAME' est deja en cours."
+  [ -d "$J_SRC" ] || die "dossier source introuvable : $J_SRC"
+  printf 'ETAT=en_cours\nDEBUT=%s\n' "$(date +%s)" > "$out.status"
+  : > "$out.log"
+  rclone "$cmd" "$J_SRC" "$dest" "${EXCLUDES[@]}" --dry-run --log-level NOTICE --log-file "$out.log" < /dev/null; rc=$?
+  python3 - "$out.log" "$out.txt" "$out.status" "$rc" <<'PYSIM'
+import re, sys, time
+log, txt, st, rc = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+units = {"": 1, "k": 1024, "ki": 1024, "m": 1024**2, "mi": 1024**2, "g": 1024**3, "gi": 1024**3, "t": 1024**4, "ti": 1024**4}
+env = sup = octets = 0
+lines = []
+rx = re.compile(r"NOTICE: (.+?): Skipped (copy|delete|move)\b.*?(?:\(size ([\d.]+)\s*([KMGT]?i?)\))?\s*$", re.I)
+for l in open(log, errors="ignore"):
+    m = rx.search(l.rstrip())
+    if not m:
+        continue
+    kind = m.group(2).lower()
+    if kind == "copy":
+        env += 1
+        if m.group(3):
+            octets += int(float(m.group(3)) * units.get((m.group(4) or "").lower(), 1))
+        lines.append("+ " + m.group(1))
+    else:
+        sup += 1
+        lines.append("- " + m.group(1))
+with open(txt, "w") as f:
+    f.write("\n".join(lines[:2000]) + ("\n" if lines else ""))
+with open(st, "w") as f:
+    f.write("ETAT=%s\nFIN=%d\nENVOIS=%d\nSUPPRESSIONS=%d\nOCTETS=%d\n" % ("ok" if rc == 0 else "echec", time.time(), env, sup, octets))
+PYSIM
+  vert "Simulation de '$J_NAME' terminee."
 }
 
 # Historique : une ligne JSON par execution (bilan + etat + derniere erreur), 3000 au plus
@@ -476,13 +594,14 @@ run_job_locked() {
     run_job "$1" ) 9>"/run/nas-backup-$1.lock"
 }
 
-run_at() {  # lance l'une apres l'autre les sauvegardes prevues a l'horaire $1 (utilise par cron)
-  local n rc=0
+run_at() {  # lance l'une apres l'autre les sauvegardes prevues a l'heure $1 ce jour-ci (utilise par cron)
+  local n rc=0 dow
+  dow=$(date +%u)
   rm -f "$STOPF"
   for n in $(job_names); do
     job_get "$n" || continue
     [ -f "$STOPF" ] && break
-    [ "$J_SCHED" = "$1" ] && { run_job_locked "$n" || rc=1; }
+    slot_matches "$J_SCHED" "$1" "$dow" && { run_job_locked "$n" || rc=1; }
   done
   return $rc
 }
@@ -581,12 +700,12 @@ menu() {
 
 # =========================== Commandes non interactives ==============
 # Utilisees par l'application Windows "NAS Manager" (aucune question posee).
-API_VERSION=2
+API_VERSION=3
 
-api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER_DRIVE MODE CHIFFRE HORAIRE CORBEILLE
+api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER_DRIVE MODE CHIFFRE HORAIRE CORBEILLE [DEBIT]
   local kind="$1"; shift
-  [ $# -eq 7 ] || die "usage : nas-backup save <nouveau|modif> NOM SOURCE DOSSIER MODE CHIFFRE HORAIRE CORBEILLE"
-  J_NAME="$1" J_SRC="${2%/}" J_SUB="$3" J_MODE="$4" J_ENC="$5" J_SCHED="$6" J_RET="$7"
+  [ $# -eq 7 ] || [ $# -eq 8 ] || die "usage : nas-backup save <nouveau|modif> NOM SOURCE DOSSIER MODE CHIFFRE HORAIRE CORBEILLE [DEBIT]"
+  J_NAME="$1" J_SRC="${2%/}" J_SUB="$3" J_MODE="$4" J_ENC="$5" J_SCHED="$6" J_RET="$7" J_BW="${8:-}"
   J_SUB="${J_SUB#/}"; J_SUB="${J_SUB%/}"
   [[ "$J_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || die "nom invalide (lettres, chiffres, - et _)."
   case "$kind" in
@@ -598,7 +717,8 @@ api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER_DRIVE MODE CHIFFRE H
   [[ -z "$J_SUB" || "$J_SUB" == *"|"* || "$J_SUB" == _corbeille* ]] && die "dossier Drive invalide."
   [[ "$J_MODE" =~ ^(sync|copy)$ ]] || die "mode invalide (sync ou copy)."
   [[ "$J_ENC" =~ ^(oui|non)$ ]] || die "chiffrement invalide (oui ou non)."
-  [ "$J_SCHED" = manuel ] || [[ "$J_SCHED" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "horaire invalide (HH:MM ou manuel)."
+  valid_sched "$J_SCHED" || die "horaire invalide (HH:MM, HH:MM/JOURS, plusieurs separes par ; ou manuel)."
+  [[ -z "$J_BW" || "$J_BW" =~ ^[0-9A-Za-z:.,\ -]+$ ]] || die "limite de debit invalide (ex. 5M)."
   [[ "$J_RET" =~ ^[0-9]+$ ]] || die "nombre de jours de corbeille invalide."
   [ "$J_MODE" = copy ] && J_RET=0
   local n s sub m e sch r
@@ -671,7 +791,8 @@ case "${1:-}" in
   run-at)   [ -n "${2:-}" ] || die "usage : nas-backup run-at <HH:MM>"; run_at "$2" ;;
   run-all)  run_all ;;
   list)     list_jobs ;;
-  stop)     stop_all ;;
+  stop)     if [ -n "${2:-}" ]; then stop_job "$2"; else stop_all; fi ;;
+  simulate) [ -n "${2:-}" ] || die "usage : nas-backup simulate <NOM>"; api_simulate "$2" ;;
   save)     shift; api_save "$@" ;;
   delete)   [ -n "${2:-}" ] || die "usage : nas-backup delete <NOM> [effacer-drive]"; api_delete "$2" "${3:-}" ;;
   restore)  [ -n "${3:-}" ] || die "usage : nas-backup restore <NOM> <DOSSIER>"; api_restore "$2" "$3" ;;

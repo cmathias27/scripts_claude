@@ -47,6 +47,9 @@ for d in /root /home/syno; do
   chmod 700 $d/.ssh; chmod 600 $d/.ssh/authorized_keys
 done
 chown -R syno:syno /home/syno/.ssh
+# cle root du « Synology » vers « l'OMV » (copie-omv)
+[ -f /root/.ssh/id_copie_omv ] || ssh-keygen -t ed25519 -q -N "" -C copie -f /root/.ssh/id_copie_omv
+grep -qxF "$(cat /root/.ssh/id_copie_omv.pub)" /root/.ssh/authorized_keys || cat /root/.ssh/id_copie_omv.pub >> /root/.ssh/authorized_keys
 sleep 1
 ssh-keyscan -p 2222 127.0.0.1 2>/dev/null > "$APP/known_hosts"
 cat > "$APP/parametres.json" <<EOF
@@ -70,6 +73,11 @@ case "$cmd" in
   version) echo "rclone v1.70.0-faux" ;;
   sync|copy|copyto)
     [ -n "$log" ] || log=/dev/null
+    if [[ " $* " == *" --dry-run "* ]]; then
+      d=$(date '+%Y/%m/%d %H:%M:%S')
+      printf '%s NOTICE: 2024/IMG_1.jpg: Skipped copy as --dry-run is set (size 3.5Mi)\n%s NOTICE: 2024/IMG_2.jpg: Skipped copy as --dry-run is set (size 1.2Gi)\n%s NOTICE: vieux.txt: Skipped delete as --dry-run is set (size 10)\n' "$d" "$d" "$d" >> "$log"
+      exit 0
+    fi
     for ((s=1;s<=dur;s+=2)); do
       sleep 2; pct=$(( 100 * s / dur ))
       printf '%s INFO  : \nTransferred:   \t  %d.000 MiB / 4096.000 MiB, %d%%, 68.400 MiB/s, ETA %ds\nTransferred:            %d / 120, %d%%\nElapsed time:        %d.0s\n\n' \

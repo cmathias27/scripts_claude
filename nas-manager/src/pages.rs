@@ -433,7 +433,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                         .sauvegardes
                         .iter()
                         .filter(|j| j.horaire != "manuel" && !j.en_cours)
-                        .filter_map(|j| fmt::next_run(&j.horaire).map(|t| format!("{} : {}", j.nom, t)))
+                        .filter_map(|j| fmt::next_run_sched(&j.horaire).map(|t| format!("{} : {}", j.nom, t)))
                         .take(3)
                         .collect();
                     if !next_runs.is_empty() {
@@ -646,7 +646,6 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
                 new: true,
                 mirror: true,
                 encrypt: true,
-                hour: "03:30".into(),
                 trash_days: "30".into(),
                 ..Default::default()
             });
@@ -728,12 +727,20 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
             }
             badge(
                 ui,
-                &if j.horaire == "manuel" { "Manuel".to_string() } else { format!("⏰ {}", j.horaire) },
+                &if j.horaire == "manuel" { "Manuel".to_string() } else { format!("⏰ {}", fmt::schedule_human(&j.horaire)) },
                 IDLE,
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let name = j.nom.clone();
                 ui.menu_button("⋯", |ui| {
+                    if ui
+                        .add_enabled(!j.en_cours && j.simulation.as_ref().map(|s| s.etat != "en_cours").unwrap_or(true), egui::Button::new("🔍 Simuler (sans rien envoyer)"))
+                        .on_hover_text("Liste ce que la sauvegarde enverrait et supprimerait sur le Drive")
+                        .clicked()
+                    {
+                        app.action_toast(HostId::Omv, "Simulation", remote::nb_simulate(&name), 30);
+                        ui.close();
+                    }
                     if ui.button("⤓ Restaurer…").clicked() {
                         let base = j
                             .source
@@ -787,8 +794,8 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         folder_touched: true,
                         mirror: j.mode == "sync",
                         encrypt: j.chiffre,
-                        manual: j.horaire == "manuel",
-                        hour: if j.horaire == "manuel" { "03:30".into() } else { j.horaire.clone() },
+                        sched: crate::sched::SchedEdit::parse(&j.horaire),
+                        bw: crate::sched::BwEdit::parse(&j.debit),
                         trash_days: j.corbeille.to_string(),
                         error: String::new(),
                     });
@@ -796,7 +803,19 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         app.load_backup_sources();
                     }
                 }
-                if ui.add_enabled(!j.en_cours, egui::Button::new("▶ Lancer")).clicked() {
+                if j.en_cours {
+                    if ui.button("⏹ Arrêter").on_hover_text("Arrête cette sauvegarde seulement ; elle reprendra à sa prochaine exécution").clicked() {
+                        let n = name.clone();
+                        app.ask_confirm(
+                            "Arrêter la sauvegarde",
+                            &format!("La sauvegarde « {n} » s'arrête proprement (fin des fichiers en cours d'envoi). Les autres continuent."),
+                            "Arrêter",
+                            true,
+                            None,
+                            Box::new(move |app| app.action_toast(HostId::Omv, "Arrêt", remote::nb_stop_job(&n), 90)),
+                        );
+                    }
+                } else if ui.button("▶ Lancer").clicked() {
                     app.action_toast(HostId::Omv, "Lancement", remote::nb_run(&name), 30);
                 }
             });
@@ -837,7 +856,7 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                 }
             }
             if j.horaire != "manuel" {
-                if let Some(n) = fmt::next_run(&j.horaire) {
+                if let Some(n) = fmt::next_run_sched(&j.horaire) {
                     parts.push(format!("prochaine : {n}"));
                 }
             }
@@ -847,6 +866,12 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
             if let Some(b) = &j.bilan {
                 ui.label(RichText::new(format!("Bilan : {}", bilan_text(b))).small().weak());
             }
+        }
+        if !j.debit.is_empty() {
+            ui.label(RichText::new(format!("Débit limité : {}", fmt::bw_human(&j.debit))).small().weak());
+        }
+        if let Some(sim) = &j.simulation {
+            simulation_box(app, ui, &j.nom, sim);
         }
         if j.mode == "sync" && j.corbeille > 0 {
             ui.label(
@@ -858,15 +883,58 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
     });
 }
 
-fn valid_hour(h: &str) -> bool {
-    let b = h.as_bytes();
-    b.len() == 5
-        && b[2] == b':'
-        && h[..2].parse::<u32>().map(|v| v < 24).unwrap_or(false)
-        && h[3..].parse::<u32>().map(|v| v < 60).unwrap_or(false)
-        && b[0].is_ascii_digit()
-        && b[3].is_ascii_digit()
+fn simulation_box(app: &mut App, ui: &mut egui::Ui, name: &str, sim: &Simulation) {
+    let recent = fmt::now() - sim.fin < 7 * 86400 || sim.etat == "en_cours";
+    if !recent {
+        return;
+    }
+    egui::Frame::new()
+        .fill(INFO.gamma_multiply(0.10))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("🔍 Simulation").strong());
+                match sim.etat.as_str() {
+                    "en_cours" => {
+                        ui.spinner();
+                        ui.label("comparaison avec le Drive en cours…");
+                    }
+                    "ok" => {
+                        ui.label(format!(
+                            "{} : {} fichier(s) à envoyer ({}), {} à retirer du Drive",
+                            fmt::ago(sim.fin, fmt::now()),
+                            sim.envois,
+                            fmt::bytes(sim.octets),
+                            sim.suppressions
+                        ));
+                        if ui.small_button("Voir le détail").clicked() {
+                            let n = name.to_string();
+                            app.exec(
+                                HostId::Omv,
+                                "Lecture de la simulation",
+                                remote::tail_file(&format!("/var/lib/nas-backup/{n}.simulation.txt"), 2000),
+                                30,
+                                Box::new(move |app, r| {
+                                    let t = r.map(|o| o.stdout).unwrap_or_else(|e| e.to_string());
+                                    app.output = Some(OutputDialog {
+                                        title: format!("Simulation de « {n} » (+ envoyé, - retiré du Drive)"),
+                                        text: if t.trim().is_empty() { "Rien à envoyer ni à retirer : le Drive est à jour.".into() } else { t },
+                                        ok: true,
+                                    });
+                                }),
+                            );
+                        }
+                    }
+                    _ => {
+                        ui.colored_label(ERR, "échec de la simulation (voir les journaux)");
+                    }
+                }
+            });
+        });
 }
+
 
 pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
     let Some(mut f) = app.job_form.take() else { return };
@@ -939,13 +1007,11 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 ui.end_row();
 
                 ui.label("Horaire");
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut f.manual, "Manuel");
-                    if !f.manual {
-                        ui.label("chaque jour à");
-                        ui.add(egui::TextEdit::singleline(&mut f.hour).desired_width(60.0).hint_text("03:30"));
-                    }
-                });
+                f.sched.ui(ui);
+                ui.end_row();
+
+                ui.label("Limite de débit");
+                f.bw.ui(ui);
                 ui.end_row();
             });
             if !f.new {
@@ -983,8 +1049,14 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
             "Choisis le dossier à sauvegarder."
         } else if folder.is_empty() || folder.contains('|') || folder.starts_with("_corbeille") {
             "Dossier Drive invalide."
-        } else if !f.manual && !valid_hour(f.hour.trim()) {
-            "Horaire invalide (format HH:MM, ex : 03:30)."
+        } else if let Err(e) = f.sched.build() {
+            f.error = e;
+            app.job_form = Some(f);
+            return;
+        } else if let Err(e) = f.bw.build() {
+            f.error = e;
+            app.job_form = Some(f);
+            return;
         } else if f.mirror && f.trash_days.trim().parse::<u32>().is_err() {
             "Nombre de jours de corbeille invalide."
         } else {
@@ -995,7 +1067,8 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
             app.job_form = Some(f);
             return;
         }
-        let sched = if f.manual { "manuel".to_string() } else { f.hour.trim().to_string() };
+        let sched = f.sched.build().unwrap_or_else(|_| "manuel".into());
+        let bw = f.bw.build().unwrap_or_default();
         let days = if f.mirror { f.trash_days.trim().parse().unwrap_or(0) } else { 0 };
         let script = remote::nb_save(
             f.new,
@@ -1007,6 +1080,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 encrypt: f.encrypt,
                 schedule: &sched,
                 trash_days: days,
+                bwlimit: &bw,
             },
         );
         let title = if f.new { "Nouvelle sauvegarde" } else { "Modification" };
@@ -1538,7 +1612,7 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
     // ---- Nouvelle copie
     let running = c.en_cours;
     card(ui, "Nouvelle copie", |ui| {
-        ui.add_enabled_ui(!running && ready, |ui| {
+        ui.add_enabled_ui(ready, |ui| {
             egui::Grid::new("copygrid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
                 ui.label("Dossier du Synology");
                 ui.horizontal(|ui| {
@@ -1615,6 +1689,14 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                     ui.radio_value(&mut app.copy.move_files, true, RichText::new("Déplacer : les originaux sont SUPPRIMÉS du Synology après copie").color(ERR));
                 });
                 ui.end_row();
+
+                ui.label("Limite de débit");
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut app.copy.bw).desired_width(70.0).hint_text("—"));
+                    ui.label("Mo/s");
+                    ui.label(RichText::new("vide = pleine vitesse").small().weak());
+                });
+                ui.end_row();
             });
             ui.label(
                 RichText::new("Si la destination contient déjà des fichiers : fusion (rien n'y est supprimé, les fichiers de même nom mais différents sont remplacés). Les fichiers prennent les droits du dossier de destination.")
@@ -1623,7 +1705,13 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
             );
             ui.add_space(6.0);
             let can = !app.copy.src.trim().is_empty() && !app.copy.dst.trim().is_empty();
-            if ui.add_enabled(can, egui::Button::new(RichText::new("▶ Lancer").color(Color32::WHITE)).fill(INFO)).clicked() {
+            let bw: Option<u32> = app.copy.bw.trim().replace(',', ".").parse::<f64>().ok().filter(|v| *v > 0.0).map(|v| (v * 1024.0) as u32);
+            let bw_bad = !app.copy.bw.trim().is_empty() && bw.is_none();
+            if bw_bad {
+                ui.colored_label(ERR, "Limite de débit invalide (en Mo/s, ex : 20).");
+            }
+            ui.horizontal(|ui| {
+            if ui.add_enabled(can && !bw_bad && !running, egui::Button::new(RichText::new("▶ Lancer").color(Color32::WHITE)).fill(INFO)).clicked() {
                 let (src, dst, into, mv) = (
                     app.copy.src.trim().trim_end_matches('/').to_string(),
                     app.copy.dst.trim().trim_end_matches('/').to_string(),
@@ -1644,15 +1732,80 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
                     mv,
                     if mv { Some("DEPLACER") } else { None },
                     Box::new(move |app| {
-                        app.action_dialog(HostId::Syno, "Lancement de la copie", remote::copie_launch(&src, &dst, into, mv), 1200)
+                        app.action_dialog(HostId::Syno, "Lancement de la copie", remote::copie_launch(&src, &dst, into, mv, bw), 1200)
                     }),
                 );
             }
+            if ui
+                .add_enabled(can && !bw_bad, egui::Button::new("+ Ajouter à la file d'attente"))
+                .on_hover_text("Les copies de la file partent l'une après l'autre, après celle en cours")
+                .clicked()
+            {
+                let (src, dst, into, mv) = (
+                    app.copy.src.trim().trim_end_matches('/').to_string(),
+                    app.copy.dst.trim().trim_end_matches('/').to_string(),
+                    app.copy.into_folder,
+                    app.copy.move_files,
+                );
+                let script = remote::copie_queue_add(&src, &dst, into, mv, bw);
+                if mv {
+                    app.ask_confirm(
+                        "Déplacement en file d'attente",
+                        &format!("{src} sera DÉPLACÉ vers l'OMV (originaux effacés du Synology) quand son tour viendra."),
+                        "Ajouter",
+                        true,
+                        Some("DEPLACER"),
+                        Box::new(move |app| app.action_toast(HostId::Syno, "Ajout", script, 30)),
+                    );
+                } else {
+                    app.action_toast(HostId::Syno, "Ajout", script, 30);
+                }
+            }
+            });
         });
         if running {
-            ui.label(RichText::new("Une copie est en cours : attends sa fin ou arrête-la pour en lancer une autre.").small().weak());
+            ui.label(RichText::new("Une copie est en cours : ajoute les suivantes à la file d'attente, elles partiront après.").small().weak());
         }
     });
+    ui.add_space(10.0);
+
+    // ---- file d'attente des copies
+    if !c.file.is_empty() {
+        card(ui, &format!("File d'attente ({})", c.file.len()), |ui| {
+            let mut remove: Option<usize> = None;
+            for (i, q) in c.file.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{}.", i + 1)).weak());
+                    let name = q.source.rsplit('/').next().unwrap_or("");
+                    ui.label(RichText::new(format!(
+                        "{}  →  {}{}",
+                        q.source,
+                        fmt::short_path(&q.destination),
+                        if q.dans_dossier { format!("/{name}") } else { String::new() }
+                    )).strong());
+                    if q.deplacement {
+                        badge(ui, "déplacement", ERR);
+                    }
+                    if !q.debit.is_empty() {
+                        let mo = q.debit.parse::<f64>().map(|k| k / 1024.0).unwrap_or(0.0);
+                        badge(ui, &format!("{} Mo/s max", format!("{mo:.1}").trim_end_matches(".0").replace('.', ",")), IDLE);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_enabled(ready, egui::Button::new("✖").small()).on_hover_text("Retirer de la file").clicked() {
+                            remove = Some(i + 1);
+                        }
+                    });
+                });
+            }
+            if let Some(n) = remove {
+                app.action_toast(HostId::Syno, "Retrait", remote::copie_queue_remove(n), 30);
+            }
+            if !running && ui.add_enabled(ready, egui::Button::new("▶ Lancer la file d'attente")).clicked() {
+                app.action_toast(HostId::Syno, "Lancement", remote::copie_queue_next(), 1200);
+            }
+            ui.label(RichText::new("La copie suivante part automatiquement quand la précédente se termine avec succès.").small().weak());
+        });
+    }
     ui.add_space(10.0);
 
     egui::CollapsingHeader::new("🛠 Réparer les droits d'un dossier sur l'OMV").show(ui, |ui| {

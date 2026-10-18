@@ -140,8 +140,9 @@ if [ -f "$JOBS" ]; then
     f="/var/lib/nas-backup/$n.lastok"
     [ -f "$f" ] || continue
     age=$(( ( $(date +%s) - $(cat "$f") ) / 3600 ))
-    if [ "$age" -ge "${LATE_HOURS:-50}" ]; then
-      $N critique "retard-$n" "Sauvegarde « $n » en retard" "Aucune sauvegarde réussie depuis ${age} h (prévue chaque jour à $sch)."
+    # seuil propre a chaque sauvegarde (horaires sur certains jours), ecrit par nas-backup
+    lim=$(cat "/var/lib/nas-backup/$n.maxage" 2>/dev/null); if [ "$age" -ge "${lim:-${LATE_HOURS:-50}}" ]; then
+      $N critique "retard-$n" "Sauvegarde « $n » en retard" "Aucune sauvegarde réussie depuis ${age} h (horaire : $sch)."
     else
       $N ok "retard-$n" "Sauvegarde « $n »" "La sauvegarde est de nouveau à jour."
     fi

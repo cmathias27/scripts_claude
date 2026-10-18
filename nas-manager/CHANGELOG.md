@@ -1,5 +1,22 @@
 # Journal des modifications
 
+## 1.0.0-beta.4
+
+Étape 4 sur 6 de la version 1.0 : gérer plus finement.
+
+### Sauvegardes
+- Planification souple : tous les jours, certains jours seulement (ex. lundi, mercredi, vendredi), plusieurs heures par jour, ou un horaire avancé. L'alerte de retard tient compte de ces jours.
+- Arrêter une seule sauvegarde (bouton « Arrêter » sur sa carte) : les autres continuent, elle reprendra à sa prochaine exécution.
+- Limite de débit : toujours, ou seulement en journée (8 h – 23 h) pour ne pas saturer Internet, pleine vitesse la nuit.
+- Simulation (menu ⋯) : liste ce qu'une sauvegarde enverrait et surtout supprimerait sur le Drive, sans rien faire.
+
+### Copie Synology → OMV
+- File d'attente : plusieurs copies programmées à la suite, la suivante part quand la précédente se termine avec succès.
+- Limite de débit pour chaque copie.
+
+nas-backup passe en version 3 et copie-omv en version 2 : mets-les à jour depuis Paramètres > Scripts sur les NAS.
+Si les alertes sont installées, le seuil de retard de nas-check est adapté automatiquement à la mise à jour.
+
 ## 1.0.0-beta.3
 
 Étape 3 sur 6 de la version 1.0 : mieux comprendre ce qui s'est passé.
