@@ -123,6 +123,24 @@ Idées en attente, à décider selon l'usage.
       `jobs.conf` et configuration de l'outil, sauvegardés automatiquement, chiffrés, hors du NAS.
       Plus un guide « mon NAS est mort, je reconstruis » dans l'aide.
 
+#### Sauvegardes versionnées (type Hyper Backup)
+- [ ] **Troisième mode de sauvegarde « Versionnée »**, à côté de miroir et copie, pour les données
+      importantes. Basé sur **restic**, qui stocke via rclone : toutes les destinations prévues
+      (Drive, OneDrive, B2, SFTP, oCIS…). Binaire unique amd64 / arm64 / armv7 : OMV, Synology, Debian.
+  - Instantanés complets, **déduplication** (seuls les morceaux modifiés sont envoyés et stockés),
+    chiffrement intégré.
+  - **Rotation intelligente** façon Smart Recycle, avec modèles prêts à l'emploi et réglables
+    (ex. 7 quotidiennes, 4 hebdomadaires, 12 mensuelles).
+  - **Liste des versions** dans l'application : restaurer un fichier, un dossier ou tout,
+    à la date choisie.
+  - Vérification d'intégrité programmée + test de restauration à blanc.
+  - Nettoyage des vieilles versions (opération lourde) programmé la nuit, par ex. hebdomadaire.
+  - Mot de passe du dépôt dans le coffre de l'application, avec rappel tant qu'il n'est pas noté
+    ailleurs (mot de passe perdu = dépôt entier illisible).
+  - Surveiller la mémoire sur le Synology (2 Go) : restic garde son index en mémoire.
+  - Expliquer dans l'aide la différence avec miroir / copie : fichiers non lisibles un par un sur
+    la destination, restauration uniquement par l'outil.
+
 #### Destinations
 - [ ] **Autres destinations que Google Drive** : tout ce que gère rclone (OneDrive, Dropbox,
       Backblaze B2, S3, autre NAS en SFTP, WebDAV / oCIS…), choisies par sauvegarde,
