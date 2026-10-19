@@ -2117,6 +2117,7 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                     "verification" => tr("Contrôle des empreintes dans oCIS"),
                     "relecture" => tr("Contrôle par relecture depuis oCIS"),
                     "suppression" => tr("Suppression des originaux contrôlés"),
+                    "renvoi" => tr("Renvoi des fichiers en défaut"),
                     _ => tr("Transfert"),
                 };
                 ui.label(phase);

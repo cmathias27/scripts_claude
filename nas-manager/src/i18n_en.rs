@@ -354,6 +354,7 @@ pub const EN: &[(&str, &str)] = &[
     ("Migration en cours", "Migration running"),
     ("Contrôle des empreintes dans oCIS", "Checking checksums in oCIS"),
     ("Contrôle par relecture depuis oCIS", "Checking by reading back from oCIS"),
+    ("Renvoi des fichiers en défaut", "Re-sending faulty files"),
     ("Suppression des originaux contrôlés", "Deleting the checked originals"),
     ("Transfert", "Transfer"),
     ("Comparaison avec ce qui est déjà dans oCIS…", "Comparing with what is already in oCIS…"),

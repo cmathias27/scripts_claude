@@ -20,8 +20,10 @@
 #    migration : apres le transfert, chaque fichier est controle dans
 #    oCIS (empreinte SHA1/MD5, ou relecture complete si oCIS n'en
 #    fournit pas) et seul l'original dont la copie est identique est
-#    supprime du Synology. Liste des fichiers supprimes gardee dans
-#    /root/.migre-ocis/supprimes-*.txt
+#    supprime du Synology. Les fichiers en defaut (differents, absents,
+#    en erreur) sont renvoyes de force et recontroles (3 fois au plus),
+#    sinon gardes sur le Synology avec une alerte. Liste des fichiers
+#    supprimes gardee dans /root/.migre-ocis/supprimes-*.txt
 #  - Memoire : rclone est limite (GOMEMLIMIT), sans HTTP/2 ni tampon de
 #    lecture, et repasse a 1 transfert apres un manque de memoire.
 #    Sa consommation est relevee et ecrite dans le journal.
@@ -33,6 +35,7 @@ HA_WEBHOOK="nas-c09f382daf2d01deb430abbd"
 TRANSFERS=2                                     # fichiers envoyes en parallele (1 apres un manque de memoire)
 CHECKERS=4
 AUTO_REPRISE=5                                  # relances automatiques si rclone s'arrete
+VERIF_RENVOIS=3                                 # renvois forces des fichiers en defaut au controle
 DEFAULT_LOCAL="https://192.168.1.53:9200"       # oCIS sur l'hote Docker, en direct (sans Cloudflare)
 
 SELF=$(readlink -f "$0")
@@ -377,7 +380,8 @@ add_task() {
   if [ "${m:-1}" = 2 ]; then
     echo
     echo -e "${J}Seuls les fichiers dont la copie dans oCIS est controlee identique (empreinte)"
-    echo -e "sont supprimes. Un fichier absent, different ou modifie entre-temps est garde.${N}"
+    echo -e "sont supprimes. Un fichier absent, different ou modifie entre-temps est renvoye"
+    echo -e "puis recontrole (3 fois au plus) ; s'il reste en defaut, il est garde.${N}"
     if [[ "$SRC_DIR" == */homes/*/Drive* ]]; then
       echo -e "${R}C'est un « Mon Drive » : les ordinateurs synchronises avec Synology Drive"
       echo -e "supprimeront aussi ces fichiers chez eux. Installe d'abord le client oCIS.${N}"
@@ -502,36 +506,62 @@ run_rclone() {
 cnt() { [ -s "$1" ] && grep -c '' "$1" || echo 0; }
 
 # Controle dans oCIS les fichiers de <source> puis supprime du Synology ceux dont la
-# copie est identique. Renvoie 0 si tout est controle et supprime, 1 sinon. -> VERIF_MSG
+# copie est identique. Les fichiers en defaut (differents, absents d'oCIS, en erreur)
+# sont renvoyes de force puis recontroles, jusqu'a VERIF_RENVOIS fois ; ceux qui restent
+# en defaut sont gardes sur le Synology. Rien n'est supprime sans controle reussi.
+# Renvoie 0 si tout est controle et supprime, 1 sinon. -> VERIF_MSG
 verify_and_delete() {
-  local s="$1" sub="$2" lab="$3" d crc nok ndiff nmiss nerr
+  local s="$1" sub="$2" lab="$3" d crc nok=0 ndiff nmiss nerr dl="" k=0 hist
   d="$STATE/verif-$(safe "$lab")"; rm -rf "$d"; mkdir -p "$d"
+  hist="$STATE/supprimes-$(date +%Y%m%d-%H%M%S)-$(safe "$lab").txt"
   check_run() {
     rm -f "$d/ok" "$d/diff" "$d/absent" "$d/err"; : > "$d/check.log"
     run_rclone check "$s" "ocis:$sub" --one-way "${EXCL[@]}" "${RCLONE_K[@]}" \
       --checkers 2 --buffer-size 0 --disable-http2 \
       --match "$d/ok" --differ "$d/diff" --missing-on-dst "$d/absent" --error "$d/err" \
-      --stats 5s --stats-log-level NOTICE --log-level NOTICE --log-file "$d/check.log" "$@"
+      --stats 5s --stats-log-level NOTICE --log-level NOTICE --log-file "$d/check.log" $dl "$@"
+    crc=$?
+    if [ -z "$dl" ] && grep -qiE 'no common hash|could not be checked' "$d/check.log"; then
+      # oCIS n'a pas fourni d'empreinte pour tout : comparaison octet par octet
+      echo "=== [$i] empreintes incompletes cote oCIS : controle par relecture complete depuis oCIS" >> "$LOGF"
+      echo "PHASE=relecture" >> "$STATE/etape"
+      dl=--download; check_run "$@"; return
+    fi
+    grep -E 'ERROR|NOTICE: .*(differ|not found|match)' "$d/check.log" | tail -n 20 >> "$LOGF"
+    ndiff=$(cnt "$d/diff"); nmiss=$(cnt "$d/absent"); nerr=$(cnt "$d/err")
+    echo "=== [$i] controle${k:+ apres renvoi $k} : $(cnt "$d/ok") identique(s), $ndiff different(s), $nmiss absent(s) d'oCIS, $nerr erreur(s) (code $crc)" >> "$LOGF"
   }
+  delete_ok() {  # supprime du Synology les fichiers controles identiques a cette passe
+    local n; n=$(cnt "$d/ok"); [ "$n" -gt 0 ] || return 0
+    echo "PHASE=suppression" >> "$STATE/etape"
+    cat "$d/ok" >> "$hist"
+    echo "=== [$i] suppression de $n original(aux) controle(s) dans $s" >> "$LOGF"
+    rclone delete "$s" --files-from-raw "$d/ok" --log-file "$LOGF" --log-level NOTICE < /dev/null
+    nok=$((nok + n))
+  }
+
   echo "PHASE=verification" >> "$STATE/etape"
   echo "=== [$i] controle des fichiers dans oCIS (empreintes)" >> "$LOGF"
-  check_run; crc=$?
-  if grep -qiE 'no common hash|could not be checked' "$d/check.log"; then
-    # oCIS n'a pas fourni d'empreinte pour tout : comparaison octet par octet
-    echo "=== [$i] empreintes incompletes cote oCIS : controle par relecture complete depuis oCIS" >> "$LOGF"
-    echo "PHASE=relecture" >> "$STATE/etape"
-    check_run --download; crc=$?
-  fi
-  grep -E 'ERROR|NOTICE: .*(differ|not found|match)' "$d/check.log" | tail -n 20 >> "$LOGF"
-  nok=$(cnt "$d/ok"); ndiff=$(cnt "$d/diff"); nmiss=$(cnt "$d/absent"); nerr=$(cnt "$d/err")
-  echo "=== [$i] controle : $nok identique(s), $ndiff different(s), $nmiss absent(s) d'oCIS, $nerr erreur(s) (code $crc)" >> "$LOGF"
+  k=""; check_run
+  delete_ok
+  k=0
+  # --- renvoi force des fichiers en defaut, puis nouveau controle
+  while [ $((ndiff + nmiss + nerr)) -gt 0 ] && [ "$k" -lt "$VERIF_RENVOIS" ]; do
+    k=$((k+1))
+    cat "$d/diff" "$d/absent" "$d/err" 2>/dev/null | sort -u > "$d/renvoi"
+    echo "PHASE=renvoi" >> "$STATE/etape"
+    echo "=== [$i] renvoi $k/$VERIF_RENVOIS de $(cnt "$d/renvoi") fichier(s) en defaut (differents, absents ou en erreur)" >> "$LOGF"
+    # --ignore-times : renvoie meme si taille et date sont identiques (copie abimee)
+    run_rclone copy "$s" "ocis:$sub" --files-from-raw "$d/renvoi" --ignore-times "${RCLONE_K[@]}" \
+      --transfers 1 --checkers 2 --buffer-size 0 --disable-http2 --retries 3 --low-level-retries 20 \
+      --stats 2s --stats-one-line --stats-log-level NOTICE --log-level NOTICE --log-file "$LOGF"
+    echo "PHASE=verification" >> "$STATE/etape"
+    check_run --files-from-raw "$d/renvoi"
+    delete_ok
+  done
 
+  # vignettes Synology (@eaDir) des fichiers supprimes, puis dossiers devenus vides
   if [ "$nok" -gt 0 ]; then
-    echo "PHASE=suppression" >> "$STATE/etape"
-    cp "$d/ok" "$STATE/supprimes-$(date +%Y%m%d-%H%M%S)-$(safe "$lab").txt"
-    echo "=== [$i] suppression de $nok original(aux) controle(s) dans $s" >> "$LOGF"
-    rclone delete "$s" --files-from-raw "$d/ok" --log-file "$LOGF" --log-level NOTICE < /dev/null
-    # vignettes Synology (@eaDir) des fichiers supprimes, puis dossiers devenus vides
     find "$s" -type d -name '@eaDir' -prune 2>/dev/null | while IFS= read -r ea; do
       for th in "$ea"/*; do [ -e "$th" ] && [ ! -e "${ea%/@eaDir}/${th##*/}" ] && rm -rf "$th"; done
       rmdir "$ea" 2>/dev/null
@@ -541,11 +571,17 @@ verify_and_delete() {
 
   if [ "$ndiff" -eq 0 ] && [ "$nmiss" -eq 0 ] && [ "$nerr" -eq 0 ] && [ "$crc" -eq 0 ]; then
     VERIF_MSG="$nok fichier(s) controle(s) dans oCIS et supprime(s) du Synology"
+    [ "$k" -gt 0 ] && VERIF_MSG="$VERIF_MSG (dont des fichiers renvoyes $k fois)"
     return 0
   fi
   VERIF_MSG="$nok controle(s) et supprime(s) ; gardes sur le Synology : $ndiff different(s), $nmiss absent(s) d'oCIS, $nerr erreur(s)"
+  [ "$k" -gt 0 ] && VERIF_MSG="$VERIF_MSG apres $k renvoi(s)"
   [ "$ndiff$nmiss$nerr" = 000 ] && VERIF_MSG="$VERIF_MSG, controle interrompu (code $crc)"
   VERIF_MSG="$VERIF_MSG — listes dans $d"
+  if [ $((ndiff + nmiss + nerr)) -gt 0 ]; then
+    notify critique "Migration oCIS : fichiers gardés" \
+      "$lab : $((ndiff + nmiss + nerr)) fichier(s) toujours en défaut après $k renvoi(s), gardé(s) sur le Synology (rien n'est supprimé). Liste : $d"
+  fi
   return 1
 }
 
@@ -685,6 +721,9 @@ follow() {
           status " $( [ "$PHASE" = relecture ] && echo "Controle par relecture depuis oCIS" || echo "Controle des empreintes dans oCIS") : ${line:-demarrage...}$ram" ;;
         suppression)
           status " Suppression des originaux controles sur le Synology..." ;;
+        renvoi)
+          line=$(tail -n 60 "$LOGF" 2>/dev/null | awk '/^=== /{l=""} /NOTICE:/{l=$0} END{print l}' | sed 's/.*NOTICE: *//; s/  */ /g')
+          status " Renvoi des fichiers en defaut : ${line:-demarrage...}$ram" ;;
         *)
           # derniere ligne de stats apres le dernier marqueur "===" (journal sans detail par fichier)
           line=$(tail -n 60 "$LOGF" 2>/dev/null | awk '/^=== /{l=""} /NOTICE:/{l=$0} END{print l}' | sed 's/.*NOTICE: *//; s/  */ /g')
