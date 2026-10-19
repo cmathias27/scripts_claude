@@ -128,6 +128,18 @@ Idées en attente, à décider selon l'usage.
     l'ancienne version jusqu'à sa fin (remplacement atomique, comme aujourd'hui).
   - Ancienne version gardée sur la machine pour **revenir en arrière** en un clic.
 
+- [ ] **Version SSH de NAS Manager (interface en mode texte)** : utilisable directement dans un terminal
+  SSH sur le NAS (ou depuis Linux / Mac / téléphone avec un client SSH), sans PC Windows.
+  - Menus au clavier en plein écran (tableau de bord, sauvegardes programmées et temps réel,
+    historique, alertes, transferts, journaux, installation), mêmes textes FR / EN que l'application.
+  - En Rust avec une bibliothèque d'interface texte (ex. ratatui), en partageant le modèle,
+    la lecture de l'état, les explications d'erreurs et les traductions avec l'application Windows.
+  - Binaire unique amd64 / arm64 / armv7, installé et mis à jour par l'application ou par
+    une commande unique ; fonctionne sur OMV, Synology et Debian.
+  - Tourne sur la machine elle-même : lit l'état et appelle le script local sans SSH ;
+    peut aussi suivre les autres machines du site en SSH.
+  - Fonctionne dans un terminal simple (80 colonnes, sans souris, couleurs facultatives).
+
 #### Sécurité des données
 - [ ] **Suppressions en temps réel au choix**, réglable par sauvegarde :
   - **suppression directe** (fonctionnement actuel des caméras) ;
@@ -242,18 +254,6 @@ Idées en attente, à décider selon l'usage.
   - Notifications envoyées par le NAS via ntfy (pas d'interrogation permanente qui vide la batterie).
   - Distribution : APK publié sur GitHub (comme le `.exe`), mise à jour depuis l'application.
     Pas de Play Store pour l'instant. iPhone non couvert.
-
-- **Version SSH de NAS Manager (interface en mode texte)** : utilisable directement dans un terminal
-  SSH sur le NAS (ou depuis Linux / Mac / téléphone avec un client SSH), sans PC Windows.
-  - Menus au clavier en plein écran (tableau de bord, sauvegardes programmées et temps réel,
-    historique, alertes, transferts, journaux, installation), mêmes textes FR / EN que l'application.
-  - En Rust avec une bibliothèque d'interface texte (ex. ratatui), en partageant le modèle,
-    la lecture de l'état, les explications d'erreurs et les traductions avec l'application Windows.
-  - Binaire unique amd64 / arm64 / armv7, installé et mis à jour par l'application ou par
-    une commande unique ; fonctionne sur OMV, Synology et Debian.
-  - Tourne sur la machine elle-même : lit l'état et appelle le script local sans SSH ;
-    peut aussi suivre les autres machines du site en SSH.
-  - Fonctionne dans un terminal simple (80 colonnes, sans souris, couleurs facultatives).
 
 ### Pas pour l'instant
 - Sauvegarde des volumes Docker (arrêt / relance du conteneur pendant la copie).
