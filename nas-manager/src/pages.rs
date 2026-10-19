@@ -225,14 +225,24 @@ fn progress_details(ui: &mut egui::Ui, p: &Progress) {
 }
 
 fn bilan_text(b: &Bilan) -> String {
-    let mut t = tf("{0} fichier{1} envoyé{1} ({2})", &[&b.fichiers_envoyes, &(if b.fichiers_envoyes > 1 { "s" } else { "" }), &(fmt::bytes(b.volume_octets.max(0) as u64))]);
+    let mut t = if b.fichiers_envoyes == 0 && b.retires == 0 && b.erreurs == 0 {
+        tr("Déjà à jour, aucun changement").to_string()
+    } else if b.fichiers_envoyes == 0 {
+        tr("Rien à envoyer").to_string()
+    } else {
+        tf("{0} fichier{1} envoyé{1} ({2})", &[&b.fichiers_envoyes, &(if b.fichiers_envoyes > 1 { "s" } else { "" }), &(fmt::bytes(b.volume_octets.max(0) as u64))])
+    };
     if b.retires > 0 {
-        t.push_str(&tf(", {0} retiré(s)", &[&b.retires]));
+        t.push_str(&tf(", {0} supprimé(s) du Drive", &[&b.retires]));
     }
     if b.erreurs > 0 {
         t.push_str(&tf(", {0} erreur(s)", &[&b.erreurs]));
     }
-    t.push_str(&tf(" · {0} min", &[&format!("{:.0}", b.duree_min)]));
+    if b.duree_min < 1.0 {
+        t.push_str(tr(" · moins d'une minute"));
+    } else {
+        t.push_str(&tf(" · {0} min", &[&format!("{:.0}", b.duree_min)]));
+    }
     t
 }
 

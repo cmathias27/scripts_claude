@@ -402,12 +402,12 @@ delete_job() {
 }
 
 # Bilan d'un transfert d'apres son journal rclone -> $STATE_DIR/<nom>.bilan.json
-# Affiche un resume d'une ligne ("12 fichiers envoyes (1.3 Go)")
+# Affiche un resume d'une ligne ("12 fichiers envoyes (1.3 Go)", ou "aucun changement")
 bilan() {  # bilan <journal> <debut> <code>
-  python3 - "$1" "$J_SRC" "$STATE_DIR/$J_NAME.bilan.json" "$2" "$3" <<'PY' 2>/dev/null
+  python3 - "$1" "$J_SRC" "$STATE_DIR/$J_NAME.bilan.json" "$2" "$3" "${J_RET:-0}" <<'PY' 2>/dev/null
 import json, os, re, sys, time
 log, src, out = sys.argv[1:4]
-t0, rc = int(sys.argv[4]), int(sys.argv[5])
+t0, rc, ret = int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6] or 0)
 act = re.compile(r" INFO\s+: (.+): (Copied \((new|replaced existing)\)|Deleted|Moved \(server-side\))")
 b = {"nouveaux": 0, "remplaces": 0, "retires": 0, "erreurs": 0, "octets": 0}
 try:
@@ -439,12 +439,30 @@ for u in ("o", "Ko", "Mo", "Go", "To"):
     if v < 1024 or u == "To":
         break
     v /= 1024
-txt = "%d fichier%s envoyé%s (%s)" % (env, "s" if env > 1 else "", "s" if env > 1 else "",
-                                      "%d o" % v if u == "o" else "%.1f %s" % (v, u))
-if b["retires"]:
-    txt += ", %d retiré%s" % (b["retires"], "s" if b["retires"] > 1 else "")
+pl = lambda n: "s" if n > 1 else ""
+if env == 0 and b["retires"] == 0:
+    txt = "aucun changement"            # deja a jour : rien a envoyer ni a retirer
+else:
+    if env:
+        txt = "%d fichier%s envoyé%s (%s)" % (env, pl(env), pl(env),
+                                            "%d o" % v if u == "o" else "%.1f %s" % (v, u))
+    else:
+        txt = "rien à envoyer"
+    if b["retires"]:
+        r = b["retires"]
+        txt += ", %d fichier%s supprimé%s du Drive" % (r, pl(r), pl(r))
+        if ret > 0:
+            txt += " (gardé%s %d j dans la corbeille)" % (pl(r), ret)
 print(txt)
 PY
+}
+
+# Duree lisible : "moins d'une minute", "12 min", "1 h 10"
+duree_txt() {  # duree_txt <secondes>
+  local s=$1
+  if [ "$s" -lt 60 ]; then echo "moins d'une minute"
+  elif [ "$s" -lt 3600 ]; then echo "$(( s / 60 )) min"
+  else printf '%d h %02d\n' $(( s / 3600 )) $(( s % 3600 / 60 )); fi
 }
 
 run_job() {
@@ -508,7 +526,12 @@ run_job() {
     echo "$(date '+%Y-%m-%d %H:%M') OK" > "$STATE_DIR/$J_NAME.status"
     date +%s > "$STATE_DIR/$J_NAME.lastok"
     logl "$J_NAME : OK${resume:+ - $resume}"; vert "OK : $J_NAME${resume:+ - $resume}"
-    notify succes "job-$J_NAME" "Sauvegarde « $J_NAME »" "Terminée avec succès en ${duree} min${resume:+ : $resume}."
+    local quand; quand=$(duree_txt $(( $(date +%s) - t0 )))
+    if [ "$resume" = "aucun changement" ]; then
+      notify succes "job-$J_NAME" "Sauvegarde « $J_NAME »" "Déjà à jour : aucun changement depuis la dernière sauvegarde (vérifié en $quand)."
+    else
+      notify succes "job-$J_NAME" "Sauvegarde « $J_NAME »" "Terminée avec succès en $quand${resume:+ : $resume}."
+    fi
   else
     echo "$(date '+%Y-%m-%d %H:%M') ECHEC" > "$STATE_DIR/$J_NAME.status"
     logl "$J_NAME : ECHEC (code $rc)"; rouge "ECHEC : $J_NAME (voir $LOG)"
