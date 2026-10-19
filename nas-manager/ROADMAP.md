@@ -110,6 +110,23 @@ Idées en attente, à décider selon l'usage.
     des mots de passe, puis suppression des anciens services et crons (pas de doublons comme
     aujourd'hui entre `install-cam-sync.sh` et `install-alertes.sh`).
   - Tests contre le faux NAS pour les trois scripts (ajouter un faux Debian).
+- [ ] **Bouton unique « Installer / Mettre à jour » par script**, dont le libellé suit l'état :
+  - **Installer** : script absent de la machine (première fois).
+  - **À jour (vX)** : version installée = dernière version publiée sur GitHub (bouton grisé,
+    « Réinstaller » disponible dans un menu).
+  - **Mettre à jour vX → vY** : nouvelle version disponible sur GitHub, avec la liste des nouveautés.
+  - **Vérification…** pendant le contrôle, **GitHub injoignable** si le contrôle échoue
+    (installation possible avec la version intégrée à l'application).
+  - Les scripts ne sont plus seulement intégrés au `.exe` : ils sont **récupérés sur GitHub**,
+    ce qui permet de corriger un script sans republier l'application.
+  - Numéro de version dans chaque script + fichier de versions sur GitHub (version, empreinte
+    SHA-256, nouveautés) ; empreinte vérifiée avant installation.
+  - **Vérification automatique** : au démarrage puis toutes les X heures (réglable dans les
+    Paramètres, désactivable), notification Windows quand une mise à jour est disponible.
+  - **Vérification forcée** : bouton « Vérifier maintenant ».
+  - Mise à jour sans casser ce qui tourne : une sauvegarde ou une migration en cours garde
+    l'ancienne version jusqu'à sa fin (remplacement atomique, comme aujourd'hui).
+  - Ancienne version gardée sur la machine pour **revenir en arrière** en un clic.
 
 #### Sécurité des données
 - [ ] **Suppressions en temps réel au choix**, réglable par sauvegarde :
