@@ -79,6 +79,29 @@ migration oCIS, journaux, installation / mise à jour des scripts sur les NAS.
 Idées en attente, à décider selon l'usage.
 
 ### Prochaine mise à jour (demandé)
+
+#### Ordre de réalisation
+Une version testable par étape (1.1, 1.2…).
+
+1. **Fondations** : un seul script par machine (OMV, Synology, Debian) + migration des installations
+   actuelles · bouton « Installer / Mettre à jour » depuis GitHub (vérification automatique et forcée)
+   · installation automatique de tous les outils · entretien des outils et connexion aux clouds depuis
+   l'application · contrôle de la RAM attribuée à rclone.
+2. **Sauvegardes programmées / temps réel** : séparation des deux types et renommage des pages ·
+   temps réel sur n'importe quel(s) dossier(s) · modes de suppression et réglages fins du temps réel ·
+   détection d'anomalie.
+3. **Destinations et sécurité des données** : autres destinations · multi-destinations chiffrées ·
+   sauvegardes versionnées (restic) · sauvegarde de ce qui permet de restaurer.
+4. **Être prévenu et surveiller** : notifications ntfy / Telegram / Discord / e-mail · santé des
+   disques · rapport hebdomadaire / mensuel.
+5. **Fiabilité et restauration** : test de restauration à blanc · retour à une date précise ·
+   Wake-on-LAN.
+6. **Nouvelles fonctions** : transferts oCIS → Synology / Debian · sauvegarde du PC Windows ·
+   version SSH de NAS Manager.
+7. **Confort et finitions** : débit selon l'heure, estimation, doublons · actions depuis Home
+   Assistant · page d'aide avec exemples de configuration.
+
+#### Détail
 - [ ] **Distinguer deux types de sauvegardes** dans l'application :
   - **Sauvegardes programmées** : celles d'aujourd'hui (`nas-backup`, lancées à horaire fixe ou à la main).
   - **Sauvegardes temps réel** : envoi au fil de l'eau dès qu'un fichier est créé, modifié ou supprimé
