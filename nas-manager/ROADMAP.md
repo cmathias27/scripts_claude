@@ -198,6 +198,17 @@ Idées en attente, à décider selon l'usage.
       avant une sauvegarde ou un transfert, option pour le laisser se rendormir ensuite.
 - [ ] **Retour à une date précise** : grâce aux corbeilles datées, restaurer un dossier tel qu'il
       était à une date choisie (« mes documents au 3 octobre »).
+- [ ] **Contrôle de la mémoire (RAM) attribuée à rclone**, réglable depuis l'application :
+  - Par machine, avec possibilité de surcharger par sauvegarde / transfert.
+  - Mode **automatique** (comme aujourd'hui pour la migration oCIS : 1/5 de la RAM, entre 128 et
+    512 Mo) ou **manuel** (limite en Mo), appliqué à **toutes** les opérations rclone (sauvegardes,
+    temps réel, copies, migrations, vérifications), pas seulement à la migration.
+  - Réglages associés : nombre de fichiers en parallèle (transfers / checkers), tampon de lecture.
+  - Préréglages simples : « Économe » (petit NAS, ex. Synology 2 Go), « Équilibré », « Performant ».
+  - Affichage de la RAM totale / libre de la machine et de la mémoire réellement utilisée par rclone
+    pendant une opération (pic conservé dans l'historique).
+  - Avertissement si la valeur choisie est trop haute pour la machine, et repli automatique sur
+    1 fichier à la fois après un manque de mémoire (déjà fait pour la migration, à généraliser).
 - [ ] **Test de restauration à blanc** : régulièrement, quelques fichiers au hasard sont restaurés
       dans un dossier temporaire, comparés aux originaux puis effacés ; alerte en cas d'écart.
 
