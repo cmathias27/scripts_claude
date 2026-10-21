@@ -243,6 +243,9 @@ fn bilan_text(b: &Bilan) -> String {
     } else {
         t.push_str(&tf(" · {0} min", &[&format!("{:.0}", b.duree_min)]));
     }
+    if let Some(m) = b.ram_max_mo {
+        t.push_str(&tf(" · RAM max {0} Mo", &[&m]));
+    }
     t
 }
 
@@ -321,15 +324,17 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
 
 fn host_chip(app: &mut App, ui: &mut egui::Ui, h: HostId) {
     let cfg = app.host_cfg(h).clone();
+    // machine Debian reconnue par le script : « Debian » au lieu de « OMV »
+    let lbl = if h == HostId::Omv { crate::install::server_label(app) } else { h.label() };
     let (col, txt, tip) = if !cfg.is_set() {
-        (IDLE, tf("{0} : non configuré", &[&(h.label())]), tr("À renseigner dans les Paramètres").to_string())
+        (IDLE, tf("{0} : non configuré", &[&lbl]), tr("À renseigner dans les Paramètres").to_string())
     } else if let Some(e) = app.host_error(h) {
         if matches!(e, SshError::SudoPassword) {
-            (WARN, tf("{0} : mot de passe requis", &[&(h.label())]), e.to_string())
+            (WARN, tf("{0} : mot de passe requis", &[&lbl]), e.to_string())
         } else if matches!(e, SshError::HostUnknown) {
-            (WARN, tf("{0} : identité à confirmer", &[&(h.label())]), e.to_string())
+            (WARN, tf("{0} : identité à confirmer", &[&lbl]), e.to_string())
         } else {
-            (ERR, tf("{0} : hors ligne", &[&(h.label())]), e.to_string())
+            (ERR, tf("{0} : hors ligne", &[&lbl]), e.to_string())
         }
     } else {
         let (last, polling) = match h {
@@ -339,11 +344,11 @@ fn host_chip(app: &mut App, ui: &mut egui::Ui, h: HostId) {
         match last {
             Some(t) => (
                 OK,
-                tf("{0} : connecté", &[&(h.label())]),
+                tf("{0} : connecté", &[&lbl]),
                 tf("{0} — mis à jour il y a {1} s", &[&(cfg.target()), &(t.elapsed().as_secs())]),
             ),
-            None if polling => (WARN, tf("{0} : connexion…", &[&(h.label())]), cfg.target()),
-            None => (IDLE, tf("{0} : en attente", &[&(h.label())]), cfg.target()),
+            None if polling => (WARN, tf("{0} : connexion…", &[&lbl]), cfg.target()),
+            None => (IDLE, tf("{0} : en attente", &[&lbl]), cfg.target()),
         }
     };
     let r = ui
@@ -681,7 +686,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 // =====================================================================
 
 pub fn backups(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, tr("Sauvegardes vers Google Drive"), tr("Script nas-backup sur l'OMV"));
+    page_title(ui, tr("Sauvegardes vers Google Drive"), tr("Script nas-debian sur l'OMV / Debian"));
     if !host_banner(app, ui, HostId::Omv) {
         return;
     }
@@ -691,14 +696,15 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
             ui,
             WARN,
             if s.nb_installe {
-                tr("La version de nas-backup installée sur l'OMV est ancienne : mets-la à jour pour pouvoir ajouter, modifier ou restaurer depuis l'application.")
+                tr("La version du script installée sur la machine est ancienne : mets-la à jour pour pouvoir ajouter, modifier ou restaurer depuis l'application.")
             } else {
-                tr("nas-backup n'est pas installé sur l'OMV.")
+                tr("Le script nas-debian n'est pas encore installé sur la machine (il remplace nas-backup).")
             },
         );
-        if ui.button(tr("\u{E08E} Installer / mettre à jour nas-backup")).clicked() {
-            install_omv_script(app);
-        }
+        crate::scripts::widget(app, ui, crate::scripts::Kind::Debian);
+        ui.add_space(6.0);
+    } else if s.migration_requise {
+        crate::scripts::widget(app, ui, crate::scripts::Kind::Debian);
         ui.add_space(6.0);
     }
     let any_running = s.any_job_running();
@@ -859,6 +865,7 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         sched: crate::sched::SchedEdit::parse(&j.horaire),
                         bw: crate::sched::BwEdit::parse(&j.debit),
                         trash_days: j.corbeille.to_string(),
+                        memory: j.memoire.clone(),
                         error: String::new(),
                     });
                     if !app.sources_loaded {
@@ -910,7 +917,8 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                 None => progress_bar(ui, None, tr("Comparaison avec le Drive…").into()),
             }
             if let Some(d) = j.debut {
-                ui.label(RichText::new(tf("Démarrée {0}", &[&(fmt::ago(d, now))])).small().weak());
+                let ram = j.ram_mo.map(|m| tf(" · rclone utilise {0} Mo", &[&m])).unwrap_or_default();
+                ui.label(RichText::new(format!("{}{ram}", tf("Démarrée {0}", &[&(fmt::ago(d, now))]))).small().weak());
             }
         } else {
             let mut parts = Vec::new();
@@ -937,6 +945,9 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
         }
         if !j.debit.is_empty() {
             ui.label(RichText::new(tf("Débit limité : {0}", &[&(fmt::bw_human(&j.debit))])).small().weak());
+        }
+        if !j.memoire.is_empty() {
+            ui.label(RichText::new(tf("Mémoire de rclone : {0}", &[&(crate::ram::job_memory_text(&j.memoire))])).small().weak());
         }
         if let Some(sim) = &j.simulation {
             simulation_box(app, ui, &j.nom, sim);
@@ -1206,6 +1217,10 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 ui.label(tr("Limite de débit"));
                 f.bw.ui(ui);
                 ui.end_row();
+
+                ui.label(tr("Mémoire de rclone"));
+                crate::ram::job_memory_ui(ui, "jobmem", &mut f.memory);
+                ui.end_row();
             });
             if !f.new {
                 ui.label(RichText::new(tr("Changer le dossier Drive ou le chiffrement : les fichiers déjà envoyés restent à l'ancien emplacement.")).small().weak());
@@ -1252,6 +1267,8 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
             return;
         } else if f.mirror && f.trash_days.trim().parse::<u32>().is_err() {
             tr("Nombre de jours de corbeille invalide.")
+        } else if !crate::ram::valid_job_memory(f.memory.trim()) {
+            tr("Mémoire de rclone invalide : un nombre de Mo, 64 au minimum.")
         } else {
             ""
         };
@@ -1274,6 +1291,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 schedule: &sched,
                 trash_days: days,
                 bwlimit: &bw,
+                memory: f.memory.trim(),
             },
         );
         let title = if f.new { tr("Nouvelle sauvegarde") } else { tr("Modification") };
@@ -1517,7 +1535,7 @@ pub fn alerts(app: &mut App, ui: &mut egui::Ui) {
     let s = app.omv.status.clone().unwrap();
     let now = s.maintenant.max(fmt::now());
     if !s.alertes_installees {
-        banner(ui, WARN, tr("Les alertes ne sont pas installées sur l'OMV (script install-alertes.sh)."));
+        banner(ui, WARN, tr("Les alertes ne sont pas encore configurées (page Installation, carte « Alertes Home Assistant »)."));
         ui.add_space(6.0);
     }
     ui.columns(2, |cols| {
@@ -1662,23 +1680,26 @@ pub fn open_passwords(app: &mut App) {
 //  Copie Synology -> OMV
 // =====================================================================
 
-fn syno_script_banner(app: &mut App, ui: &mut egui::Ui, installed: bool, api: u32, name: &str) -> bool {
-    let expected = if name == "copie-omv" { remote::copie_api() } else { remote::migre_api() };
+fn syno_script_banner(app: &mut App, ui: &mut egui::Ui, installed: bool, api: u32, _name: &str) -> bool {
+    let expected = remote::copie_api();
+    let migr = app.syno.status.as_ref().map(|s| s.migration_requise).unwrap_or(false);
     if installed && api >= expected {
+        if migr {
+            crate::scripts::widget(app, ui, crate::scripts::Kind::Synology);
+            ui.add_space(6.0);
+        }
         return true;
     }
     banner(
         ui,
         WARN,
-        &if installed {
-            tf("La version de {0} installée sur le Synology est ancienne : mets-la à jour pour la piloter depuis l'application.", &[&name])
+        if installed {
+            tr("La version du script installée sur le Synology est ancienne : mets-la à jour pour la piloter depuis l'application.")
         } else {
-            tf("{0} n'est pas encore installé dans /usr/local/bin sur le Synology (les copies et l'historique faits avec l'ancien script restent visibles).", &[&name])
+            tr("Le script nas-synology n'est pas encore installé sur le Synology (il remplace copie-omv et migre-drive-ocis ; les copies et l'historique déjà faits restent visibles).")
         },
     );
-    if ui.button(tr("\u{E08E} Installer / mettre à jour les scripts du Synology")).clicked() {
-        install_syno_scripts(app);
-    }
+    crate::scripts::widget(app, ui, crate::scripts::Kind::Synology);
     ui.add_space(6.0);
     false
 }
@@ -2585,7 +2606,7 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
 
     let mut save = false;
     ui.columns(2, |cols| {
-        card(&mut cols[0], tr("2. OMV (sauvegardes, caméras, alertes)"), |ui| {
+        card(&mut cols[0], tr("2. OMV / Debian (sauvegardes, caméras, alertes)"), |ui| {
             host_settings(ui, "omvset", &mut app.edit.omv, tr("Si l'utilisateur n'est pas root"));
         });
         card(&mut cols[1], tr("3. Synology (copie vers l'OMV, migration oCIS)"), |ui| {
@@ -2747,61 +2768,7 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(10.0);
 
     card(ui, tr("5. Scripts sur les NAS"), |ui| {
-        let omv = app.omv.status.clone();
-        let syno = app.syno.status.clone();
-        let ver = |inst: bool, api: u32, expected: u32| -> (Color32, String) {
-            if !inst {
-                (IDLE, tr("non installé").into())
-            } else if api >= expected {
-                (OK, tr("à jour").into())
-            } else {
-                (WARN, tr("ancienne version : mise à jour disponible").into())
-            }
-        };
-        ui.horizontal(|ui| {
-            match &omv {
-                Some(s) => {
-                    let (c, t) = ver(s.nb_installe, s.nb_api, remote::nb_api());
-                    dot_label(ui, c, tf("OMV · nas-backup : {0}", &[&t]));
-                }
-                None => {
-                    dot_label(ui, IDLE, tr("OMV · nas-backup : (non connecté)"));
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(omv.is_some(), egui::Button::new(tr("\u{E08E} Installer / mettre à jour"))).clicked() {
-                    install_omv_script(app);
-                }
-            });
-        });
-        ui.horizontal(|ui| {
-            match &syno {
-                Some(s) => {
-                    let (c1, t1) = ver(s.copie.installe, s.copie.api, remote::copie_api());
-                    let (c2, t2) = ver(s.migration.installe, s.migration.api, remote::migre_api());
-                    ui.vertical(|ui| {
-                        dot_label(ui, c1, tf("Synology · copie-omv : {0}", &[&t1]));
-                        dot_label(ui, c2, tf("Synology · migre-drive-ocis : {0}", &[&t2]));
-                    });
-                }
-                None => {
-                    dot_label(ui, IDLE, tr("Synology : (non connecté)"));
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(syno.is_some(), egui::Button::new(tr("\u{E08E} Installer / mettre à jour"))).clicked() {
-                    install_syno_scripts(app);
-                }
-            });
-        });
-        ui.label(
-            RichText::new(
-                tr("Installe les versions fournies avec l'application (avec les commandes sans question qu'elle utilise). \
-L'ancienne version est gardée en .bak. Les copies, migrations et réglages en cours sont conservés."),
-            )
-            .small()
-            .weak(),
-        );
+        crate::scripts::card(app, ui);
     });
     ui.add_space(10.0);
     sites_card(app, ui);
@@ -2941,36 +2908,6 @@ fn maintenance_card(app: &mut App, ui: &mut egui::Ui) {
 fn test_connection(app: &mut App, h: HostId) {
     let script = "echo \"Connecté à $(hostname) en tant que $(id -un)\"\ncommand -v python3 >/dev/null && echo 'python3 : OK' || echo 'python3 : ABSENT (nécessaire)'\ncommand -v rclone >/dev/null && echo 'rclone : OK' || echo 'rclone : absent'\n".to_string();
     app.action_dialog(h, &tf("Test de connexion — {0}", &[&(h.label())]), script, 30);
-}
-
-fn install_omv_script(app: &mut App) {
-    app.ask_confirm(
-        tr("Installer nas-backup sur l'OMV"),
-        tr("Le script /usr/local/bin/nas-backup est remplacé par la version fournie avec l'application (l'ancienne est gardée en nas-backup.bak).\nLes sauvegardes en cours continuent avec l'ancienne version."),
-        tr("Installer"),
-        false,
-        None,
-        Box::new(|app| {
-            let script = remote::install_file(remote::NB_BIN, remote::NAS_BACKUP_SH) + &format!("{} gen-cron >/dev/null 2>&1 && echo 'Planification régénérée.' || true\n", remote::NB_BIN);
-            app.action_dialog(HostId::Omv, tr("Installation de nas-backup"), script, 60);
-        }),
-    );
-}
-
-fn install_syno_scripts(app: &mut App) {
-    let omv_host = app.settings.omv.host.clone();
-    app.ask_confirm(
-        tr("Installer les scripts sur le Synology"),
-        &tf("copie-omv et migre-drive-ocis sont installés dans /usr/local/bin du Synology (adresse de l'OMV : {0}).\nLes copies et migrations en cours ne sont pas interrompues.", &[&omv_host]),
-        tr("Installer"),
-        false,
-        None,
-        Box::new(move |app| {
-            let script = remote::install_file(remote::COPIE_BIN, &remote::copie_script_for(&omv_host))
-                + &remote::install_file(remote::MIGRE_BIN, remote::MIGRE_OCIS_SH);
-            app.action_dialog(HostId::Syno, tr("Installation des scripts"), script, 60);
-        }),
-    );
 }
 
 /// Cle root du Synology (utilisee par copie-omv) autorisee sur l'OMV

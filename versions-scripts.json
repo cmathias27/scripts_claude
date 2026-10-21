@@ -1,0 +1,24 @@
+{
+  "nas-debian": {
+    "version": "2.0.0",
+    "fichier": "nas-debian.sh",
+    "sha256": "c883733d9f5b559819fdf2a4dcd658c3e3715793198fa1335721b53e3095858d",
+    "nouveautes": [
+      "Un seul script pour OMV et tout Debian (remplace nas-backup, nas-notify, nas-check et nas-ha-status, dont les noms restent utilisables)",
+      "Installation automatique de tous les outils nécessaires (rclone officiel, inotify-tools, client MQTT…)",
+      "Mémoire de rclone réglable : profils Économe / Équilibré / Performant, limite en Mo, par sauvegarde",
+      "Reprise de l'installation existante : les anciens scripts sont gardés de côté"
+    ]
+  },
+  "nas-synology": {
+    "version": "2.0.0",
+    "fichier": "nas-synology.sh",
+    "sha256": "13f9a4e577fb70732ab30e94f1c7cc4b0d55dafc165b9d2c333e097eaba5cb7f",
+    "nouveautes": [
+      "Un seul script (remplace copie-omv et migre-drive-ocis, dont les noms restent utilisables)",
+      "Mémoire de rclone réglable pour la migration oCIS",
+      "Mise à jour de rclone et contrôle du jeton oCIS depuis l'application",
+      "Adresse de l'OMV et de Home Assistant réglables sans modifier le script"
+    ]
+  }
+}

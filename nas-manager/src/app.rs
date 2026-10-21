@@ -132,6 +132,8 @@ pub struct JobFormState {
     pub sched: crate::sched::SchedEdit,
     pub bw: crate::sched::BwEdit,
     pub trash_days: String,
+    /// memoire de rclone ("" = reglage de la machine)
+    pub memory: String,
     pub error: String,
 }
 
@@ -237,6 +239,8 @@ pub struct App {
     pub install: crate::install::InstallState,
     /// assistant de premier lancement : etape affichee
     pub wizard: Option<u8>,
+    /// scripts des NAS : versions publiees sur GitHub
+    pub scripts: crate::scripts::ScriptsState,
 }
 
 impl App {
@@ -300,6 +304,7 @@ impl App {
             new_site: String::new(),
             install: Default::default(),
             wizard: None,
+            scripts: Default::default(),
         };
         crate::i18n::set_language(&app.settings.language);
         if !app.settings.wizard_done {
@@ -1249,6 +1254,9 @@ impl eframe::App for App {
             self.maybe_poll(HostId::Syno);
         }
         crate::tray::update(self, ctx);
+        if self.wizard.is_none() {
+            crate::scripts::auto_check(self);
+        }
         #[cfg(debug_assertions)]
         self.demo();
         ctx.request_repaint_after(Duration::from_secs(1));

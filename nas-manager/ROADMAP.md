@@ -83,7 +83,7 @@ Idées en attente, à décider selon l'usage.
 #### Ordre de réalisation
 Une version testable par étape (1.1, 1.2…).
 
-1. **Fondations** : un seul script par machine (OMV, Synology, Debian) + migration des installations
+1. **Fondations** *(1.1.0)* : un seul script par machine (OMV, Synology, Debian) + migration des installations
    actuelles · bouton « Installer / Mettre à jour » depuis GitHub (vérification automatique et forcée)
    · installation automatique de tous les outils · entretien des outils et connexion aux clouds depuis
    l'application · contrôle de la RAM attribuée à rclone.
@@ -112,12 +112,12 @@ Une version testable par étape (1.1, 1.2…).
 - [ ] **Renommer les pages en conséquence** (menu, raccourcis, aide, traduction anglaise) :
   - « Caméras » → **« Sauvegardes temps réel »** (*Real-time backups*).
   - « Sauvegardes » → **« Sauvegardes programmées »** (*Scheduled backups*).
-- [ ] **Installation automatique de TOUS les outils nécessaires** : l'application détecte ce qui manque
+- [x] **Installation automatique de TOUS les outils nécessaires** : l'application détecte ce qui manque
       sur le NAS et l'installe elle-même (rclone, `inotify-tools`, remotes, service systemd, cron,
       limite `inotify`, logrotate…), sans aucune commande à taper.
 - [ ] **Page d'aide dédiée avec des exemples de configuration** (programmées et temps réel), par exemple :
       caméras en miroir chiffré, documents en temps réel, photos en copie hebdomadaire.
-- [ ] **Un seul script par type de machine** au lieu des scripts actuels :
+- [x] **Un seul script par type de machine** au lieu des scripts actuels :
   - **OMV** : remplace `nas-backup`, `cam-sync`, `nas-check`, `nas-notify`, `nas-ha-status`
     (sous-commandes : sauvegarde, temps réel, vérification, notification, état Home Assistant).
   - **Synology** : remplace `copie-omv` et `migre-drive-ocis` (pas d'`apt`, rclone téléchargé à part).
@@ -133,7 +133,7 @@ Une version testable par étape (1.1, 1.2…).
     des mots de passe, puis suppression des anciens services et crons (pas de doublons comme
     aujourd'hui entre `install-cam-sync.sh` et `install-alertes.sh`).
   - Tests contre le faux NAS pour les trois scripts (ajouter un faux Debian).
-- [ ] **Bouton unique « Installer / Mettre à jour » par script**, dont le libellé suit l'état :
+- [x] **Bouton unique « Installer / Mettre à jour » par script**, dont le libellé suit l'état :
   - **Installer** : script absent de la machine (première fois).
   - **À jour (vX)** : version installée = dernière version publiée sur GitHub (bouton grisé,
     « Réinstaller » disponible dans un menu).
@@ -221,7 +221,7 @@ Une version testable par étape (1.1, 1.2…).
       avant une sauvegarde ou un transfert, option pour le laisser se rendormir ensuite.
 - [ ] **Retour à une date précise** : grâce aux corbeilles datées, restaurer un dossier tel qu'il
       était à une date choisie (« mes documents au 3 octobre »).
-- [ ] **Contrôle de la mémoire (RAM) attribuée à rclone**, réglable depuis l'application :
+- [x] **Contrôle de la mémoire (RAM) attribuée à rclone**, réglable depuis l'application :
   - Par machine, avec possibilité de surcharger par sauvegarde / transfert.
   - Mode **automatique** (comme aujourd'hui pour la migration oCIS : 1/5 de la RAM, entre 128 et
     512 Mo) ou **manuel** (limite en Mo), appliqué à **toutes** les opérations rclone (sauvegardes,
@@ -244,10 +244,10 @@ Une version testable par étape (1.1, 1.2…).
       Home Assistant devient une option : l'outil doit fonctionner sans lui.
 
 #### Plus aucune ligne de commande
-- [ ] **Connexion aux clouds depuis l'application** : la page de connexion (Google, OneDrive,
+- [ ] **Connexion aux clouds depuis l'application** *(Google Drive : fait en 1.0 ; autres services avec l'étape 3)* : la page de connexion (Google, OneDrive,
       Dropbox…) s'ouvre sur le PC, l'application récupère le jeton et l'envoie au NAS.
       Remplace `rclone config reconnect gdrive:` en SSH.
-- [ ] **Entretien des outils** : vérification de la version de rclone sur chaque machine avec mise à
+- [x] **Entretien des outils** : vérification de la version de rclone sur chaque machine avec mise à
       jour proposée ; alerte avant l'expiration d'un jeton (Google, mot de passe d'application oCIS…).
 
 #### Confort

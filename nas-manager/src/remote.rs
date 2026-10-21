@@ -1,13 +1,13 @@
 //! Scripts envoyes au NAS : collecte de l'etat (JSON) et actions.
-//! Les scripts de synchro eux-memes (nas-backup, copie-omv, migre-drive-ocis)
-//! sont integres a l'application pour pouvoir les installer / mettre a jour.
+//! Les scripts des machines (nas-debian pour OMV / Debian, nas-synology) sont
+//! integres a l'application (version de secours) et mis a jour depuis GitHub
+//! (module `scripts`).
 
 use crate::ssh::sq;
 use base64::Engine;
 
-pub const NAS_BACKUP_SH: &str = include_str!("../../nas-backup.sh");
-pub const COPIE_OMV_SH: &str = include_str!("../../copie-omv.sh");
-pub const MIGRE_OCIS_SH: &str = include_str!("../../migre-drive-ocis.sh");
+pub const NAS_DEBIAN_SH: &str = include_str!("../../nas-debian.sh");
+pub const NAS_SYNOLOGY_SH: &str = include_str!("../../nas-synology.sh");
 /// Version des commandes sans question d'un script (ligne API_VERSION=N)
 pub fn api_of(script: &str) -> u32 {
     script
@@ -16,18 +16,18 @@ pub fn api_of(script: &str) -> u32 {
         .unwrap_or(0)
 }
 pub fn nb_api() -> u32 {
-    api_of(NAS_BACKUP_SH)
+    api_of(NAS_DEBIAN_SH)
 }
 pub fn copie_api() -> u32 {
-    api_of(COPIE_OMV_SH)
-}
-pub fn migre_api() -> u32 {
-    api_of(MIGRE_OCIS_SH)
+    api_of(NAS_SYNOLOGY_SH)
 }
 
-pub const NB_BIN: &str = "/usr/local/bin/nas-backup";
-pub const COPIE_BIN: &str = "/usr/local/bin/copie-omv";
-pub const MIGRE_BIN: &str = "/usr/local/bin/migre-drive-ocis";
+/// Script de l'OMV / Debian (commandes de sauvegarde comprises)
+pub const NB_BIN: &str = "/usr/local/bin/nas-debian";
+pub const DEBIAN_BIN: &str = "/usr/local/bin/nas-debian";
+pub const SYNO_BIN: &str = "/usr/local/bin/nas-synology";
+pub const COPIE_BIN: &str = "/usr/local/bin/nas-synology copie";
+pub const MIGRE_BIN: &str = "/usr/local/bin/nas-synology migration";
 
 // =====================================================================
 //  Collecte de l'etat de l'OMV
@@ -39,7 +39,7 @@ python3 - <<'PYEOF'
 import json, os, re, subprocess, time, glob
 
 S = "/var/lib/nas-backup"
-NB = "/usr/local/bin/nas-backup"
+AG = "/usr/local/bin/nas-debian"
 
 def rd(p, d=""):
     try:
@@ -131,24 +131,58 @@ def last_lines(text, n, pat=None):
     ls = [l for l in text.splitlines() if l.strip() and (pat is None or re.search(pat, l))]
     return ls[-n:]
 
+def meminfo():
+    m = {}
+    for l in rd("/proc/meminfo").splitlines():
+        k, _, v = l.partition(":")
+        try:
+            m[k] = int(v.split()[0]) // 1024
+        except (ValueError, IndexError):
+            pass
+    return {"total_mo": m.get("MemTotal", 0), "dispo_mo": m.get("MemAvailable", 0)}
+
+def jload(txt):
+    try:
+        return json.loads(txt)
+    except ValueError:
+        return None
+
 out = {"serveur": sh("hostname"), "maintenant": int(time.time())}
 try:
     out["uptime_s"] = int(float(rd("/proc/uptime", "0").split()[0]))
     out["charge"] = rd("/proc/loadavg").split()[0]
 except Exception:
     pass
+out["memoire"] = meminfo()
+
+# ---------------- Script de la machine ----------------
+ag = None
+if os.path.exists(AG):
+    ag = jload(sh(AG + " version", 15)) or {"script": "nas-debian", "version": "?", "api": 0, "machine": ""}
+out["agent"] = ag
+m = re.search(r'^SCRIPT_VERSION="([^"]+)"', rd(AG + ".bak"), re.M)
+out["agent_bak"] = m.group(1) if m else ""
+out["anciens"] = [n for n in ("nas-backup", "nas-notify", "nas-check", "nas-ha-status")
+                  if os.path.isfile("/usr/local/bin/" + n) and not os.path.islink("/usr/local/bin/" + n)]
+out["migration_requise"] = bool(ag) and bool(out["anciens"])
+out["perf"] = jload(sh(AG + " reglages voir", 15)) if ag else None
 
 # ---------------- Disques ----------------
 disques = []
-for line in sh("df -B1 --output=target,size,used,avail /srv/dev-disk-by-uuid-* 2>/dev/null | tail -n +2").splitlines():
-    p = line.split()
-    if len(p) == 4:
-        disques.append({"point": p[0], "taille": int(p[1]), "utilise": int(p[2]), "libre": int(p[3])})
+roots = [r for r in sh(AG + " racines", 15).splitlines() if r.strip()] if ag else glob.glob("/srv/dev-disk-by-uuid-*")
+vus = set()
+if roots:
+    args = " ".join("'" + r.replace("'", "'\\''") + "'" for r in roots)
+    for line in sh("df -B1 --output=target,size,used,avail " + args + " 2>/dev/null | tail -n +2").splitlines():
+        p = line.rsplit(None, 3)
+        if len(p) == 4 and p[0] not in vus:
+            vus.add(p[0])
+            disques.append({"point": p[0], "taille": int(p[1]), "utilise": int(p[2]), "libre": int(p[3])})
 out["disques"] = disques
 
 # ---------------- Sauvegardes ----------------
-out["nb_installe"] = os.path.exists(NB)
-out["nb_api"] = api_version(NB)
+out["nb_installe"] = bool(ag)
+out["nb_api"] = int(ag.get("api") or 0) if ag else 0
 out["arret_demande"] = os.path.exists(S + "/stop")
 jobs = []
 for line in rd("/etc/nas-backup/jobs.conf").splitlines():
@@ -161,7 +195,7 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
     name, src, sub, mode, enc, sched, ret = p[:7]
     j = {"nom": name, "source": src, "dossier": sub, "mode": mode, "chiffre": enc == "oui",
          "horaire": sched, "corbeille": int(ret) if ret.isdigit() else 0,
-         "debit": p[7] if len(p) > 7 else "", "source_existe": os.path.isdir(src)}
+         "debit": p[7] if len(p) > 7 else "", "memoire": p[8] if len(p) > 8 else "", "source_existe": os.path.isdir(src)}
     ver = src_vars(f"{S}/{name}.verif.status", ["ETAT", "FIN", "IDENTIQUES", "DIFFERENTS", "MANQUANTS", "EN_TROP", "ERREURS"])
     if ver:
         etat = ver["ETAT"]
@@ -201,6 +235,9 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
     j["en_cours"] = running
     if running:
         j["avancement"] = progress(tail(f"{S}/{name}.run.log", 262144))
+        rss = rd(f"{S}/{name}.rss").split()
+        if rss and rss[0].isdigit():
+            j["ram_mo"] = int(rss[0])
     elif j.get("dernier_etat") == "ECHEC":
         errs = [l for l in tail(f"{S}/{name}.run.log", 262144).splitlines()
                 if (" ERROR " in l or "CRITICAL" in l) and "Attempt " not in l]
@@ -260,9 +297,9 @@ if os.path.isdir(ad):
         except OSError:
             pass
 out["alertes"] = al
-out["alertes_installees"] = os.path.exists("/usr/local/bin/nas-check")
+out["alertes_installees"] = os.path.exists("/etc/nas-backup/notify.conf")
 out["nas_check_en_cours"] = rc("pgrep -f '/usr/local/bin/nas-chec[k]' >/dev/null") == 0
-out["suivi_ha"] = os.path.exists("/usr/local/bin/nas-ha-status")
+out["suivi_ha"] = os.path.exists("/etc/cron.d/nas-ha-status") and os.path.exists("/root/.config/mosquitto_pub")
 
 # ---------------- Evolution de l'espace (un point toutes les 6 h, 1500 au plus)
 try:
@@ -343,11 +380,39 @@ def ival(s, d=0):
     except (TypeError, ValueError):
         return d
 
+def sh(cmd, t=20):
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=t).stdout.strip()
+    except Exception:
+        return ""
+
+def jload(txt):
+    try:
+        return json.loads(txt)
+    except ValueError:
+        return None
+
+AG = "/usr/local/bin/nas-synology"
 out = {"serveur": rd("/etc/hostname") or os.uname().nodename, "maintenant": int(time.time())}
+mi = {}
+for l in rd("/proc/meminfo").splitlines():
+    k, _, v = l.partition(":")
+    mi[k] = ival((v.split() or ["0"])[0]) // 1024
+out["memoire"] = {"total_mo": mi.get("MemTotal", 0), "dispo_mo": mi.get("MemAvailable", 0)}
+ag = None
+if os.path.exists(AG):
+    ag = jload(sh(AG + " version", 15)) or {"script": "nas-synology", "version": "?", "api": 0, "machine": "synology"}
+out["agent"] = ag
+mb = re.search(r'^SCRIPT_VERSION="([^"]+)"', rd(AG + ".bak"), re.M)
+out["agent_bak"] = mb.group(1) if mb else ""
+out["anciens"] = [n for n in ("copie-omv", "migre-drive-ocis")
+                  if os.path.isfile("/usr/local/bin/" + n) and not os.path.islink("/usr/local/bin/" + n)]
+out["migration_requise"] = bool(ag) and bool(out["anciens"])
+out["perf"] = jload(sh(AG + " reglages voir", 15)) if ag else None
+api = ival(ag.get("api")) if ag else 0
 
 # ---------------- Copie Synology -> OMV ----------------
-cp = {"installe": os.path.exists("/usr/local/bin/copie-omv"), "api": api_version("/usr/local/bin/copie-omv"),
-      "cle_omv": os.path.exists("/root/.ssh/id_copie_omv")}
+cp = {"installe": bool(ag), "api": api, "cle_omv": os.path.exists("/root/.ssh/id_copie_omv")}
 v = src_vars(C + "/en-cours", ["SRC", "DST", "MODE", "TOTAL", "NBF", "DEBUT", "PID"])
 if v:
     cp["source"] = v["SRC"]; cp["destination"] = v["DST"]; cp["mode"] = v["MODE"]
@@ -377,7 +442,7 @@ cp["file"] = cq
 out["copie"] = cp
 
 # ---------------- Migration oCIS ----------------
-mg = {"installe": os.path.exists("/usr/local/bin/migre-drive-ocis"), "api": api_version("/usr/local/bin/migre-drive-ocis")}
+mg = {"installe": bool(ag), "api": api}
 conf = src_vars(M + "/config", ["OCIS_URL", "LOCAL_URL", "OCIS_USER", "OCIS_VENDOR", "OCIS_INSECURE"])
 mg["config"] = {"url": conf.get("OCIS_URL", ""), "locale": conf.get("LOCAL_URL", ""), "utilisateur": conf.get("OCIS_USER", ""),
                 "mode": conf.get("OCIS_VENDOR", ""), "certificat_accepte": conf.get("OCIS_INSECURE", "") == "1"} if conf else None
@@ -491,11 +556,13 @@ pub struct JobForm<'a> {
     pub trash_days: u32,
     /// limite de debit rclone (vide = aucune)
     pub bwlimit: &'a str,
+    /// memoire de rclone : "" (reglage de la machine), un profil ou un nombre de Mo
+    pub memory: &'a str,
 }
 
 pub fn nb_save(new: bool, f: &JobForm) -> String {
     format!(
-        "{NB_BIN} save {} {} {} {} {} {} {} {} {} 2>&1\n",
+        "{NB_BIN} save {} {} {} {} {} {} {} {} {} {} 2>&1\n",
         if new { "nouveau" } else { "modif" },
         sq(f.name),
         sq(f.source),
@@ -504,7 +571,8 @@ pub fn nb_save(new: bool, f: &JobForm) -> String {
         if f.encrypt { "oui" } else { "non" },
         sq(f.schedule),
         f.trash_days,
-        sq(f.bwlimit)
+        sq(f.bwlimit),
+        sq(f.memory)
     )
 }
 
@@ -561,13 +629,13 @@ pub fn nb_verify_plan(days: &str, time: &str) -> String {
 }
 
 pub fn omv_list_backup_sources() -> String {
-    "for d in /srv/dev-disk-by-uuid-*/*/; do [ -d \"$d\" ] || continue; d=\"${d%/}\"; case \"${d##*/}\" in lost+found|@eaDir|'#recycle') continue;; esac; echo \"$d\"; done\n".into()
+    format!("if [ -x {DEBIAN_BIN} ]; then {DEBIAN_BIN} dossiers; else for d in /srv/dev-disk-by-uuid-*/*/; do [ -d \"$d\" ] || continue; d=\"${{d%/}}\"; case \"${{d##*/}}\" in lost+found|@eaDir|'#recycle') continue;; esac; echo \"$d\"; done; fi\n")
 }
 
-/// Sous-dossiers d'un dossier de l'OMV ("" = disques de donnees)
+/// Sous-dossiers d'un dossier de l'OMV / Debian ("" = disques de donnees)
 pub fn omv_list_dirs(dir: &str) -> String {
     if dir.is_empty() || dir == "/srv" {
-        "ls -d /srv/dev-disk-by-uuid-*/ 2>/dev/null | sed 's#/$##'\n".into()
+        format!("if [ -x {DEBIAN_BIN} ]; then {DEBIAN_BIN} racines; else ls -d /srv/dev-disk-by-uuid-*/ 2>/dev/null | sed 's#/$##'; fi\n")
     } else {
         format!(
             "find {} -mindepth 1 -maxdepth 1 -type d ! -name 'lost+found' ! -name '.*' ! -name '@eaDir' ! -name '#recycle' 2>/dev/null | sort\n",
@@ -756,27 +824,6 @@ pub fn install_file(path: &str, content: &str) -> String {
     )
 }
 
-/// copie-omv avec l'adresse de l'OMV configuree dans l'application
-pub fn copie_script_for(omv_host: &str) -> String {
-    let host = omv_host.trim();
-    if host.is_empty() {
-        return COPIE_OMV_SH.to_string();
-    }
-    COPIE_OMV_SH
-        .replace("\r\n", "\n")
-        .lines()
-        .map(|l| {
-            if l.starts_with("OMV_HOST=\"") {
-                format!("OMV_HOST=\"{host}\"          # adresse de l'OMV")
-            } else {
-                l.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
-
 // =====================================================================
 //  Tests contre un NAS de test (NAS_MANAGER_LIVE_TEST=1, voir README)
 // =====================================================================
@@ -805,13 +852,51 @@ mod live {
         if !on() {
             return;
         }
-        let o = run(true, &(install_file(NB_BIN, NAS_BACKUP_SH) + &format!("{NB_BIN} gen-cron && cat /etc/cron.d/nas-backup\n")));
+        // installation du nouveau script a cote d'une ancienne installation
+        let o = run(true, &(install_file(DEBIAN_BIN, NAS_DEBIAN_SH) + &format!("{DEBIAN_BIN} installer\n{DEBIAN_BIN} version\n")));
         assert_eq!(o.code, 0, "installation : {}", o.text());
+        let v: crate::model::Agent = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("version");
+        assert_eq!((v.script.as_str(), v.api), ("nas-debian", nb_api()));
+        assert_eq!(v.version, crate::scripts::embedded_version(crate::scripts::Kind::Debian));
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        assert!(st.migration_requise, "anciens scripts : {:?}", st.anciens);
+        assert!(st.anciens.contains(&"nas-backup".to_string()) && st.anciens.contains(&"nas-notify".to_string()));
+        assert!(st.perf.is_some() && st.memoire.total_mo > 0);
+        // migration : simulation sans effet, puis application
+        let o = run(true, &format!("{DEBIAN_BIN} migrer simulation; [ -L /usr/local/bin/nas-backup ] && echo LIEN || echo FICHIER"));
+        assert!(o.stdout.contains("ancien script remplace") && o.stdout.trim_end().ends_with("FICHIER"), "{}", o.text());
+        let o = run(true, &format!("{DEBIAN_BIN} migrer appliquer 2>&1; readlink /usr/local/bin/nas-backup /usr/local/bin/nas-notify; ls /root/.nas-manager/ancien/*/; cat /etc/cron.d/nas-backup"));
+        assert_eq!(o.code, 0, "migration : {}", o.text());
+        assert!(o.stdout.matches("nas-debian\n").count() >= 2, "liens : {}", o.text());
+        assert!(o.stdout.contains("nas-backup\n") && o.stdout.contains("nas-notify\n"), "anciens gardes : {}", o.text());
+        assert!(o.stdout.contains("root /usr/local/bin/nas-debian run-at 03:30"), "{}", o.text());
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        assert!(!st.migration_requise && st.anciens.is_empty());
+        assert!(run(true, &format!("{DEBIAN_BIN} migrer simulation")).stdout.contains("Rien a migrer"));
+        // les anciens noms fonctionnent encore (liens)
+        let o = run(true, "/usr/local/bin/nas-backup api-version; /usr/local/bin/nas-backup list");
+        assert!(o.stdout.starts_with(&format!("{}\n", nb_api())) && o.stdout.contains("Photos"), "{}", o.text());
+        // outils et memoire de rclone
+        let o = run(true, &format!("{DEBIAN_BIN} outils etat"));
+        let t: crate::install::Tools = serde_json::from_str(o.stdout.trim()).expect("outils");
+        assert!(t.python3 && t.rclone.starts_with("1.70"), "{}", o.stdout);
+        let o = run(true, &format!("{DEBIAN_BIN} reglages ram econome - - - - && {DEBIAN_BIN} reglages voir"));
+        let pf: crate::model::Perf = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("reglages");
+        assert_eq!((pf.profil.as_str(), pf.effectif.profil.as_str()), ("econome", "econome"));
+        assert!(pf.effectif.options.contains("--transfers 1"));
+        assert_ne!(run(true, &format!("{DEBIAN_BIN} reglages ram auto 10")).code, 0, "limite trop basse refusee");
+        let o = run(true, &format!("{DEBIAN_BIN} reglages ram auto 300 2 - 0 && {DEBIAN_BIN} reglages voir"));
+        let pf: crate::model::Perf = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("reglages");
+        assert_eq!(pf.effectif.mo, 300);
+        assert!(pf.effectif.options.contains("--transfers 2") && pf.effectif.options.contains("--buffer-size 0"), "{}", pf.effectif.options);
+        run(true, &format!("{DEBIAN_BIN} reglages ram auto"));
+        let o = run(true, &format!("{NB_BIN} gen-cron && cat /etc/cron.d/nas-backup\n"));
+        assert_eq!(o.code, 0, "planification : {}", o.text());
         assert!(o.stdout.contains("run-at 03:30"));
         // nouvelle sauvegarde avec apostrophe et espace dans le chemin
         let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Film's d'été";
         run(true, &format!("mkdir -p {}\n", sq(d)));
-        let f = JobForm { name: "Films", source: d, folder: "Films d'été", mirror: true, encrypt: false, schedule: "05:10", trash_days: 14, bwlimit: "" };
+        let f = JobForm { name: "Films", source: d, folder: "Films d'été", mirror: true, encrypt: false, schedule: "05:10", trash_days: 14, bwlimit: "", memory: "" };
         let o = run(true, &nb_save(true, &f));
         assert_eq!(o.code, 0, "{}", o.text());
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf; cat /etc/cron.d/nas-backup");
@@ -825,15 +910,21 @@ mod live {
         let o = run(true, &nb_save(false, &f2));
         assert_eq!(o.code, 0);
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf");
-        assert!(o.stdout.trim().ends_with("|copy|non|manuel|0|"), "{}", o.stdout);
+        assert!(o.stdout.trim().ends_with("|copy|non|manuel|0||"), "{}", o.stdout);
         // horaires sur certains jours + limite de debit
         let f4 = JobForm { schedule: "03:30/135;22:15", bwlimit: "08:00,2M 23:00,off", ..f2 };
         let o = run(true, &nb_save(false, &f4));
         assert_eq!(o.code, 0, "{}", o.text());
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf; cat /etc/cron.d/nas-backup; cat /var/lib/nas-backup/Films.maxage");
         assert!(o.stdout.contains("|03:30/135;22:15|0|08:00,2M 23:00,off"), "{}", o.stdout);
-        assert!(o.stdout.contains("15 22 * * * root /usr/local/bin/nas-backup run-at 22:15"));
+        assert!(o.stdout.contains("15 22 * * * root /usr/local/bin/nas-debian run-at 22:15"), "{}", o.stdout);
         assert!(o.stdout.trim().ends_with("50"));
+        // memoire propre a la sauvegarde
+        let f5 = JobForm { memory: "econome", ..f4 };
+        assert_eq!(run(true, &nb_save(false, &f5)).code, 0);
+        let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf");
+        assert!(o.stdout.trim().ends_with("|08:00,2M 23:00,off|econome"), "{}", o.stdout);
+        assert_ne!(run(true, &nb_save(false, &JobForm { memory: "12", ..f4 })).code, 0, "memoire invalide refusee");
         // horaire invalide
         let f3 = JobForm { schedule: "25:00", ..f2 };
         assert_ne!(run(true, &nb_save(false, &f3)).code, 0);
@@ -875,7 +966,7 @@ mod live {
         let o = run(true, &format!("{NB_BIN} verifier Photos 2>&1; cat /var/lib/nas-backup/Photos.verif.status"));
         assert!(o.stdout.contains("ETAT=ecarts") && o.stdout.contains("MANQUANTS=1") && o.stdout.contains("IDENTIQUES=3"), "{}", o.text());
         let o = run(true, &(nb_verify_plan("67", "04:45") + "cat /etc/cron.d/nas-backup /etc/nas-backup/verification\n"));
-        assert!(o.stdout.contains("45 4 * * 6,0 root /usr/local/bin/nas-backup verifier-tout"), "{}", o.text());
+        assert!(o.stdout.contains("45 4 * * 6,0 root /usr/local/bin/nas-debian verifier-tout"), "{}", o.text());
         let o = run(true, &(nb_verify_plan("", "") + "cat /etc/cron.d/nas-backup\n"));
         assert!(!o.stdout.contains("verifier-tout"));
         // collecte de l'etat : JSON valide et coherent
@@ -966,11 +1057,23 @@ mod live {
         if !on() {
             return;
         }
-        let o = run(false, &(install_file(COPIE_BIN, &copie_script_for("127.0.0.1")) + &install_file(MIGRE_BIN, MIGRE_OCIS_SH)));
-        assert_eq!(o.code, 0);
-        let o = run(false, &format!("grep '^OMV_HOST=' {COPIE_BIN}; {COPIE_BIN} api-version; {MIGRE_BIN} api-version; {MIGRE_BIN} sources"));
-        assert!(o.stdout.contains("OMV_HOST=\"127.0.0.1\""));
+        let o = run(false, &(install_file(SYNO_BIN, NAS_SYNOLOGY_SH) + &format!("{SYNO_BIN} installer\n")));
+        assert_eq!(o.code, 0, "{}", o.text());
+        let st: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        assert!(st.migration_requise, "{:?}", st.anciens);
+        // migration : adresse de l'OMV reprise de l'ancien copie-omv
+        let o = run(false, &format!("{SYNO_BIN} migrer appliquer 2>&1; readlink /usr/local/bin/copie-omv /usr/local/bin/migre-drive-ocis; {SYNO_BIN} reglages voir"));
+        assert_eq!(o.code, 0, "{}", o.text());
+        assert!(o.stdout.matches("nas-synology\n").count() == 2, "{}", o.text());
+        assert!(o.stdout.contains("\"omv\":\"127.0.0.1\""), "{}", o.text());
+        let o = run(false, &format!("{COPIE_BIN} api-version; {MIGRE_BIN} api-version; /usr/local/bin/migre-drive-ocis api-version; {MIGRE_BIN} sources; {SYNO_BIN} version"));
+        assert!(o.stdout.starts_with(&format!("{0}\n{0}\n{0}\n", copie_api())), "{}", o.text());
         assert!(o.stdout.contains("/volume1/homes/alice/Drive|alice"));
+        assert!(o.stdout.contains("\"script\":\"nas-synology\""));
+        let o = run(false, &format!("{SYNO_BIN} outils etat; {SYNO_BIN} reglages ram econome && {SYNO_BIN} reglages voir && {SYNO_BIN} reglages ram auto"));
+        let t: crate::install::Tools = serde_json::from_str(o.stdout.lines().next().unwrap()).expect("outils");
+        assert!(t.rsync && t.cle_omv);
+        assert!(o.stdout.contains("\"profil\":\"econome\""), "{}", o.text());
         run(false, &syno_list_dirs(""));
         run(false, &syno_size("/volume1/photo"));
         run(false, &migre_remove(9));

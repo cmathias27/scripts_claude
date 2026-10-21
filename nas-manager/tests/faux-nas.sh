@@ -107,6 +107,8 @@ EOF
 chmod 755 /usr/local/bin/rclone
 
 # ---------------- OMV simule
+# (liens laisses par un test precedent : supprimes avant d'ecrire les anciens scripts)
+rm -f /usr/local/bin/nas-notify /usr/local/bin/nas-check /usr/local/bin/nas-backup /usr/local/bin/nas-ha-status
 D=/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5
 mkdir -p $D/Photos $D/Documents $D/Cam $D/Musique /etc/nas-backup /var/lib/nas-backup/alertes
 cat > /etc/nas-backup/jobs.conf <<EOF
@@ -120,11 +122,23 @@ date +%s > /var/lib/nas-backup/Photos.lastok
 echo "$(date '+%Y-%m-%d') 04:16 ECHEC" > /var/lib/nas-backup/Documents.status
 echo '{"gdrive":true,"quota_pct":59,"used_go":1301.2,"total_go":2199.0,"checked":"2026-10-18T12:07:01+02:00"}' > /var/lib/nas-backup/health.json
 touch /var/lib/nas-backup/alertes/job-Documents
+printf 'HA_URL="http://127.0.0.1:9"\nWEBHOOK="test"\nREPEAT_HOURS=12\nQUOTA_ALERT=90\nLATE_HOURS=50\n' > /etc/nas-backup/notify.conf
 printf '#!/bin/bash\nSRC="%s/Cam"\n' $D > /usr/local/bin/cam-sync.sh; chmod 755 /usr/local/bin/cam-sync.sh
 echo "$(date '+%Y/%m/%d %H:%M:%S') INFO  : Garage/clip_1.mp4: Copied (new)" > /var/log/cam-sync.log
 printf '#!/bin/bash\necho "notify $*" >> /tmp/nas-notify.log\n' > /usr/local/bin/nas-notify; chmod 755 /usr/local/bin/nas-notify
 printf '#!/bin/bash\nsleep 5\n' > /usr/local/bin/nas-check; chmod 755 /usr/local/bin/nas-check
 touch /var/log/nas-backup.log
+echo "30 3 * * * root /usr/local/bin/nas-backup run-at 03:30 >/dev/null 2>&1" > /etc/cron.d/nas-backup
+
+# ---------------- ancienne installation (avant nas-debian / nas-synology) : test de la migration
+DEPOT="$(cd "$(dirname "$0")/../.." && pwd)"
+rm -f /usr/local/bin/nas-debian /usr/local/bin/nas-debian.bak /usr/local/bin/nas-synology /usr/local/bin/nas-synology.bak
+rm -f /usr/local/bin/nas-backup /usr/local/bin/nas-ha-status /usr/local/bin/copie-omv /usr/local/bin/migre-drive-ocis
+rm -rf /root/.nas-manager/ancien /root/.nas-synology /etc/nas-backup/agent.conf
+install -m 755 "$DEPOT/ancien/nas-backup.sh" /usr/local/bin/nas-backup
+sed 's/^OMV_HOST="[^"]*"/OMV_HOST="127.0.0.1"/' "$DEPOT/ancien/copie-omv.sh" > /usr/local/bin/copie-omv
+install -m 755 "$DEPOT/ancien/migre-drive-ocis.sh" /usr/local/bin/migre-drive-ocis
+chmod 755 /usr/local/bin/copie-omv
 
 # ---------------- Synology simule
 mkdir -p /volume1/homes/alice/Drive/Projets /volume1/homes/bob/Drive /volume1/photo/2023 /volume4/utils

@@ -289,16 +289,25 @@ pub fn diagnostic_report(app: &App) -> String {
         }
     }
     if let Some(s) = &app.omv.status {
-        r.push_str(&tf("\n--- OMV ({0})\nnas-backup : {1} (API {2}) · sauvegardes : {3} · en cours : {4} · alertes : {5}\n", &[&s.serveur, &(if s.nb_installe { tr("installé") } else { "absent" }), &s.nb_api, &(s.sauvegardes.len()), &(s.sauvegardes.iter().filter(|j| j.en_cours).count()), &(s.alertes.iter().map(|a| a.tag.clone()).collect::<Vec<_>>().join(", "))]));
+        let ag = s.agent.as_ref().map(|a| format!("{} {} ({}, API {})", a.script, a.version, a.machine, a.api)).unwrap_or_else(|| "absent".into());
+        r.push_str(&tf("\n--- OMV / Debian ({0})\nscript : {1} · anciens scripts : {2} · sauvegardes : {3} · en cours : {4} · alertes : {5}\n", &[&s.serveur, &ag, &(s.anciens.join(", ")), &(s.sauvegardes.len()), &(s.sauvegardes.iter().filter(|j| j.en_cours).count()), &(s.alertes.iter().map(|a| a.tag.clone()).collect::<Vec<_>>().join(", "))]));
+        if let Some(p) = &s.perf {
+            r.push_str(&format!("Mémoire de rclone : {} {} Mo ({}) · machine {} Mo\n", p.effectif.profil, p.effectif.mo, p.effectif.options, s.memoire.total_mo));
+        }
         for j in &s.sauvegardes {
             r.push_str(&tf("  · {0} : {1} · horaire {2} · dernière exécution {3}\n", &[&j.nom, &(j.dernier_etat.as_deref().unwrap_or("jamais")), &j.horaire, &(j.derniere_execution.as_deref().unwrap_or("-"))]));
         }
         r.push_str(&tf("Caméras : installé {0} · actif {1} · dernier envoi {2}\n", &[&s.cameras.installe, &s.cameras.actif, &(s.cameras.dernier_envoi.as_deref().unwrap_or("-"))]));
     }
     if let Some(s) = &app.syno.status {
-        r.push_str(&tf("\n--- Synology ({0})\ncopie-omv : {1} (API {2}) · clé vers l'OMV : {3} · copie en cours : {4}\nmigre-drive-ocis : {5} (API {6}) · migration en cours : {7} · file : {8}\n", &[&s.serveur, &(if s.copie.installe { tr("installé") } else { "absent" }), &s.copie.api, &s.copie.cle_omv, &s.copie.en_cours, &(if s.migration.installe { tr("installé") } else { "absent" }), &s.migration.api, &s.migration.en_cours, &(s.migration.file.len())]));
+        let ag = s.agent.as_ref().map(|a| format!("{} {} (API {})", a.script, a.version, a.api)).unwrap_or_else(|| "absent".into());
+        r.push_str(&tf("\n--- Synology ({0})\nscript : {1} · anciens scripts : {2} · clé vers l'OMV : {3} · copie en cours : {4} · migration en cours : {5} · file : {6}\n", &[&s.serveur, &ag, &(s.anciens.join(", ")), &s.copie.cle_omv, &s.copie.en_cours, &s.migration.en_cours, &(s.migration.file.len())]));
     }
-    r.push_str(&tf("\nScripts fournis : nas-backup API {0} · copie-omv API {1} · migre-drive-ocis API {2}\n", &[&(remote::nb_api()), &(remote::copie_api()), &(remote::migre_api())]));
+    r.push_str(&tf("\nScripts fournis : nas-debian {0} (API {1}) · nas-synology {2} (API {3})\n", &[&(crate::scripts::embedded_version(crate::scripts::Kind::Debian)), &(remote::nb_api()), &(crate::scripts::embedded_version(crate::scripts::Kind::Synology)), &(remote::copie_api())]));
+    if let Some(m) = &app.scripts.remote {
+        let v = |n: &str| m.get(n).map(|e| e.version.clone()).unwrap_or_default();
+        r.push_str(&format!("Versions publiées sur GitHub : nas-debian {} · nas-synology {}\n", v("nas-debian"), v("nas-synology")));
+    }
     r.push_str("\n=== Journal de l'application (200 dernières lignes)\n");
     r.push_str(&crate::log::tail(200));
     r.push('\n');

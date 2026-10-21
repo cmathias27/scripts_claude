@@ -42,6 +42,53 @@ pub struct Bilan {
     pub retires: i64,
     pub erreurs: i64,
     pub volume_octets: i64,
+    /// pic de memoire de rclone (Mo)
+    pub ram_max_mo: Option<i64>,
+}
+
+/// Script installe sur une machine (nas-debian / nas-synology)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Agent {
+    pub script: String,
+    pub version: String,
+    pub api: u32,
+    /// "omv", "debian" ou "synology"
+    pub machine: String,
+    pub dsm: String,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Memory {
+    pub total_mo: i64,
+    pub dispo_mo: i64,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct PerfEffective {
+    pub profil: String,
+    pub mo: i64,
+    pub options: String,
+}
+
+/// Reglage memoire de rclone d'une machine (`reglages voir`)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Perf {
+    pub profil: String,
+    pub mo: String,
+    pub transferts: String,
+    pub verifs: String,
+    pub tampon: String,
+    pub effectif: PerfEffective,
+    pub ram_total_mo: i64,
+    pub ram_dispo_mo: i64,
+    /// Synology : adresse de l'OMV et de Home Assistant
+    pub omv: String,
+    pub ha: String,
+    pub webhook: String,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -64,6 +111,10 @@ pub struct Job {
     pub avancement: Option<Progress>,
     pub derniere_erreur: Option<String>,
     pub debit: String,
+    /// memoire de rclone propre a la sauvegarde ("" = reglage de la machine)
+    pub memoire: String,
+    /// memoire utilisee par rclone pendant l'execution (Mo)
+    pub ram_mo: Option<i64>,
     pub simulation: Option<Simulation>,
     pub verification: Option<Verification>,
 }
@@ -178,6 +229,14 @@ pub struct OmvStatus {
     pub alertes_installees: bool,
     pub nas_check_en_cours: bool,
     pub suivi_ha: bool,
+    pub memoire: Memory,
+    pub agent: Option<Agent>,
+    /// version gardee en .bak (retour arriere possible)
+    pub agent_bak: String,
+    /// anciens scripts encore en place (avant migration)
+    pub anciens: Vec<String>,
+    pub migration_requise: bool,
+    pub perf: Option<Perf>,
 }
 
 impl OmvStatus {
@@ -289,6 +348,12 @@ pub struct SynoStatus {
     pub maintenant: i64,
     pub copie: Copie,
     pub migration: Migration,
+    pub memoire: Memory,
+    pub agent: Option<Agent>,
+    pub agent_bak: String,
+    pub anciens: Vec<String>,
+    pub migration_requise: bool,
+    pub perf: Option<Perf>,
 }
 
 #[derive(Clone, Debug)]

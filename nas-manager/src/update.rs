@@ -67,7 +67,7 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-fn curl() -> std::process::Command {
+pub(crate) fn curl() -> std::process::Command {
     let mut c = std::process::Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
     c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     #[cfg(windows)]
