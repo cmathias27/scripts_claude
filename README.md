@@ -13,14 +13,23 @@ Tous les scripts sont interactifs, en français, et pensés pour être lancés e
 
 ## Sommaire
 
-| Script | Machine | Rôle en une ligne |
+Depuis NAS Manager 1.1, **un seul script par type de machine**, installé et mis à jour depuis l'application :
+
+| Script | Machine | Rôle |
 |---|---|---|
-| [`copie-omv.sh`](#copie-omvsh) | Synology | Copier ou déplacer un dossier du Synology vers l'OMV (rsync, en arrière-plan) |
-| [`migre-drive-ocis.sh`](#migre-drive-ocissh) | Synology | Migrer les « Mon Drive » Synology vers des espaces projets oCIS |
-| [`nas-backup.sh`](#nas-backupsh) | OMV | Gestionnaire de sauvegardes planifiées OMV → Google Drive |
-| [`install-cam-sync.sh`](#install-cam-syncsh) | OMV | Synchro temps réel chiffrée du dossier caméras → Google Drive |
-| [`install-alertes.sh`](#install-alertessh) | OMV | Notifications Home Assistant (échecs, retards, Drive plein…) |
-| [`install-suivi-ha.sh`](#install-suivi-hash) | OMV | Entités Home Assistant (MQTT) : état des sauvegardes et synthèse des transferts (sauvegardes + caméras) |
+| [`nas-debian.sh`](#nas-debiansh) | OMV et tout Debian (Ubuntu, Raspberry Pi OS…) | Sauvegardes vers Google Drive, alertes et suivi Home Assistant, outils, mémoire de rclone |
+| [`nas-synology.sh`](#nas-synologysh) | Synology (DSM 7) | Copie vers l'OMV, migration des « Mon Drive » vers oCIS |
+| [`install-cam-sync.sh`](#install-cam-syncsh) | OMV | Synchro temps réel chiffrée du dossier caméras (remplacée par les sauvegardes temps réel dans la 1.2) |
+
+Les anciens scripts (`nas-backup.sh`, `install-alertes.sh`, `install-suivi-ha.sh`, `copie-omv.sh`,
+`migre-drive-ocis.sh`) sont rangés dans [`ancien/`](ancien/). Leurs **noms de commandes restent
+utilisables** (`nas-backup`, `nas-notify`, `nas-check`, `nas-ha-status`, `copie-omv`, `migre-drive-ocis`) :
+ce sont des liens vers les nouveaux scripts, qui reconnaissent sous quel nom ils sont lancés.
+Les détails ci-dessous décrivent chaque fonction sous son ancien nom.
+
+[`versions-scripts.json`](versions-scripts.json) donne la version et l'empreinte SHA-256 de chaque
+script : NAS Manager le lit pour proposer les mises à jour. Après une modification d'un script,
+augmenter `SCRIPT_VERSION` puis lancer `python3 maj-versions-scripts.py` (vérifié par GitHub Actions).
 
 ## Vue d'ensemble
 
@@ -42,20 +51,51 @@ Tous les scripts sont interactifs, en français, et pensés pour être lancés e
  └──────────────┘
 ```
 
-## Ordre d'installation conseillé (OMV)
+## Installation
 
-Prérequis communs : être `root`, avoir `rclone` installé et un remote **`gdrive`** fonctionnel (`rclone config`).
+**Depuis NAS Manager** (page Installation) : un clic installe le script de la machine et **tous les outils
+nécessaires** (rclone officiel, inotify-tools, client MQTT…), puis connecte Google Drive, les alertes et
+le suivi Home Assistant. Une installation faite avec les anciens scripts est **reprise** (bouton
+« Migrer ») : les anciens fichiers sont gardés dans `/root/.nas-manager/ancien/`.
 
-1. `bash install-cam-sync.sh` — si tu as des caméras à synchroniser.
-2. `bash nas-backup.sh` — s'installe tout seul dans `/usr/local/bin/nas-backup`, puis créer ses sauvegardes depuis le menu.
-3. `bash install-alertes.sh` — après les deux premiers : il remplace le rattrapage caméras par une version qui alerte.
-4. `bash install-suivi-ha.sh` — en dernier : il lit l'état produit par tous les autres.
+**À la main** (en root) : `bash nas-debian.sh` sur l'OMV / Debian (menu ; il s'installe dans
+`/usr/local/bin/nas-debian`), `sudo bash nas-synology.sh` sur le Synology.
 
-Côté Synology, `copie-omv.sh` et `migre-drive-ocis.sh` sont indépendants : `sudo bash <script>` suffit.
+## `nas-debian.sh`
+
+Commandes principales (toutes sans question, utilisées par NAS Manager) :
+
+| Commande | Effet |
+|---|---|
+| `nas-debian version` | version du script et machine reconnue (`omv` ou `debian`), en JSON |
+| `nas-debian outils etat \| installer [suivi] \| rclone-maj` | état des outils, installation de ce qui manque, mise à jour de rclone |
+| `nas-debian reglages voir \| ram <profil> [Mo] [transferts] [verifs] [tampon]` | mémoire attribuée à rclone |
+| `nas-debian racines` / `dossiers` | disques de données / dossiers proposés comme sources |
+| `nas-debian migrer simulation \| appliquer` | reprise d'une installation faite avec les anciens scripts |
+| `nas-debian alertes configurer <ip HA> <webhook>` | alertes Home Assistant (ex-`install-alertes.sh`) |
+| `nas-debian suivi configurer <serveur MQTT>` | tableau de bord Home Assistant (ex-`install-suivi-ha.sh`) |
+| `nas-debian run \| save \| restore \| …` | toutes les commandes de `nas-backup` (voir plus bas) |
+
+**Mémoire de rclone** (`/etc/nas-backup/agent.conf`) : profil *économe* (1 fichier à la fois, 1/8 de la
+RAM entre 96 et 256 Mo), *équilibré* (4 fichiers, 1/5 de la RAM entre 128 Mo et 1 Go), *performant*
+(8 fichiers, 1/3 de la RAM entre 256 Mo et 4 Go) ou *automatique* (selon la RAM de la machine) ;
+limite fixe en Mo possible. La limite est appliquée par `GOMEMLIMIT` (limite douce). Chaque
+sauvegarde peut avoir son propre réglage (9ᵉ colonne de `jobs.conf`). Après un manque de mémoire, la
+sauvegarde reprend automatiquement avec un seul fichier à la fois ; le pic de mémoire est gardé dans
+le bilan.
+
+## `nas-synology.sh`
+
+`nas-synology copie <commande>` (ex-`copie-omv`) et `nas-synology migration <commande>`
+(ex-`migre-drive-ocis`), plus `version`, `outils etat | installer | rclone-maj`,
+`reglages voir | ram … | omv <adresse> | ha <adresse> <webhook>` (fichier `/root/.nas-synology/config` :
+plus besoin de modifier le script) et `migration jeton` (expiration du jeton d'application oCIS).
+Sur le Synology, le profil *automatique* correspond à *équilibré* (2 fichiers à la fois, 1/5 de la RAM
+entre 128 et 512 Mo).
 
 ---
 
-## `copie-omv.sh`
+## `copie-omv` (`nas-synology copie`)
 
 **À lancer sur le Synology** : `sudo bash copie-omv.sh`
 
@@ -95,7 +135,7 @@ Copie (ou déplace) un dossier du Synology vers l'OMV avec `rsync` over SSH, et 
 
 ---
 
-## `migre-drive-ocis.sh`
+## `migre-drive-ocis` (`nas-synology migration`)
 
 **À lancer sur le Synology** : `sudo bash migre-drive-ocis.sh`
 
@@ -166,7 +206,7 @@ Pensé pour un Synology avec peu de RAM :
 
 ---
 
-## `nas-backup.sh`
+## `nas-backup` (`nas-debian`)
 
 **À lancer sur l'OMV** : `bash nas-backup.sh` (première fois), puis simplement `nas-backup`.
 
@@ -248,7 +288,7 @@ Lire les vidéos en clair : `rclone ls gcrypt:` / `rclone copy gcrypt:chemin ./`
 
 ---
 
-## `install-alertes.sh`
+## Alertes (`nas-debian alertes`, ex-`install-alertes.sh`)
 
 **À lancer sur l'OMV** : `bash install-alertes.sh`
 
@@ -285,7 +325,7 @@ Paramètres : `HA_IP`, `WEBHOOK`, `REPEAT_HOURS`, `QUOTA_ALERT`, `LATE_HOURS`.
 
 ---
 
-## `install-suivi-ha.sh`
+## Suivi Home Assistant (`nas-debian suivi`, ex-`install-suivi-ha.sh`)
 
 **À lancer sur l'OMV** : `bash install-suivi-ha.sh`
 

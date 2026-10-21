@@ -5,14 +5,14 @@ Application Windows en Rust pour **suivre et gérer toutes les synchros du NAS s
 | Page | Script piloté | Ce qu'on peut faire |
 |---|---|---|
 | Tableau de bord | tous | état d'ensemble, transferts en cours, Drive, disques |
-| Sauvegardes | `nas-backup` (OMV) | suivre l'avancement en direct (Go, %, débit, fichiers en cours), lancer, tout lancer, arrêter, ajouter, modifier, supprimer (avec ou sans effacement du Drive), restaurer |
+| Sauvegardes | `nas-debian` (OMV / Debian) | suivre l'avancement en direct (Go, %, débit, fichiers en cours), lancer, tout lancer, arrêter, ajouter, modifier, supprimer (avec ou sans effacement du Drive), restaurer |
 | Caméras | `cam-sync` (OMV) | état du service, dernière vidéo envoyée, erreurs, démarrer / arrêter / redémarrer, lancer un rattrapage |
-| Alertes | `nas-check`, `nas-notify` (OMV) | connexion et quota Google Drive, alertes en cours (acquitter), vérifier maintenant, notification de test, afficher les mots de passe de chiffrement |
-| Copie → OMV | `copie-omv` (Synology) | suivre / arrêter la copie, en lancer une nouvelle avec navigateur de dossiers des deux NAS, historique, réparer les droits |
-| Migration oCIS | `migre-drive-ocis` (Synology) | connexion oCIS, file d'attente (ajouter / retirer / lancer), suivi en direct, arrêt, résultats, historique |
-| Historique | `nas-backup` (OMV) | exécutions, taux de réussite, volumes, évolution de l'espace |
+| Alertes | `nas-debian` (`nas-check`, `nas-notify`) | connexion et quota Google Drive, alertes en cours (acquitter), vérifier maintenant, notification de test, afficher les mots de passe de chiffrement |
+| Copie → OMV | `nas-synology copie` | suivre / arrêter la copie, en lancer une nouvelle avec navigateur de dossiers des deux NAS, historique, réparer les droits |
+| Migration oCIS | `nas-synology migration` | connexion oCIS, file d'attente (ajouter / retirer / lancer), suivi en direct, arrêt, résultats, historique |
+| Historique | `nas-debian` (OMV / Debian) | exécutions, taux de réussite, volumes, évolution de l'espace |
 | Journaux | tous | dernières lignes de chaque journal, suivi en direct, filtre |
-| Installation | tous | première installation sur des NAS vierges : rclone, connexion Google Drive, scripts, caméras, alertes, suivi Home Assistant |
+| Installation | tous | scripts des machines (installer / mettre à jour depuis GitHub, revenir en arrière, migrer une ancienne installation), tous les outils nécessaires, connexion Google Drive, caméras, alertes, suivi Home Assistant, mémoire de rclone |
 | Aide | — | premiers pas, accès à distance (Tailscale / WireGuard), erreurs fréquentes, raccourcis |
 
 Interface en **français ou en anglais** (Paramètres > Préférences, par défaut la langue de Windows).
@@ -27,13 +27,12 @@ qui lit l'état (fichiers d'état et journaux des scripts) et le renvoie en JSON
 des commandes « sans question » ajoutées aux scripts :
 
 ```
-nas-backup save <nouveau|modif> NOM SOURCE DOSSIER sync|copy oui|non HH:MM|manuel JOURS
-nas-backup delete <NOM> [effacer-drive]
-nas-backup restore <NOM> <DOSSIER>
-nas-backup gen-cron
-copie-omv lancer <source> <dossier OMV> <dossier|contenu> <copie|deplacement>
-copie-omv arreter
-migre-drive-ocis espaces | sources | ajouter ... | retirer <n> | lancer | arreter | configurer
+nas-debian save <nouveau|modif> NOM SOURCE DOSSIER sync|copy oui|non HORAIRE JOURS [DEBIT] [MEMOIRE]
+nas-debian delete <NOM> [effacer-drive]
+nas-debian restore <NOM> <DOSSIER>
+nas-debian version | outils etat | outils installer | reglages ram ... | migrer appliquer
+nas-synology copie lancer <source> <dossier OMV> <dossier|contenu> <copie|deplacement>
+nas-synology migration espaces | sources | ajouter ... | retirer <n> | lancer | arreter | configurer | jeton
 ```
 
 Les menus interactifs des scripts restent identiques : on peut toujours les utiliser en SSH.
@@ -47,11 +46,14 @@ Au premier lancement, un **assistant** guide pas à pas :
 2. confirmation de l'identité de chaque NAS (empreinte SSH), puis **Autoriser la clé** : une fenêtre s'ouvre,
    taper une seule fois le mot de passe du compte ;
 3. page **Installation** : rclone, connexion Google Drive (la page Google s'ouvre dans le navigateur du PC,
-   rien à copier), `nas-backup`, synchro des caméras, alertes et suivi Home Assistant, scripts du Synology.
+   rien à copier), scripts `nas-debian` et `nas-synology` (avec tous les outils nécessaires), synchro des caméras,
+   alertes et suivi Home Assistant.
 
 Le mot de passe administrateur du Synology (pour `sudo`) est demandé au premier accès ; il peut être mémorisé,
-chiffré avec le compte Windows (DPAPI). Les mises à jour des scripts se font depuis Paramètres > Scripts sur les NAS
-(l'ancienne version est gardée en `.bak`, les transferts en cours ne sont pas interrompus).
+chiffré avec le compte Windows (DPAPI). Les scripts des NAS sont vérifiés sur GitHub au démarrage puis toutes les 12 heures (réglable, ou « Vérifier
+maintenant ») : le bouton passe de **Installer** à **À jour** ou **Mettre à jour vX → vY**. L'empreinte est
+vérifiée avant installation, l'ancienne version est gardée (retour arrière en un clic) et les transferts en
+cours ne sont pas interrompus.
 Page **Copie → OMV** : si besoin, **Autoriser le Synology à écrire sur l'OMV**.
 
 Prérequis côté NAS : `python3` (présent sur OMV et DSM 7).

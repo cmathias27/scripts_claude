@@ -74,6 +74,17 @@ pub struct Settings {
     /// Assistant de premier lancement deja fait
     #[serde(default)]
     pub wizard_done: bool,
+    /// Verification automatique des scripts des NAS sur GitHub
+    #[serde(default = "yes")]
+    pub scripts_auto_check: bool,
+    /// ... toutes les X heures
+    #[serde(default = "twelve")]
+    pub scripts_check_hours: u32,
+    #[serde(default)]
+    pub scripts_last_check: i64,
+    /// mises a jour deja signalees ("nas-debian=2.1.0;...")
+    #[serde(default)]
+    pub scripts_notified: String,
 }
 
 /// Un site : un OMV et (eventuellement) un Synology
@@ -94,6 +105,10 @@ fn one() -> f32 {
 
 fn yes() -> bool {
     true
+}
+
+fn twelve() -> u32 {
+    12
 }
 
 fn default_theme() -> String {
@@ -132,6 +147,10 @@ impl Default for Settings {
             zoom: 1.0,
             passwords_noted: false,
             wizard_done: false,
+            scripts_auto_check: true,
+            scripts_check_hours: 12,
+            scripts_last_check: 0,
+            scripts_notified: String::new(),
         }
     }
 }

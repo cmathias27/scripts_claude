@@ -13,16 +13,21 @@ on:
       - "nas-manager/**"
       - "!nas-manager/**/*.md"
       - "nas-manager/CHANGELOG.md"
-      - "nas-backup.sh"
-      - "copie-omv.sh"
-      - "migre-drive-ocis.sh"
+      - "nas-debian.sh"
+      - "nas-synology.sh"
+      - "install-cam-sync.sh"
+      - "versions-scripts.json"
       - ".github/workflows/nas-manager.yml"
   pull_request:
     paths:
       - "nas-manager/**"
-      - "nas-backup.sh"
-      - "copie-omv.sh"
-      - "migre-drive-ocis.sh"
+      - "nas-debian.sh"
+      - "nas-synology.sh"
+      - "install-cam-sync.sh"
+      - "versions-scripts.json"
+      - "maj-versions-scripts.py"
+      - "ancien/**"
+      - ".github/workflows/nas-manager.yml"
   workflow_dispatch:
 
 permissions:
@@ -42,7 +47,7 @@ jobs:
         with:
           workspaces: nas-manager
       - name: Dependances
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync inotify-tools shellcheck
       - name: Faux OMV et faux Synology
         run: sudo bash tests/faux-nas.sh "$RUNNER_TEMP/app"
       - name: Tests
@@ -53,7 +58,13 @@ jobs:
         run: cargo test --locked -- --test-threads=1
       - name: Syntaxe des scripts
         working-directory: .
-        run: for f in nas-backup.sh copie-omv.sh migre-drive-ocis.sh nas-manager/tests/faux-nas.sh; do bash -n "$f"; done
+        run: |
+          for f in nas-debian.sh nas-synology.sh install-cam-sync.sh nas-manager/tests/faux-nas.sh; do bash -n "$f"; done
+          shellcheck -S warning -e SC2034,SC1090,SC2155,SC2015 nas-debian.sh nas-synology.sh
+      - name: Versions des scripts (versions-scripts.json a jour)
+        working-directory: .
+        run: |
+          python3 maj-versions-scripts.py --verifier || { echo "versions-scripts.json pas a jour, lancer python3 maj-versions-scripts.py"; exit 1; }
 
   windows:
     name: Compilation Windows

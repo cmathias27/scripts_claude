@@ -1,5 +1,33 @@
 # Journal des modifications
 
+## 1.1.0
+
+Étape 1 de la feuille de route : les fondations.
+
+### Un seul script par machine
+- **nas-debian** pour l'OMV et tout Debian (Ubuntu, Raspberry Pi OS…, PC classique ou ARM) : il remplace nas-backup, nas-notify, nas-check et nas-ha-status. OMV est reconnu automatiquement ; sur un Debian classique, tous les disques montés sont proposés.
+- **nas-synology** pour le Synology : il remplace copie-omv et migre-drive-ocis. L'adresse de l'OMV et de Home Assistant se règle sans modifier le script.
+- Les anciens noms de commandes restent utilisables (liens vers les nouveaux scripts) : rien ne change pour les tâches planifiées ni pour Home Assistant.
+- **Migration de l'installation existante** (page Installation) : « Voir ce qui va changer », puis « Migrer ». Réglages, historique et sauvegardes en cours sont conservés, les anciens scripts gardés dans /root/.nas-manager/ancien.
+
+### Installer / mettre à jour les scripts
+- Un bouton unique par machine : **Installer**, **À jour (vX)** ou **Mettre à jour vX → vY** avec les nouveautés.
+- Les scripts sont récupérés sur GitHub, ce qui permet de les corriger sans republier l'application ; leur empreinte (SHA-256) est vérifiée avant installation. Sans accès à GitHub, la version fournie avec l'application est installée.
+- Vérification automatique au démarrage puis toutes les 12 heures (réglable, désactivable), « Vérifier maintenant », notification Windows quand une mise à jour est disponible.
+- **Retour à la version précédente** en un clic. Une sauvegarde ou une migration en cours continue avec l'ancienne version.
+
+### Installation automatique de tous les outils
+- L'installation du script installe aussi tout ce qui manque : rclone officiel (à la place d'une ancienne version des paquets), curl, unzip, inotify-tools, openssl, logrotate, client MQTT si besoin, limite de surveillance de fichiers.
+- Page Installation : liste des outils de chaque machine, « Installer ce qui manque », **mise à jour de rclone** quand une nouvelle version sort.
+- Synology : téléchargement de rclone, clé SSH vers l'OMV, et **contrôle du jeton oCIS** (refusé, ou expiration proche).
+
+### Mémoire de rclone
+- Réglable par machine : **Automatique**, **Économe**, **Équilibré**, **Performant**, ou limite fixe en Mo ; fichiers et vérifications en parallèle, tampon de lecture (avancé). Avertissement si la limite dépasse les 3/4 de la mémoire.
+- Réglable aussi **par sauvegarde** (formulaire de la sauvegarde).
+- Appliqué à toutes les opérations rclone (sauvegardes, simulations, vérifications, restaurations, migration oCIS).
+- Mémoire utilisée affichée pendant une sauvegarde et **pic gardé dans le bilan**.
+- Après un manque de mémoire, la sauvegarde reprend automatiquement avec un seul fichier à la fois.
+
 ## 1.0.0
 
 Version 1.0 : dernière étape (ouverture et finitions). Elle rassemble tout ce qui a été livré dans les versions 1.0.0-beta.1 à beta.5.
