@@ -17,12 +17,12 @@ Depuis NAS Manager 1.1, **un seul script par type de machine**, installé et mis
 
 | Script | Machine | Rôle |
 |---|---|---|
-| [`nas-debian.sh`](#nas-debiansh) | OMV et tout Debian (Ubuntu, Raspberry Pi OS…) | Sauvegardes vers Google Drive, alertes et suivi Home Assistant, outils, mémoire de rclone |
+| [`nas-debian.sh`](#nas-debiansh) | OMV et tout Debian (Ubuntu, Raspberry Pi OS…) | Sauvegardes programmées et [temps réel](#sauvegardes-temps-réel-nas-debian-temps-reel) vers Google Drive, alertes et suivi Home Assistant, outils, mémoire de rclone |
 | [`nas-synology.sh`](#nas-synologysh) | Synology (DSM 7) | Copie vers l'OMV, migration des « Mon Drive » vers oCIS |
-| [`install-cam-sync.sh`](#install-cam-syncsh) | OMV | Synchro temps réel chiffrée du dossier caméras (remplacée par les sauvegardes temps réel dans la 1.2) |
 
-Les anciens scripts (`nas-backup.sh`, `install-alertes.sh`, `install-suivi-ha.sh`, `copie-omv.sh`,
-`migre-drive-ocis.sh`) sont rangés dans [`ancien/`](ancien/). Leurs **noms de commandes restent
+Les anciens scripts (`nas-backup.sh`, `install-alertes.sh`, `install-suivi-ha.sh`, `install-cam-sync.sh`,
+`copie-omv.sh`, `migre-drive-ocis.sh`) sont rangés dans [`ancien/`](ancien/). Depuis la 1.2, la
+synchro des caméras est une sauvegarde temps réel comme les autres. Leurs **noms de commandes restent
 utilisables** (`nas-backup`, `nas-notify`, `nas-check`, `nas-ha-status`, `copie-omv`, `migre-drive-ocis`) :
 ce sont des liens vers les nouveaux scripts, qui reconnaissent sous quel nom ils sont lancés.
 Les détails ci-dessous décrivent chaque fonction sous son ancien nom.
@@ -74,6 +74,7 @@ Commandes principales (toutes sans question, utilisées par NAS Manager) :
 | `nas-debian migrer simulation \| appliquer` | reprise d'une installation faite avec les anciens scripts |
 | `nas-debian alertes configurer <ip HA> <webhook>` | alertes Home Assistant (ex-`install-alertes.sh`) |
 | `nas-debian suivi configurer <serveur MQTT>` | tableau de bord Home Assistant (ex-`install-suivi-ha.sh`) |
+| `nas-debian temps-reel liste \| save \| pause \| reprendre \| …` | sauvegardes temps réel (voir plus bas) |
 | `nas-debian run \| save \| restore \| …` | toutes les commandes de `nas-backup` (voir plus bas) |
 
 **Mémoire de rclone** (`/etc/nas-backup/agent.conf`) : profil *économe* (1 fichier à la fois, 1/8 de la
@@ -263,28 +264,63 @@ Suivi des transferts : `<nom>.run.log` (journal rclone de la dernière exécutio
 
 ---
 
-## `install-cam-sync.sh`
+## Sauvegardes temps réel (`nas-debian temps-reel`)
 
-**À lancer sur l'OMV** : `bash install-cam-sync.sh` — désinstallation : `bash install-cam-sync.sh --uninstall`
+Un ou plusieurs dossiers **surveillés en continu** (`inotifywait`) : chaque fichier créé, modifié ou
+supprimé est répercuté sur la destination quelques secondes plus tard. Exemples : les vidéos des
+caméras, un dossier de documents. Elles se créent depuis NAS Manager (page « Sauvegardes temps réel »).
 
-Installe une **synchronisation temps réel et chiffrée** du dossier des caméras vers Google Drive, en **miroir exact** : une vidéo supprimée localement (rotation des enregistrements) est aussi supprimée du Drive.
+### Une sauvegarde = une ligne de `/etc/nas-backup/temps-reel.conf`
 
-### Ce qui est installé
+`NOM|DOSSIERS|DESTINATION|SUPPRESSION|CORBEILLE_JOURS|EXCLUSIONS|TYPES|DELAI_S|RATTRAPAGE_MIN|ANOMALIE|MEMOIRE|DEBIT`
+
+| Champ | Rôle |
+|---|---|
+| `DOSSIERS` | un ou plusieurs dossiers séparés par `;` ; avec plusieurs dossiers, chacun va dans un sous-dossier de son nom |
+| `DESTINATION` | remote rclone et chemin : `gbackup:Bureau` (Drive chiffré), `gdrive:NAS/Photos`, `gcrypt:` (caméras)… |
+| `SUPPRESSION` | `corbeille` : fichiers supprimés **et anciennes versions** gardés `CORBEILLE_JOURS` jours dans `_corbeille/temps-reel/<nom>/<date>` à côté de la destination · `directe` : supprimés aussi sur la destination · `copie` : rien n'est jamais supprimé |
+| `EXCLUSIONS`, `TYPES` | motifs séparés par `;` (ex. `cache;*.bak`) ; `TYPES` vide = tous les fichiers. Fichiers temporaires (`*.tmp`, `*.part`, `~$*`…) et dossiers techniques (`@eaDir`, `#recycle`…) toujours exclus |
+| `DELAI_S` | regroupement : envoi après X s sans nouveau changement (un fichier modifié en boucle part au plus toutes les 60 s) |
+| `RATTRAPAGE_MIN` | `rclone sync`/`copy` complet périodique (fichiers de plus de 2 min) pour ce que la surveillance aurait manqué |
+| `ANOMALIE` | seuil de **détection d'anomalie** (0 = désactivée) |
+| `MEMOIRE`, `DEBIT` | réglage mémoire de rclone propre à cette sauvegarde, limite de débit |
+
+### Détection d'anomalie
+
+Si plus de `ANOMALIE` fichiers sont supprimés ou modifiés en 10 minutes (rançongiciel, fausse
+manipulation), ou si un rattrapage s'apprête à en supprimer autant d'un coup, la sauvegarde **se met
+en pause sans rien répercuter** et une alerte critique est envoyée (rappelée tant qu'elle dure).
+`nas-debian temps-reel reprendre <nom>` (bouton « Reprendre » de l'application) confirme que les
+changements sont voulus : l'état actuel du dossier est alors répercuté tout de suite. À désactiver
+pour les caméras, qui effacent régulièrement leurs anciennes vidéos.
+
+### Fonctionnement
 
 | Élément | Rôle |
 |---|---|
-| Remote rclone **`gcrypt`** → `gdrive:Cam-chiffre` | Chiffrement des noms de fichiers, de dossiers et des contenus. Mots de passe générés aléatoirement, enregistrés dans `/root/cam-crypt-motsdepasse.txt` et affichés à la fin |
-| `/usr/local/bin/cam-sync.sh` | Boucle `inotifywait` sur le dossier : fichier fermé/déplacé → `rclone copyto` ; fichier supprimé → `rclone deletefile` ; dossier supprimé → `rclone purge`. Ignore `.tmp`, `.part`, `.swp`, `@eaDir`, `#recycle` |
-| Service systemd `cam-sync` | Lance la surveillance au démarrage, redémarre automatiquement en cas d'arrêt |
-| `/etc/cron.d/cam-sync` | **Rattrapage** toutes les 15 min : `rclone sync` complet (fichiers de plus de 2 min) pour ce que le temps réel aurait raté (coupure réseau, redémarrage…) |
-| `/etc/sysctl.d/99-inotify.conf` | Augmente `fs.inotify.max_user_watches` pour les arborescences volumineuses |
-| logrotate | Rotation hebdomadaire de `/var/log/cam-sync.log` |
+| Service systemd `nas-temps-reel@<nom>` | surveillance (démarre avec la machine, redémarre en cas d'arrêt) |
+| `/etc/cron.d/nas-temps-reel` | rattrapage périodique de chaque sauvegarde (et purge de la corbeille) |
+| `/var/log/nas-temps-reel/<nom>.log` | journal (rotation hebdomadaire) |
+| `/var/lib/nas-backup/rt-<nom>.*` | envois du jour (`transferts.log`), pause, mémoire utilisée |
 
-À la fin, le script propose d'envoyer tout de suite les vidéos existantes (sinon le rattrapage s'en charge). La désinstallation retire le service mais conserve le remote, les mots de passe et les vidéos du Drive.
+La corbeille est purgée **selon la date de suppression** (nom du dossier daté), pas selon la date du
+fichier : un vieux fichier supprimé aujourd'hui reste bien X jours. Même règle pour les sauvegardes
+programmées depuis la 1.2.
 
-> ⚠️ **Sans les mots de passe, les vidéos du Drive sont définitivement illisibles.** Les recopier hors du NAS.
+Commandes : `liste`, `save nouveau|modif …`, `supprimer <nom> [effacer-destination]`, `demarrer`,
+`arreter`, `redemarrer`, `pause`, `reprendre`, `rattrapage`, `envoi-complet` (tous les fichiers déjà
+présents).
 
-Lire les vidéos en clair : `rclone ls gcrypt:` / `rclone copy gcrypt:chemin ./`.
+### Reprise de l'ancienne synchro des caméras
+
+`nas-debian migrer appliquer` (page Installation, « Migrer ») transforme l'ancienne synchro
+`cam-sync` (installée par [`ancien/install-cam-sync.sh`](ancien/install-cam-sync.sh)) en sauvegarde
+temps réel « Cameras » : même dossier, même destination chiffrée `gcrypt:` (mêmes mots de passe
+dans `/root/cam-crypt-motsdepasse.txt`), suppressions directes et rattrapage comme avant, historique
+des envois conservé. L'envoi d'une vidéo en cours est attendu ; les anciens fichiers sont gardés
+dans `/root/.nas-manager/ancien`.
+
+> ⚠️ **Sans les mots de passe de chiffrement, les fichiers du Drive sont définitivement illisibles.** Les recopier hors du NAS.
 
 ---
 
@@ -307,7 +343,7 @@ Branche les sauvegardes sur **Home Assistant** pour recevoir des notifications s
 
 ### `nas-check` — vérification toutes les heures (cron à hh:07)
 
-1. **Service caméras** : `cam-sync` actif ?
+1. **Sauvegardes temps réel** : surveillance active, pas de pause (et ancienne synchro `cam-sync` si elle est encore en place).
 2. **Google Drive** accessible (`rclone lsd gdrive:`) ? Sinon, alerte avec la commande `rclone config reconnect gdrive:`.
 3. **Espace Drive** : alerte au-delà de 90 % (`QUOTA_ALERT`).
 4. **Sauvegardes en retard** : alerte si une sauvegarde planifiée n'a pas réussi depuis 50 h (`LATE_HOURS`).
@@ -345,11 +381,11 @@ La connexion MQTT déjà configurée est conservée quand on relance le script.
 | Entité | Type | Contenu |
 |---|---|---|
 | État des sauvegardes | sensor | `OK` / `Problème` ; attributs : alertes en cours, nombre de sauvegardes |
-| Problème de sauvegarde | binary_sensor (problem) | ON si alerte en cours, sauvegarde en échec, caméras arrêtées ou Drive injoignable |
+| Problème de sauvegarde | binary_sensor (problem) | ON si alerte en cours, sauvegarde en échec, sauvegarde temps réel en pause ou arrêtée, caméras arrêtées ou Drive injoignable |
 | Connexion Google Drive | binary_sensor (connectivity) | Résultat du dernier `nas-check` |
 | Espace Google Drive | sensor (%) | Taux de remplissage ; attributs : Go utilisés / total |
 | Dernière vérification | sensor (timestamp) | Heure du dernier `nas-check` |
-| Synchro caméras | binary_sensor (running) | Si cam-sync est installé |
+| Synchro caméras | binary_sensor (running) | Sauvegarde temps réel des caméras (ou ancienne synchro cam-sync) active |
 | Dernière vidéo envoyée | sensor (timestamp) | Dernier envoi réussi (`cam-transferts.log`) |
 | Vidéos envoyées aujourd'hui | sensor (vidéos) | Remis à zéro à minuit ; attributs : volume du jour, dernière heure (vidéos / volume), suppressions du jour, 7 derniers jours, dernier échec |
 | Volume caméras aujourd'hui | sensor (GB) | Volume envoyé depuis minuit |
@@ -359,6 +395,7 @@ La connexion MQTT déjà configurée est conservée quand on relance le script.
 | Volume sauvegardé (24 h) | sensor (GB) | Somme des bilans des sauvegardes terminées dans les 24 h |
 | Fichiers sauvegardés (24 h) | sensor (fichiers) | Idem, en nombre de fichiers |
 | Sauvegarde `<nom>` | sensor, une par sauvegarde | `OK` / `Échec` / `En cours` / `Jamais lancée` ; attributs : dernière exécution, dernier succès, source, destination, mode, chiffrement, horaire, jours de corbeille, **bilan du dernier transfert** (date, fichiers envoyés / nouveaux / remplacés / retirés, volume, durée, erreurs) et, pendant l'exécution, `en_cours` |
+| Temps réel `<nom>` | sensor, une par sauvegarde temps réel | `Actif` / `En pause` / `Arrêté` ; attributs : raison de la pause, dossiers, destination, mode de suppression, envois et volume du jour, dernière heure, suppressions et échecs du jour, dernier envoi, 7 derniers jours |
 
 Les entités passent en *indisponible* si le NAS ne publie plus pendant 20 min, et les entités des sauvegardes supprimées sont retirées automatiquement de HA.
 
@@ -375,7 +412,9 @@ Prérequis : le broker MQTT de HA (`MQTT_HOST`, `MQTT_PORT`), la version de `nas
 | Chemin | Créé par |
 |---|---|
 | `/usr/local/bin/nas-backup` | nas-backup.sh |
-| `/usr/local/bin/cam-sync.sh`, `/etc/systemd/system/cam-sync.service` | install-cam-sync.sh |
+| `/usr/local/bin/nas-debian` (+ liens `nas-backup`, `nas-notify`, `nas-check`, `nas-ha-status`) | NAS Manager (page Installation) |
+| `/etc/nas-backup/temps-reel.conf`, `/etc/systemd/system/nas-temps-reel@.service`, `/etc/cron.d/nas-temps-reel` | sauvegardes temps réel (nas-debian) |
+| `/usr/local/bin/cam-sync.sh`, `/etc/systemd/system/cam-sync.service` | ancien install-cam-sync.sh (repris par la migration) |
 | `/usr/local/bin/cam-sync-catchup.sh` | install-alertes.sh, remplacé par install-suivi-ha.sh (comptage) |
 | `/usr/local/bin/nas-notify`, `/usr/local/bin/nas-check` | install-alertes.sh |
 | `/usr/local/bin/nas-ha-status` | install-suivi-ha.sh |

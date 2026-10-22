@@ -183,6 +183,52 @@ pub struct Cameras {
 
 #[derive(Deserialize, Default, Clone, Debug)]
 #[serde(default)]
+pub struct RtDir {
+    pub chemin: String,
+    pub existe: bool,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct RtPause {
+    pub depuis: i64,
+    pub raison: String,
+}
+
+/// Sauvegarde temps reel (temps-reel.conf + etat)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct RtJob {
+    pub nom: String,
+    pub dossiers: Vec<RtDir>,
+    pub destination: String,
+    /// directe, corbeille ou copie
+    pub suppression: String,
+    pub corbeille: u32,
+    pub exclusions: String,
+    pub types: String,
+    pub delai: u32,
+    pub rattrapage: u32,
+    pub anomalie: u32,
+    pub memoire: String,
+    pub debit: String,
+    pub chiffre: bool,
+    pub actif: bool,
+    pub demarrage_auto: bool,
+    pub rattrapage_en_cours: bool,
+    pub pause: Option<RtPause>,
+    pub envois_aujourdhui: i64,
+    pub volume_aujourdhui: i64,
+    pub suppressions_aujourdhui: i64,
+    pub echecs_aujourdhui: i64,
+    pub dernier_envoi: Option<i64>,
+    pub derniere_erreur: Option<String>,
+    pub evenements: Vec<String>,
+    pub ram_mo: Option<i64>,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
 pub struct Health {
     pub gdrive: bool,
     pub quota_pct: Option<f64>,
@@ -237,11 +283,17 @@ pub struct OmvStatus {
     pub anciens: Vec<String>,
     pub migration_requise: bool,
     pub perf: Option<Perf>,
+    pub temps_reel: Vec<RtJob>,
+    /// sauvegarde temps reel reprise de l'ancienne synchro des cameras
+    pub cam_job: String,
 }
 
 impl OmvStatus {
     pub fn any_job_running(&self) -> bool {
         self.sauvegardes.iter().any(|j| j.en_cours)
+    }
+    pub fn any_rt_catchup(&self) -> bool {
+        self.temps_reel.iter().any(|j| j.rattrapage_en_cours)
     }
 }
 

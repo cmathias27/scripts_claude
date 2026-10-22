@@ -59,9 +59,21 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     section(ui, tr("Premiers pas"), true, |ui| {
         step(ui, 1, tr("Paramètres : adresse de l'OMV (compte root) et, si tu l'utilises, du Synology (compte administrateur, « Passer par sudo »)."));
         step(ui, 2, tr("Confirme l'identité de chaque NAS (empreinte SSH), puis « Autoriser la clé » : tape une seule fois le mot de passe du compte dans la fenêtre qui s'ouvre."));
-        step(ui, 3, tr("Page Installation : rclone, connexion Google Drive, scripts, synchro des caméras, alertes et suivi Home Assistant."));
-        step(ui, 4, tr("Page Sauvegardes : crée tes sauvegardes (dossier, mode miroir ou copie, chiffrement, horaire)."));
-        step(ui, 5, tr("Note les mots de passe de chiffrement hors du NAS (Alertes > Mots de passe de chiffrement)."));
+        step(ui, 3, tr("Page Installation : rclone, connexion Google Drive, scripts, alertes et suivi Home Assistant."));
+        step(ui, 4, tr("Page Sauvegardes programmées : sauvegardes à heure fixe ou à la demande (dossier, mode miroir ou copie, chiffrement, horaire)."));
+        step(ui, 5, tr("Page Sauvegardes temps réel : dossiers surveillés en continu (caméras, documents…), chaque changement part au fil de l'eau."));
+        step(ui, 6, tr("Note les mots de passe de chiffrement hors du NAS (Alertes > Mots de passe de chiffrement)."));
+    });
+
+    section(ui, tr("Sauvegardes programmées ou temps réel ?"), false, |ui| {
+        ui.label(RichText::new(tr("Programmées")).strong());
+        ui.label(tr("Une copie complète du dossier à heure fixe (par exemple chaque nuit). Idéal pour de gros volumes qui changent peu : photos, musique, archives."));
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Temps réel")).strong());
+        ui.label(tr("Les dossiers sont surveillés en continu : un fichier créé, modifié ou supprimé part quelques secondes plus tard. Un rattrapage périodique envoie ce qui aurait été manqué (NAS redémarré, coupure réseau)."));
+        ui.label(tr("Fichiers supprimés : « Corbeille » les garde X jours sur la destination (avec les anciennes versions des fichiers modifiés), « Suppression directe » les supprime aussi sur la destination, « Copie seule » ne supprime jamais rien."));
+        ui.label(tr("Détection d'anomalie : si trop de fichiers sont supprimés ou modifiés en 10 minutes (rançongiciel, fausse manipulation), la sauvegarde se met en pause sans rien répercuter et une alerte est envoyée. Vérifie le dossier, puis « Reprendre »."));
+        ui.label(RichText::new(tr("Exemples : caméras = temps réel, suppression directe, sans détection d'anomalie · documents = temps réel, corbeille 30 jours, détection d'anomalie · photos = programmée chaque nuit, chiffrée.")).small());
     });
 
     section(ui, tr("Accès depuis l'extérieur (Tailscale ou WireGuard)"), false, |ui| {
@@ -133,7 +145,7 @@ pub fn wizard_window(app: &mut App, ctx: &egui::Context) {
                 0 => {
                     ui.label(RichText::new(tr("Suivre et gérer les sauvegardes du NAS, sans SSH.")).size(16.0).strong());
                     ui.add_space(4.0);
-                    ui.label(tr("NAS Manager se connecte à l'OMV (sauvegardes Google Drive, caméras, alertes) et, si tu en as un, au Synology (copie vers l'OMV, migration oCIS)."));
+                    ui.label(tr("NAS Manager se connecte à l'OMV (sauvegardes programmées et temps réel, alertes) et, si tu en as un, au Synology (copie vers l'OMV, migration oCIS)."));
                     ui.label(tr("Cet assistant prend deux minutes : adresses des NAS, autorisation de la clé de l'application, puis installation des outils."));
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {

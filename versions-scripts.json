@@ -1,13 +1,15 @@
 {
   "nas-debian": {
-    "version": "2.0.0",
+    "version": "2.1.0",
     "fichier": "nas-debian.sh",
-    "sha256": "c883733d9f5b559819fdf2a4dcd658c3e3715793198fa1335721b53e3095858d",
+    "sha256": "8cc9923df661e5f04164fd0c661f352708108b1d88f7300cf33de19ef8dea442",
     "nouveautes": [
-      "Un seul script pour OMV et tout Debian (remplace nas-backup, nas-notify, nas-check et nas-ha-status, dont les noms restent utilisables)",
-      "Installation automatique de tous les outils nécessaires (rclone officiel, inotify-tools, client MQTT…)",
-      "Mémoire de rclone réglable : profils Économe / Équilibré / Performant, limite en Mo, par sauvegarde",
-      "Reprise de l'installation existante : les anciens scripts sont gardés de côté"
+      "Sauvegardes temps réel : un ou plusieurs dossiers surveillés, chaque changement envoyé au fil de l'eau",
+      "Suppressions au choix : directe, corbeille de X jours (anciennes versions gardées) ou copie seule",
+      "Exclusions, types de fichiers, regroupement des envois, rattrapage périodique",
+      "Détection d'anomalie : pause et alerte si trop de fichiers sont supprimés ou modifiés d'un coup",
+      "La synchro des caméras devient une sauvegarde temps réel (reprise automatique, historique conservé)",
+      "Corbeille des sauvegardes programmées : durée comptée depuis la suppression du fichier (et non depuis sa date)"
     ]
   },
   "nas-synology": {

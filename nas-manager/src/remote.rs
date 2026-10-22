@@ -164,6 +164,8 @@ m = re.search(r'^SCRIPT_VERSION="([^"]+)"', rd(AG + ".bak"), re.M)
 out["agent_bak"] = m.group(1) if m else ""
 out["anciens"] = [n for n in ("nas-backup", "nas-notify", "nas-check", "nas-ha-status")
                   if os.path.isfile("/usr/local/bin/" + n) and not os.path.islink("/usr/local/bin/" + n)]
+if os.path.isfile("/usr/local/bin/cam-sync.sh"):
+    out["anciens"].append("cam-sync")
 out["migration_requise"] = bool(ag) and bool(out["anciens"])
 out["perf"] = jload(sh(AG + " reglages voir", 15)) if ag else None
 
@@ -282,6 +284,80 @@ if cam["installe"]:
         cam["derniere_erreur"] = errs[-1][:300]
     cam["evenements"] = last_lines(t, 25, r": (Copied|Deleted|Moved)| ERROR ")
 out["cameras"] = cam
+
+# ---------------- Sauvegardes temps reel ----------------
+def ival(x, d=0):
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return d
+
+def shq(x):
+    return "'" + x.replace("'", "'\\''") + "'"
+
+SYSTEMD = os.path.isdir("/run/systemd/system")
+cam_job = ""
+for l in rd("/etc/nas-backup/agent.conf").splitlines():
+    if l.startswith("CAM_JOB="):
+        cam_job = l.split("=", 1)[1].strip().strip("'\"")
+out["cam_job"] = cam_job
+minuit = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+rtl = []
+for line in rd("/etc/nas-backup/temps-reel.conf").splitlines():
+    if not line.strip() or line.startswith("#"):
+        continue
+    p = line.split("|")
+    if len(p) < 4:
+        continue
+    p += [""] * (12 - len(p))
+    name = p[0]
+    unit = "nas-temps-reel@" + name
+    if SYSTEMD:
+        actif = sh("systemctl is-active " + shq(unit)) == "active"
+        auto = sh("systemctl is-enabled " + shq(unit)) == "enabled"
+    else:
+        pid = rd(f"{S}/rt-{name}.pid")
+        actif = bool(pid) and alive(pid)
+        auto = actif
+    lock = f"/run/nas-temps-reel-{name}.lock"
+    j = {"nom": name, "dossiers": [{"chemin": d, "existe": os.path.isdir(d)} for d in p[1].split(";") if d],
+         "destination": p[2], "suppression": p[3], "corbeille": ival(p[4]), "exclusions": p[5], "types": p[6],
+         "delai": ival(p[7], 10), "rattrapage": ival(p[8], 15), "anomalie": ival(p[9]), "memoire": p[10], "debit": p[11],
+         "chiffre": p[2].split(":")[0] in ("gbackup", "gcrypt"), "actif": actif, "demarrage_auto": auto,
+         "rattrapage_en_cours": os.path.exists(lock) and rc(f"flock -n {shq(lock)} true") == 1}
+    pz = rd(f"{S}/rt-{name}.pause")
+    if pz:
+        t, _, why = pz.partition("|")
+        j["pause"] = {"depuis": ival(t), "raison": why}
+    env = octets = sup = ech = dern = 0
+    for l in tail(f"{S}/rt-{name}.transferts.log", 400000).splitlines():
+        q = l.split("|")
+        if len(q) < 4 or not q[0].isdigit():
+            continue
+        ts, nb = int(q[0]), (ival(q[4], 1) if len(q) > 4 else 1)
+        if q[3] != "ok":
+            if ts >= minuit:
+                ech += 1
+            continue
+        if q[1] == "envoi":
+            dern = max(dern, ts)
+            if ts >= minuit:
+                env += nb; octets += ival(q[2])
+        elif q[1] in ("suppression", "corbeille") and ts >= minuit:
+            sup += nb
+    j.update({"envois_aujourdhui": env, "volume_aujourdhui": octets, "suppressions_aujourdhui": sup, "echecs_aujourdhui": ech})
+    if dern:
+        j["dernier_envoi"] = dern
+    log = tail(f"/var/log/nas-temps-reel/{name}.log", 300000)
+    errs = [x for x in log.splitlines() if " ERROR " in x and "Attempt " not in x]
+    if errs:
+        j["derniere_erreur"] = errs[-1][:300]
+    j["evenements"] = last_lines(log, 25, r": (Copied|Deleted|Moved)| ERROR |NOTICE: \[")
+    rss = rd(f"{S}/rt-{name}.rss").split()
+    if rss and rss[0].isdigit():
+        j["ram_mo"] = int(rss[0])
+    rtl.append(j)
+out["temps_reel"] = rtl
 
 # ---------------- Sante / alertes ----------------
 try:
@@ -667,6 +743,64 @@ pub fn syno_size(dir: &str) -> String {
     )
 }
 
+// ---------------- Sauvegardes temps reel ----------------
+pub struct RtSave<'a> {
+    pub name: &'a str,
+    /// dossiers separes par ;
+    pub dirs: &'a str,
+    pub dest: &'a str,
+    /// directe, corbeille ou copie
+    pub deletion: &'a str,
+    pub trash_days: u32,
+    pub excl: &'a str,
+    pub types: &'a str,
+    pub delay: u32,
+    pub catchup: u32,
+    pub anomaly: u32,
+    pub memory: &'a str,
+    pub bwlimit: &'a str,
+}
+
+pub fn rt_save(new: bool, f: &RtSave) -> String {
+    format!(
+        "{NB_BIN} temps-reel save {} {} {} {} {} {} {} {} {} {} {} {} {} 2>&1\n",
+        if new { "nouveau" } else { "modif" },
+        sq(f.name),
+        sq(f.dirs),
+        sq(f.dest),
+        f.deletion,
+        f.trash_days,
+        sq(f.excl),
+        sq(f.types),
+        f.delay,
+        f.catchup,
+        f.anomaly,
+        sq(f.memory),
+        sq(f.bwlimit)
+    )
+}
+
+/// demarrer, arreter, redemarrer, pause, reprendre
+pub fn rt_cmd(action: &str, name: &str) -> String {
+    format!("{NB_BIN} temps-reel {action} {} 2>&1\n", sq(name))
+}
+
+pub fn rt_delete(name: &str, purge: bool) -> String {
+    format!("{NB_BIN} temps-reel supprimer {}{} 2>&1\n", sq(name), if purge { " effacer-destination" } else { "" })
+}
+
+/// Rattrapage (ou envoi complet) en arriere-plan
+pub fn rt_catchup(name: &str, full: bool) -> String {
+    background(
+        &format!("{NB_BIN} temps-reel {} {}", if full { "envoi-complet" } else { "rattrapage" }, sq(name)),
+        &if full {
+            format!("Envoi complet de « {name} » lancé en arrière-plan.")
+        } else {
+            format!("Rattrapage de « {name} » lancé.")
+        },
+    )
+}
+
 pub fn cam_service(action: &str) -> String {
     format!(
         "systemctl {action} cam-sync 2>&1\nsleep 1\necho \"Service cam-sync : $(systemctl is-active cam-sync)\"\n"
@@ -872,6 +1006,13 @@ mod live {
         assert!(o.stdout.contains("root /usr/local/bin/nas-debian run-at 03:30"), "{}", o.text());
         let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         assert!(!st.migration_requise && st.anciens.is_empty());
+        // ancienne synchro des cameras reprise comme sauvegarde temps reel « Cameras »
+        assert!(!st.cameras.installe, "cam-sync encore en place");
+        assert_eq!(st.cam_job, "Cameras");
+        let cam = st.temps_reel.iter().find(|j| j.nom == "Cameras").expect("sauvegarde temps reel Cameras");
+        assert_eq!((cam.suppression.as_str(), cam.destination.as_str(), cam.anomalie), ("directe", "gcrypt:", 0));
+        assert!(cam.dossiers.len() == 1 && cam.dossiers[0].chemin.ends_with("/Cam") && cam.dossiers[0].existe, "{:?}", cam.dossiers);
+        assert!(cam.actif, "surveillance des cameras non demarree");
         assert!(run(true, &format!("{DEBIAN_BIN} migrer simulation")).stdout.contains("Rien a migrer"));
         // les anciens noms fonctionnent encore (liens)
         let o = run(true, "/usr/local/bin/nas-backup api-version; /usr/local/bin/nas-backup list");
@@ -980,7 +1121,54 @@ mod live {
         let sim = st.sauvegardes.iter().find(|j| j.nom == "Musique").and_then(|j| j.simulation.clone()).expect("simulation");
         assert_eq!((sim.envois, sim.suppressions), (2, 1));
         assert!(sim.octets > 1_000_000_000);
-        assert!(st.cameras.installe);
+        temps_reel_live();
+    }
+
+    /// Sauvegardes temps reel sur le faux OMV (faux rclone : seules la configuration et l'etat sont verifies ;
+    /// le moteur lui-meme est teste avec le vrai rclone, voir tests/temps-reel.sh)
+    fn temps_reel_live() {
+        let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5";
+        let dirs = format!("{d}/Documents;{d}/Photos");
+        let f = RtSave { name: "Bureau", dirs: &dirs, dest: "gbackup:Bureau", deletion: "corbeille", trash_days: 30, excl: "cache;*.bak", types: "", delay: 10, catchup: 15, anomaly: 200, memory: "", bwlimit: "" };
+        let o = run(true, &rt_save(true, &f));
+        assert_eq!(o.code, 0, "creation : {}", o.text());
+        assert!(run(true, "cat /etc/cron.d/nas-temps-reel").stdout.contains("*/15 * * * * root /usr/local/bin/nas-debian temps-reel rattrapage Bureau"));
+        // refus : doublon, dossier absent, corbeille sans jours, rattrapage non prevu, nom invalide
+        assert_ne!(run(true, &rt_save(true, &f)).code, 0, "doublon accepte");
+        assert_ne!(run(true, &rt_save(false, &RtSave { dirs: "/nulle/part", ..f })).code, 0);
+        assert_ne!(run(true, &rt_save(false, &RtSave { trash_days: 0, ..f })).code, 0);
+        assert_ne!(run(true, &rt_save(false, &RtSave { catchup: 7, ..f })).code, 0);
+        assert_ne!(run(true, &rt_save(true, &RtSave { name: "a b; rm", ..f })).code, 0);
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let j = st.temps_reel.iter().find(|j| j.nom == "Bureau").expect("Bureau");
+        assert_eq!(j.dossiers.len(), 2);
+        assert_eq!((j.suppression.as_str(), j.corbeille, j.anomalie, j.exclusions.as_str()), ("corbeille", 30, 200, "cache;*.bak"));
+        assert!(j.chiffre && j.actif && j.pause.is_none(), "{j:?}");
+        // pause manuelle puis reprise
+        assert_eq!(run(true, &rt_cmd("pause", "Bureau")).code, 0);
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let j = st.temps_reel.iter().find(|j| j.nom == "Bureau").unwrap();
+        assert!(j.pause.as_ref().map(|p| p.raison.contains("manuelle")).unwrap_or(false), "{j:?}");
+        assert!(run(true, &format!("{NB_BIN} temps-reel rattrapage Bureau")).stdout.contains("en pause"));
+        assert_eq!(run(true, &rt_cmd("reprendre", "Bureau")).code, 0);
+        assert!(run(true, "ls /var/lib/nas-backup/").stdout.contains("rt-Bureau.reprise"));
+        // modification d'une sauvegarde qui n'est pas la derniere de la liste : c'est bien elle qui change
+        let f2 = RtSave { name: "Cameras", dirs: &format!("{d}/Cam"), dest: "gcrypt:", deletion: "directe", trash_days: 0, excl: "", types: "*.mp4", delay: 5, catchup: 15, anomaly: 0, memory: "econome", bwlimit: "" };
+        let o = run(true, &rt_save(false, &f2));
+        assert_eq!(o.code, 0, "modification : {}", o.text());
+        assert!(o.stdout.contains("« Cameras »") && !o.stdout.contains("« Bureau »"), "{}", o.text());
+        let o = run(true, "grep -v '^#' /etc/nas-backup/temps-reel.conf");
+        assert!(o.stdout.contains("Cameras|") && o.stdout.contains("|*.mp4|5|15|0|econome|"), "{}", o.stdout);
+        assert!(o.stdout.contains("Bureau|"), "{}", o.stdout);
+        // arret / demarrage
+        assert_eq!(run(true, &rt_cmd("arreter", "Bureau")).code, 0);
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        assert!(!st.temps_reel.iter().find(|j| j.nom == "Bureau").unwrap().actif);
+        // suppression (sans effacer la destination)
+        let o = run(true, &rt_delete("Bureau", false));
+        assert_eq!(o.code, 0, "suppression : {}", o.text());
+        let o = run(true, "grep -v '^#' /etc/nas-backup/temps-reel.conf; cat /etc/cron.d/nas-temps-reel");
+        assert!(!o.stdout.contains("Bureau") && o.stdout.contains("Cameras"), "{}", o.stdout);
     }
 
     #[test]

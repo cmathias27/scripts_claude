@@ -30,8 +30,8 @@ impl HostId {
 pub enum Page {
     Dashboard,
     Backups,
+    Realtime,
     History,
-    Cameras,
     Alerts,
     Copy,
     Migration,
@@ -108,7 +108,7 @@ pub enum BrowsePurpose {
     CopyDest,
     MigSource,
     PermsDir,
-    CamSource,
+    RtSource,
 }
 
 pub struct Browser {
@@ -241,6 +241,8 @@ pub struct App {
     pub wizard: Option<u8>,
     /// scripts des NAS : versions publiees sur GitHub
     pub scripts: crate::scripts::ScriptsState,
+    /// formulaire de sauvegarde temps reel ouvert
+    pub rt_form: Option<crate::realtime::RtForm>,
 }
 
 impl App {
@@ -305,6 +307,7 @@ impl App {
             install: Default::default(),
             wizard: None,
             scripts: Default::default(),
+            rt_form: None,
         };
         crate::i18n::set_language(&app.settings.language);
         if !app.settings.wizard_done {
@@ -351,7 +354,7 @@ impl App {
             app.page = match p.as_str() {
                 "sauvegardes" => Page::Backups,
                 "historique" => Page::History,
-                "cameras" => Page::Cameras,
+                "temps-reel" | "cameras" => Page::Realtime,
                 "alertes" => Page::Alerts,
                 "copie" => Page::Copy,
                 "migration" => Page::Migration,
@@ -590,6 +593,7 @@ impl App {
                 .map(|s| {
                     s.any_job_running()
                         || s.cameras.rattrapage_en_cours
+                        || s.any_rt_catchup()
                         || s.nas_check_en_cours
                         || s.restauration.as_ref().map(|r| r.etat == "en_cours").unwrap_or(false)
                 })
@@ -941,7 +945,17 @@ impl App {
                 self.mig.src = path;
             }
             BrowsePurpose::PermsDir => self.perms.dir = path,
-            BrowsePurpose::CamSource => self.install.cam_src = path,
+            BrowsePurpose::RtSource => {
+                if let Some(f) = &mut self.rt_form {
+                    let p = path.trim_end_matches('/').to_string();
+                    if !f.dirs.contains(&p) {
+                        if f.new && !f.folder_touched && f.dirs.is_empty() {
+                            f.folder = p.rsplit('/').next().unwrap_or("").to_string();
+                        }
+                        f.dirs.push(p);
+                    }
+                }
+            }
         }
     }
 
@@ -1175,6 +1189,7 @@ impl App {
 
         crate::pages::browser_window(self, ctx);
         crate::pages::job_form_window(self, ctx);
+        crate::realtime::form_window(self, ctx);
         crate::pages::restore_window(self, ctx);
         crate::pages::passwords_window(self, ctx);
         crate::extras::fingerprint_window(self, ctx);
@@ -1282,7 +1297,7 @@ impl eframe::App for App {
                     Page::Dashboard => crate::pages::dashboard(self, ui),
                     Page::Backups => crate::pages::backups(self, ui),
                     Page::History => crate::history::page(self, ui),
-                    Page::Cameras => crate::pages::cameras(self, ui),
+                    Page::Realtime => crate::realtime::page(self, ui),
                     Page::Alerts => crate::pages::alerts(self, ui),
                     Page::Copy => crate::pages::copy(self, ui),
                     Page::Migration => crate::pages::migration(self, ui),

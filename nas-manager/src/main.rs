@@ -18,6 +18,7 @@ mod log;
 mod model;
 mod pages;
 mod ram;
+mod realtime;
 mod remote;
 mod restore;
 mod sched;

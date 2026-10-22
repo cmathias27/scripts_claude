@@ -3,7 +3,7 @@
 
 #[allow(unused_imports)]
 use crate::i18n::{tf, tr};
-use crate::app::{App, BrowsePurpose, HostId, OutputDialog};
+use crate::app::{App, HostId, OutputDialog};
 use crate::remote;
 use crate::ssh::sq;
 use crate::theme::{ERR, IDLE, OK, WARN};
@@ -13,7 +13,6 @@ use std::io::BufRead;
 #[allow(unused_imports)]
 use crate::theme::INFO;
 
-pub const CAM_SH: &str = include_str!("../../install-cam-sync.sh");
 
 /// Etat de l'OMV / de la machine Debian
 pub const OMV_INSTALL_STATUS: &str = r#####"
@@ -130,8 +129,6 @@ pub struct InstallState {
     pub omv: Option<OmvInstall>,
     pub syno: Option<SynoInstall>,
     pub loading: bool,
-    pub cam_src: String,
-    pub cam_initial: bool,
     pub ha_ip: String,
     pub webhook: String,
     pub mqtt_host: String,
@@ -149,8 +146,6 @@ impl Default for InstallState {
             omv: None,
             syno: None,
             loading: false,
-            cam_src: String::new(),
-            cam_initial: false,
             ha_ip: "192.168.1.222".into(),
             webhook: "nas-c09f382daf2d01deb430abbd".into(),
             mqtt_host: "192.168.1.222".into(),
@@ -187,9 +182,6 @@ pub fn refresh(app: &mut App) {
                     if let Some(l) = o.stdout.lines().rev().find(|l| l.starts_with('{')) {
                         match serde_json::from_str::<OmvInstall>(l) {
                             Ok(s) => {
-                                if app.install.cam_src.is_empty() {
-                                    app.install.cam_src = s.cam_src.clone();
-                                }
                                 if let Some(h) = s.ha_url.split("://").nth(1) {
                                     app.install.ha_ip = h.split(':').next().unwrap_or("").to_string();
                                 }
@@ -221,15 +213,6 @@ pub fn refresh(app: &mut App) {
             }),
         );
     }
-}
-
-/// Envoie un script d'installation sur l'OMV et l'execute avec des variables d'environnement
-fn run_install_script(app: &mut App, title: &str, name: &str, content: &str, env: &[(&str, String)]) {
-    let path = format!("/root/.nas-manager/{name}");
-    let mut script = remote::install_file(&path, content);
-    let vars: String = env.iter().map(|(k, v)| format!("{k}={} ", sq(v))).collect();
-    script.push_str(&format!("cd /root/.nas-manager && {vars}bash {} 2>&1 < /dev/null\n", sq(&path)));
-    app.action_dialog(HostId::Omv, title, script, 1800);
 }
 
 fn row(ui: &mut egui::Ui, state: Option<bool>, title: &str, detail: &str) {
@@ -401,31 +384,29 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.add_space(8.0);
 
-    // ---- 4. cameras
-    crate::pages::card_pub(ui, tr("4. Synchro des caméras (temps réel, chiffrée)"), |ui| {
-        row(
-            ui,
-            k(st.cam == 1 && st.cam_actif == "active"),
-            "cam-sync",
-            &if st.cam == 1 { tf("service {0}", &[&(if st.cam_actif == "active" { "actif" } else { tr("arrêté") })]) } else { tr("non installée").to_string() },
-        );
-        ui.horizontal(|ui| {
-            ui.label(tr("Dossier des caméras :"));
-            ui.add(egui::TextEdit::singleline(&mut app.install.cam_src).desired_width(360.0));
-            if ui.button("\u{E24A}").clicked() {
-                app.open_browser(HostId::Omv, BrowsePurpose::CamSource, "");
-            }
-        });
-        ui.checkbox(&mut app.install.cam_initial, tr("Envoyer aussi les vidéos déjà présentes (en arrière-plan)"));
-        let can = known && st.gdrive == 1 && !app.install.cam_src.trim().is_empty();
-        if ui.add_enabled(can, egui::Button::new(if st.cam == 1 { tr("Réinstaller / changer de dossier") } else { tr("Installer la synchro des caméras") })).clicked() {
-            let env = [
-                ("CAM_SRC", app.install.cam_src.trim().to_string()),
-                ("CAM_PREMIER_ENVOI", if app.install.cam_initial { "o".into() } else { "n".into() }),
-            ];
-            run_install_script(app, tr("Installation de la synchro des caméras"), "install-cam-sync.sh", CAM_SH, &env);
+    // ---- 4. sauvegardes temps reel (cameras comprises)
+    crate::pages::card_pub(ui, tr("4. Sauvegardes temps réel (caméras comprises)"), |ui| {
+        let rt = app.omv.status.as_ref().map(|s| s.temps_reel.len()).unwrap_or(0);
+        if st.cam == 1 {
+            row(
+                ui,
+                k(st.cam_actif == "active"),
+                tr("Ancienne synchro des caméras (cam-sync)"),
+                tr("la migration (carte 1) la transforme en sauvegarde temps réel"),
+            );
         }
-        ui.label(RichText::new(tr("Les mots de passe de chiffrement créés s'affichent à la fin : note-les en lieu sûr.")).small().color(WARN));
+        row(ui, if agent { Some(true) } else { None }, tr("Moteur temps réel (nas-debian)"), &tf("{0} sauvegarde(s) temps réel", &[&rt]));
+        ui.label(
+            RichText::new(tr("Rien à installer en plus : les sauvegardes temps réel (un ou plusieurs dossiers surveillés, dont les caméras) se créent sur la page « Sauvegardes temps réel »."))
+                .small()
+                .weak(),
+        );
+        if ui.add_enabled(agent, egui::Button::new(tr("Ouvrir la page Sauvegardes temps réel"))).clicked() {
+            app.page = crate::app::Page::Realtime;
+        }
+        if known && st.gdrive != 1 {
+            ui.label(RichText::new(tr("Connecte d'abord Google Drive (carte 3).")).small().color(WARN));
+        }
     });
     ui.add_space(8.0);
 
