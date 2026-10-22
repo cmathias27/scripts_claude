@@ -1,5 +1,30 @@
 # Journal des modifications
 
+## 1.2.0
+
+Étape 2 de la feuille de route : sauvegardes programmées et sauvegardes temps réel.
+
+### Deux types de sauvegardes
+- **Sauvegardes programmées** (ex-page « Sauvegardes ») : à heure fixe ou à la demande, comme avant.
+- **Sauvegardes temps réel** (nouvelle page, remplace « Caméras ») : un ou plusieurs dossiers surveillés en continu, chaque fichier créé, modifié ou supprimé part quelques secondes plus tard.
+- Menu, raccourcis, tableau de bord, aide et version anglaise renommés en conséquence. Le menu s'élargit pour que les libellés ne soient jamais coupés.
+
+### Sauvegardes temps réel
+- **N'importe quel(s) dossier(s)**, vers le Drive chiffré, le Drive en clair ou un autre remote rclone. Avec plusieurs dossiers, chacun va dans un sous-dossier de son nom.
+- **Fichiers supprimés au choix** : corbeille de X jours (les anciennes versions des fichiers modifiés sont gardées aussi), suppression directe, ou copie seule (rien n'est jamais supprimé).
+- **Réglages fins** : exclusions, types de fichiers, regroupement des envois (un fichier modifié en boucle part au plus toutes les 60 s), rattrapage périodique, mémoire de rclone et limite de débit propres à chaque sauvegarde.
+- **Détection d'anomalie** : si trop de fichiers sont supprimés ou modifiés en 10 minutes, ou si un rattrapage s'apprête à en supprimer trop d'un coup, la sauvegarde se met en pause sans rien répercuter et une alerte est envoyée. Bouton « Reprendre » une fois le dossier vérifié.
+- Démarrer, arrêter, mettre en pause, rattrapage immédiat, « Tout envoyer maintenant », journal et derniers événements, envois du jour, mémoire utilisée.
+- Alertes : sauvegarde en pause, surveillance arrêtée, envois en échec ; une entité Home Assistant par sauvegarde temps réel ; icône et notifications Windows.
+
+### Caméras
+- La synchro des caméras devient une **sauvegarde temps réel « Cameras »** : la migration (page Installation) la reprend telle quelle (même dossier, même destination chiffrée, suppressions directes, historique des envois conservé).
+- L'ancien installateur install-cam-sync.sh est retiré (rangé dans ancien/).
+
+### Corrections
+- Corbeille des sauvegardes programmées : la durée est maintenant comptée **depuis la suppression** du fichier. Avant, un vieux fichier supprimé pouvait disparaître de la corbeille dès la sauvegarde suivante.
+- Script nas-debian : la vérification du remote rclone pouvait échouer au hasard (« remote introuvable »), et l'alerte « Google Drive inaccessible » pouvait ne pas partir.
+
 ## 1.1.0
 
 Étape 1 de la feuille de route : les fondations.

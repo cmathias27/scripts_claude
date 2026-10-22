@@ -33,8 +33,8 @@
 # =====================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="2.0.0"
-API_VERSION=5
+SCRIPT_VERSION="2.1.0"
+API_VERSION=6
 
 # --------------------------- Parametres ------------------------------
 GDRIVE="gdrive"                  # remote Google Drive deja configure
@@ -135,10 +135,17 @@ ram_total_mo() { awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo 2>/dev/nul
 ram_dispo_mo() { awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0; }
 
 agent_conf_load() {
-  RAM_PROFIL=auto RAM_MO="" TRANSFERTS="" VERIFS="" TAMPON=""
+  RAM_PROFIL=auto RAM_MO="" TRANSFERTS="" VERIFS="" TAMPON="" CAM_JOB=""
   # shellcheck disable=SC1090
   [ -f "$AGENT_CONF" ] && . "$AGENT_CONF"
   return 0
+}
+
+agent_conf_set() {  # agent_conf_set <CLE> <valeur> (les autres reglages sont gardes)
+  mkdir -p "$CONF_DIR"; touch "$AGENT_CONF"
+  grep -v "^$1=" "$AGENT_CONF" > "$AGENT_CONF.new"
+  printf '%s=%q\n' "$1" "$2" >> "$AGENT_CONF.new"
+  mv -f "$AGENT_CONF.new" "$AGENT_CONF"
 }
 
 # perf_load [surcharge]  surcharge = "" (reglage de la machine), un profil, ou un nombre de Mo
@@ -283,6 +290,21 @@ check_cmd() {
     fi
   fi
 
+  # 1 bis. Sauvegardes temps reel : surveillance active, pas de pause
+  local rn
+  for rn in $(rt_names); do
+    rt_get "$rn" || continue
+    if rt_paused; then
+      $N critique "rt-pause-$rn" "Sauvegarde temps réel « $rn » en pause" "$(cut -d'|' -f2- "$STATE_DIR/rt-$rn.pause"). Reprends-la depuis NAS Manager une fois le dossier vérifié."
+    elif has_systemd && ! systemctl is-enabled --quiet "nas-temps-reel@$rn" 2>/dev/null; then
+      :   # arretee volontairement
+    elif rt_active "$rn"; then
+      $N ok "rt-service-$rn" "Sauvegarde temps réel « $rn »" "La surveillance fonctionne de nouveau."
+    else
+      $N critique "rt-service-$rn" "Sauvegarde temps réel « $rn » arrêtée" "La surveillance de ${R_DIRS//;/, } ne tourne plus. Redémarre-la depuis NAS Manager (page Sauvegardes temps réel)."
+    fi
+  done
+
   # 2. Connexion Google Drive et espace
   local GD=false pct="" used_go="" total_go="" json
   if command -v rclone >/dev/null && timeout 120 rclone lsd "$GDRIVE:" >/dev/null 2>&1; then
@@ -302,7 +324,7 @@ except Exception:
         $N ok quota "Google Drive" "Espace utilisé : ${pct} %."
       fi
     fi
-  elif command -v rclone >/dev/null && rclone listremotes 2>/dev/null | grep -qx "$GDRIVE:"; then
+  elif command -v rclone >/dev/null && rclone listremotes 2>/dev/null | grep -x "$GDRIVE:" >/dev/null; then
     $N critique gdrive "Google Drive inaccessible" "rclone n'arrive plus à se connecter à Google Drive. Reconnecte-le depuis NAS Manager (page Installation)."
   fi
 
@@ -505,43 +527,97 @@ if os.path.exists(JOBS):
             en_cours.append((name, j["en_cours"]))
         jobs[slug(name)] = j
 
-cam_installed = os.path.exists(CAM_SCRIPT)
-cam_actif = subprocess.run(["systemctl", "is-active", "--quiet", "cam-sync"]).returncode == 0
-cam = {"jour": 0, "jour_o": 0, "heure": 0, "heure_o": 0, "sem": 0, "sem_o": 0,
-       "suppr": 0, "echecs": 0, "dernier": None, "dernier_echec": None}
-for path in (CAM_TR + ".1", CAM_TR):
-    try:
-        with open(path) as f:
-            for line in f:
-                p = line.strip().split("|")
-                if len(p) < 4 or not p[0].isdigit():
-                    continue
-                ts, action, ok = int(p[0]), p[1], p[3] == "ok"
-                size = int(p[2]) if p[2].isdigit() else 0
-                nb = int(p[4]) if len(p) > 4 and p[4].isdigit() else 1
-                if ts < NOW - 7 * 86400:
-                    continue
-                if not ok:
-                    if ts >= MIDNIGHT:
-                        cam["echecs"] += 1
-                    cam["dernier_echec"] = max(cam["dernier_echec"] or 0, ts)
-                    continue
-                if action == "envoi":
-                    cam["sem"] += nb; cam["sem_o"] += size
-                    cam["dernier"] = max(cam["dernier"] or 0, ts)
-                    if ts >= MIDNIGHT:
-                        cam["jour"] += nb; cam["jour_o"] += size
-                    if ts >= NOW - 3600:
-                        cam["heure"] += nb; cam["heure_o"] += size
-                elif action == "suppression" and ts >= MIDNIGHT:
-                    cam["suppr"] += nb
-    except OSError:
-        pass
+def tr_stats(base):
+    """Synthese d'un journal de transferts (epoch|action|octets|ok|nb) sur 7 jours."""
+    st = {"jour": 0, "jour_o": 0, "heure": 0, "heure_o": 0, "sem": 0, "sem_o": 0,
+          "suppr": 0, "echecs": 0, "dernier": None, "dernier_echec": None}
+    for path in (base + ".1", base):
+        try:
+            with open(path) as f:
+                for line in f:
+                    p = line.strip().split("|")
+                    if len(p) < 4 or not p[0].isdigit():
+                        continue
+                    ts, action, ok = int(p[0]), p[1], p[3] == "ok"
+                    size = int(p[2]) if p[2].isdigit() else 0
+                    nb = int(p[4]) if len(p) > 4 and p[4].isdigit() else 1
+                    if ts < NOW - 7 * 86400:
+                        continue
+                    if not ok:
+                        if ts >= MIDNIGHT:
+                            st["echecs"] += 1
+                        st["dernier_echec"] = max(st["dernier_echec"] or 0, ts)
+                        continue
+                    if action == "envoi":
+                        st["sem"] += nb; st["sem_o"] += size
+                        st["dernier"] = max(st["dernier"] or 0, ts)
+                        if ts >= MIDNIGHT:
+                            st["jour"] += nb; st["jour_o"] += size
+                        if ts >= NOW - 3600:
+                            st["heure"] += nb; st["heure_o"] += size
+                    elif action in ("suppression", "corbeille") and ts >= MIDNIGHT:
+                        st["suppr"] += nb
+        except OSError:
+            pass
+    return st
+
+
+def conf_val(path, key):
+    for l in read(path).splitlines():
+        if l.startswith(key + "="):
+            return l.split("=", 1)[1].strip().strip("'\"")
+    return ""
+
+
+def active(unit):
+    return subprocess.run(["systemctl", "is-active", "--quiet", unit], stderr=subprocess.DEVNULL).returncode == 0
+
+
+def enabled(unit):
+    return subprocess.run(["systemctl", "is-enabled", "--quiet", unit], stderr=subprocess.DEVNULL).returncode == 0
+
+
+# Sauvegardes temps reel
+CAM_JOB = conf_val("/etc/nas-backup/agent.conf", "CAM_JOB")
+rt, rt_probleme = {}, False
+for line in read("/etc/nas-backup/temps-reel.conf").splitlines():
+    if not line.strip() or line.startswith("#"):
+        continue
+    p = line.split("|")
+    if len(p) < 4:
+        continue
+    name = p[0]
+    unit = f"nas-temps-reel@{name}"
+    act = active(unit)
+    paused = read(f"{STATE_DIR}/rt-{name}.pause")
+    st = tr_stats(f"{STATE_DIR}/rt-{name}.transferts.log")
+    if paused or (not act and enabled(unit)):
+        rt_probleme = True
+    rt[slug(name)] = {
+        "nom": name, "etat": "En pause" if paused else ("Actif" if act else "Arrêté"),
+        "pause": paused.split("|", 1)[1] if "|" in paused else None,
+        "dossiers": p[1].split(";"), "destination": p[2], "suppression": p[3],
+        "envois_jour": st["jour"], "volume_jour": hs(st["jour_o"]), "volume_jour_go": go(st["jour_o"]),
+        "envois_derniere_heure": st["heure"], "suppressions_jour": st["suppr"], "echecs_jour": st["echecs"],
+        "dernier_envoi": iso(st["dernier"]), "dernier_echec": iso(st["dernier_echec"]),
+        "envois_7_jours": st["sem"], "volume_7_jours": hs(st["sem_o"]), "_st": st, "_actif": act,
+    }
+
+# Cameras : sauvegarde temps reel reprise de l'ancienne synchro, ou ancienne synchro
+camj = rt.get(slug(CAM_JOB)) if CAM_JOB else None
+if camj:
+    cam_installed, cam_actif, cam = True, camj["_actif"] and not camj["pause"], camj["_st"]
+else:
+    cam_installed = os.path.exists(CAM_SCRIPT)
+    cam_actif = active("cam-sync")
+    cam = tr_stats(CAM_TR)
+for j in rt.values():
+    j.pop("_st"); j.pop("_actif")
 
 health = load(HEALTH)
 alertes = sorted(os.listdir(f"{STATE_DIR}/alertes")) if os.path.isdir(f"{STATE_DIR}/alertes") else []
 probleme = bool(alertes) or any(j["etat"] == "Échec" for j in jobs.values()) \
-    or (cam_installed and not cam_actif) or health.get("gdrive") is False
+    or (cam_installed and not cam_actif) or health.get("gdrive") is False or rt_probleme
 
 ec = en_cours[0][1] if en_cours else {}
 state = {
@@ -550,6 +626,7 @@ state = {
     "alertes": alertes,
     "nb_sauvegardes": len(jobs),
     "jobs": jobs,
+    "temps_reel": rt,
     "en_cours": ", ".join(n for n, _ in en_cours) if en_cours else "Aucune",
     "en_cours_pct": ec.get("progression", 0),
     "en_cours_detail": ec,
@@ -683,14 +760,26 @@ for key, j in jobs.items():
         "icon": "mdi:folder-sync",
     })
 
+for key, j in rt.items():
+    entity("sensor", f"temps_reel_{key}", f"Temps réel {j['nom']}", {
+        "value_template": "{{ value_json.temps_reel['%s'].etat if '%s' in value_json.temps_reel else none }}" % (key, key),
+        "json_attributes_topic": TOPIC,
+        "json_attributes_template": "{{ value_json.temps_reel['%s'] | default({}) | tojson }}" % key,
+        "icon": "mdi:sync",
+    })
+
+# Retire les entites des sauvegardes supprimees
 try:
-    old = set(json.load(open(PUBLISHED)))
+    old = json.load(open(PUBLISHED))
 except (OSError, ValueError):
-    old = set()
-for key in old - set(jobs):
+    old = []
+old_jobs, old_rt = (set(old), set()) if isinstance(old, list) else (set(old.get("jobs", [])), set(old.get("temps_reel", [])))
+for key in old_jobs - set(jobs):
     pub(f"{DISC}/sensor/{OBJ}/sauvegarde_{key}/config", "")
+for key in old_rt - set(rt):
+    pub(f"{DISC}/sensor/{OBJ}/temps_reel_{key}/config", "")
 with open(PUBLISHED, "w") as f:
-    json.dump(sorted(jobs), f)
+    json.dump({"jobs": sorted(jobs), "temps_reel": sorted(rt)}, f)
 
 pub(TOPIC, json.dumps(state, ensure_ascii=False))
 PYEOF
@@ -825,6 +914,549 @@ outils_rclone_maj() {
   rm -f "$STATE_DIR/rclone-derniere"
 }
 
+# Corbeille : supprime les dossiers dates (AAAA-MM-JJ_HHMM...) de plus de <jours> jours.
+# La date est celle du dossier (jour de la suppression ou du remplacement), pas celle
+# du fichier : un vieux fichier supprime aujourd'hui reste bien <jours> jours.
+trash_purge() {  # trash_purge <corbeille> <jours>
+  local tr="$1" days="$2" cut d
+  [ "$days" -gt 0 ] 2>/dev/null || return 0
+  cut=$(date -d "-$days days" +%Y-%m-%d_%H%M)
+  while IFS= read -r d; do
+    d="${d%/}"
+    [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4} ]] || continue
+    [[ "${d:0:15}" < "$cut" ]] && rclone purge "$tr/$d" -q 2>/dev/null
+  done < <(rclone lsf --dirs-only "$tr" 2>/dev/null < /dev/null)
+  return 0
+}
+
+# =========================== Sauvegardes temps reel ==================
+# Un dossier (ou plusieurs) surveille en continu : chaque fichier cree, modifie
+# ou supprime est repercute sur la destination, par lots (regroupement).
+# /etc/nas-backup/temps-reel.conf, une ligne par sauvegarde :
+#   NOM|DOSSIERS (separes par ;)|DESTINATION (remote rclone)|SUPPRESSION (directe,
+#   corbeille, copie)|CORBEILLE_JOURS|EXCLUSIONS (;)|TYPES (;)|DELAI_S|RATTRAPAGE_MIN|
+#   ANOMALIE (seuil, 0 = aucun)|MEMOIRE|DEBIT
+# Un service systemd par sauvegarde (nas-temps-reel@NOM) + un rattrapage periodique (cron).
+RT_CONF="$CONF_DIR/temps-reel.conf"
+RT_CRON="/etc/cron.d/nas-temps-reel"
+RT_UNIT="/etc/systemd/system/nas-temps-reel@.service"
+RT_LOG_DIR="/var/log/nas-temps-reel"
+RT_MAXWAIT=60          # un fichier modifie en boucle part au plus tard apres 60 s
+RT_FENETRE=600         # detection d'anomalie : nombre de fichiers sur 10 minutes
+RT_CATCH_OK=(0 5 10 15 20 30 60 120 180 240 360 720 1440)
+# toujours exclus : dossiers techniques, fichiers temporaires
+RT_EXCL_DIRS=('@eaDir' '#recycle' '.Trash-*' '#snapshot' '.SynologyWorkingDirectory')
+RT_EXCL_FILES=('*.tmp' '*.part' '*.swp' '*.crdownload' '.~lock.*' '~$*' '.DS_Store' 'Thumbs.db' 'desktop.ini')
+
+rt_names() { [ -f "$RT_CONF" ] && grep -v '^#' "$RT_CONF" | grep -v '^$' | cut -d'|' -f1; return 0; }
+rt_exists() { [ -f "$RT_CONF" ] && grep -q "^$1|" "$RT_CONF"; }
+
+rt_get() {  # rt_get <nom> -> R_*
+  local line; line=$(grep -m1 "^$1|" "$RT_CONF" 2>/dev/null) || return 1
+  IFS='|' read -r R_NAME R_DIRS R_DEST R_DEL R_RET R_EXCL R_TYPES R_DELAY R_CATCH R_ANOM R_PERF R_BW <<< "$line"
+  R_RET=${R_RET:-0}; R_DELAY=${R_DELAY:-10}; R_CATCH=${R_CATCH:-15}; R_ANOM=${R_ANOM:-0}
+  R_EXCL=${R_EXCL:-}; R_TYPES=${R_TYPES:-}; R_PERF=${R_PERF:-}; R_BW=${R_BW:-}
+  IFS=';' read -ra R_SRCS <<< "$R_DIRS"
+  return 0
+}
+
+rt_save_line() {
+  mkdir -p "$CONF_DIR"
+  [ -f "$RT_CONF" ] || echo "# NOM|DOSSIERS|DESTINATION|SUPPRESSION|CORBEILLE_JOURS|EXCLUSIONS|TYPES|DELAI_S|RATTRAPAGE_MIN|ANOMALIE|MEMOIRE|DEBIT" > "$RT_CONF"
+  local tmp; tmp=$(mktemp)
+  grep -v "^$R_NAME|" "$RT_CONF" > "$tmp"
+  echo "$R_NAME|$R_DIRS|$R_DEST|$R_DEL|$R_RET|$R_EXCL|$R_TYPES|$R_DELAY|$R_CATCH|$R_ANOM|$R_PERF|$R_BW" >> "$tmp"
+  cat "$tmp" > "$RT_CONF"; rm -f "$tmp"
+}
+
+rt_log() { mkdir -p "$RT_LOG_DIR"; echo "$(date '+%Y/%m/%d %H:%M:%S') NOTICE: [$R_NAME] $*" >> "$RT_LOG_DIR/$R_NAME.log"; }
+rt_trace() { echo "$(date +%s)|$1|${2:-0}|$3|${4:-1}" >> "$STATE_DIR/rt-$R_NAME.transferts.log"; }   # <action> <octets> <ok|echec> [nb]
+
+# Destination d'un dossier surveille : la destination, ou destination/<nom du dossier> s'il y en a plusieurs
+rt_dest_of() {
+  if [ ${#R_SRCS[@]} -le 1 ]; then echo "$R_DEST"; return; fi
+  local b="${1%/}"; b="${b##*/}"
+  case "$R_DEST" in *:) echo "$R_DEST$b" ;; *) echo "${R_DEST%/}/$b" ;; esac
+}
+
+# Corbeille : a cote de la destination (dans la destination seulement si c'est la racine du remote)
+rt_trash_root() {
+  local remote="${R_DEST%%:*}" path="${R_DEST#*:}" parent
+  path="${path%/}"
+  if [ -z "$path" ]; then echo "$remote:_corbeille-temps-reel/$R_NAME"; return; fi
+  parent=""; [[ "$path" == */* ]] && parent="${path%/*}"
+  echo "$remote:${parent:+$parent/}_corbeille/temps-reel/$R_NAME"
+}
+rt_trash_of() {
+  local t; t=$(rt_trash_root)
+  if [ ${#R_SRCS[@]} -le 1 ]; then echo "$t"; else local b="${1%/}"; echo "$t/${b##*/}"; fi
+}
+
+# Filtres rclone (ordre explicite : exclusions, puis types gardes)
+rt_filters() {
+  local -; set -f      # motifs (*.tmp...) : pas d'expansion par le shell
+  RT_FILT=()
+  [ -z "${R_DEST#*:}" ] && RT_FILT+=(--filter "- /_corbeille-temps-reel/**")
+  local p
+  for p in "${RT_EXCL_DIRS[@]}"; do RT_FILT+=(--filter "- ${p/#\#/\\#}/**"); done
+  for p in "${RT_EXCL_FILES[@]}"; do RT_FILT+=(--filter "- $p"); done
+  local IFS=';'
+  for p in $R_EXCL; do [ -n "$p" ] && RT_FILT+=(--filter "- $p" --filter "- ${p%/}/**"); done
+  if [ -n "$R_TYPES" ]; then
+    for p in $R_TYPES; do [ -n "$p" ] && RT_FILT+=(--filter "+ $p"); done
+    RT_FILT+=(--filter "- *")
+  fi
+}
+
+# rt_skip <chemin relatif> <0|1 dossier> : 0 = a ignorer (exclusion, type non garde)
+# shellcheck disable=SC2053  # comparaisons volontairement par motif
+rt_skip() {
+  local -; set -f
+  local rel="$1" isdir="$2" c p IFS
+  IFS='/'
+  for c in $rel; do
+    for p in "${RT_EXCL_DIRS[@]}"; do [[ "$c" == $p ]] && return 0; done
+  done
+  local base="${rel##*/}"
+  for p in "${RT_EXCL_FILES[@]}"; do [[ "$base" == $p ]] && return 0; done
+  IFS=';'
+  for p in $R_EXCL; do
+    [ -n "$p" ] || continue
+    if [[ "$p" == */* ]]; then
+      p="${p#/}"; p="${p%/}"
+      [[ "$rel" == $p || "$rel" == $p/* ]] && return 0
+    else
+      IFS='/'; for c in $rel; do [[ "$c" == $p ]] && return 0; done; IFS=';'
+    fi
+  done
+  if [ -n "$R_TYPES" ] && [ "$isdir" = 0 ]; then
+    for p in $R_TYPES; do [ -n "$p" ] && [[ "$base" == $p ]] && return 1; done
+    return 0
+  fi
+  return 1
+}
+
+rt_paused() { [ -f "$STATE_DIR/rt-$R_NAME.pause" ]; }
+
+rt_pause() {  # rt_pause <raison>
+  printf '%s|%s\n' "$(date +%s)" "$1" > "$STATE_DIR/rt-$R_NAME.pause"
+  rt_log "PAUSE : $1"
+  notify critique "rt-pause-$R_NAME" "Sauvegarde temps réel « $R_NAME » en pause" "$1. Rien n'a été répercuté sur la destination. Vérifie le dossier, puis reprends la sauvegarde depuis NAS Manager."
+}
+
+# --------------------------- surveillance (service) ------------------
+rt_watch() {
+  rt_get "$1" || die "sauvegarde temps reel '$1' introuvable."
+  command -v inotifywait >/dev/null || die "inotifywait absent (nas-debian outils installer)."
+  perf_load "$R_PERF"; rt_filters
+  mkdir -p "$RT_LOG_DIR" "$STATE_DIR"
+  local -a ok=() ; local s
+  for s in "${R_SRCS[@]}"; do
+    if [ -d "$s" ]; then ok+=("${s%/}"); else rt_log "ERROR : dossier introuvable : $s"; fi
+  done
+  if [ ${#ok[@]} -eq 0 ]; then
+    notify critique "rt-service-$R_NAME" "Sauvegarde temps réel « $R_NAME » arrêtée" "Aucun dossier surveillé n'est accessible (disque démonté ?)."
+    sleep 60; exit 1
+  fi
+  R_SRCS=("${ok[@]}")
+  echo "$BASHPID" > "$STATE_DIR/rt-$R_NAME.pid"
+  rt_log "surveillance demarree : ${ok[*]} -> $R_DEST (regroupement ${R_DELAY} s, suppressions : $R_DEL)"
+  inotifywait -m -r -q -e close_write -e moved_to -e delete -e moved_from -e create \
+    --exclude '(/@eaDir(/|$)|/#recycle(/|$)|/\.Trash-[^/]*(/|$)|/#snapshot(/|$))' \
+    --format '%e|%w%f' "${ok[@]}" 2>>"$RT_LOG_DIR/$R_NAME.log" | rt_loop
+  rt_log "surveillance arretee (inotifywait termine)"
+}
+
+rt_loop() {
+  declare -gA RT_PEND=() RT_MOD=() RT_CREATED=()
+  RT_WIN_T=(); RT_WIN_N=()
+  RT_FIRST=0; RT_LAST=0
+  local line now
+  while true; do
+    if IFS= read -r -t 1 line; then
+      rt_event "${line%%|*}" "${line#*|}"
+    elif [ $? -le 128 ]; then
+      break
+    fi
+    printf -v now '%(%s)T' -1
+    if [ ${#RT_PEND[@]} -gt 0 ] && { [ $((now - RT_LAST)) -ge "$R_DELAY" ] || [ $((now - RT_FIRST)) -ge "$RT_MAXWAIT" ]; }; then
+      rt_flush
+    fi
+  done
+  [ ${#RT_PEND[@]} -gt 0 ] && rt_flush
+  return 0
+}
+
+rt_event() {  # rt_event <evenements> <chemin>
+  local ev="$1" f="$2" src="" s rel isdir=0 key now
+  [[ "$ev" == *ISDIR* ]] && isdir=1
+  for s in "${R_SRCS[@]}"; do [[ "$f" == "$s/"* ]] && { src="$s"; break; }; done
+  [ -n "$src" ] || return 0
+  rel="${f#"$src"/}"
+  rt_skip "$rel" "$isdir" && return 0
+  key="$src|$rel"
+  case "$ev" in
+    *CREATE*)
+      if [ $isdir = 1 ]; then RT_PEND[$key]=updir; else RT_CREATED[$key]=1; return 0; fi ;;
+    *CLOSE_WRITE*)
+      RT_PEND[$key]=up
+      [ -n "${RT_CREATED[$key]:-}" ] || RT_MOD[$key]=1 ;;       # fichier deja present modifie
+    *MOVED_TO*)
+      if [ $isdir = 1 ]; then RT_PEND[$key]=updir; else RT_PEND[$key]=up; fi ;;
+    *DELETE*|*MOVED_FROM*)
+      if [ $isdir = 1 ]; then RT_PEND[$key]=deldir; else RT_PEND[$key]=del; fi
+      unset 'RT_MOD[$key]' 'RT_CREATED[$key]' ;;
+    *) return 0 ;;
+  esac
+  printf -v now '%(%s)T' -1
+  [ "$RT_FIRST" -eq 0 ] && RT_FIRST=$now
+  RT_LAST=$now
+}
+
+# Fichiers supprimes ou modifies sur la fenetre de detection (cette fois + 10 dernieres minutes)
+rt_window() {  # rt_window <maintenant> <nb> -> RT_WIN_SUM
+  local now="$1" i
+  local -a t=() n=()
+  RT_WIN_SUM=$2
+  for i in "${!RT_WIN_T[@]}"; do
+    if [ $((now - RT_WIN_T[i])) -lt "$RT_FENETRE" ]; then t+=("${RT_WIN_T[i]}"); n+=("${RT_WIN_N[i]}"); RT_WIN_SUM=$((RT_WIN_SUM + RT_WIN_N[i])); fi
+  done
+  RT_WIN_T=("${t[@]}" "$now"); RT_WIN_N=("${n[@]}" "$2")
+}
+
+rt_flush() {
+  local now jour key src rel act path i d tr suspects=0 log="$RT_LOG_DIR/$R_NAME.log" tmp rc
+  printf -v now '%(%s)T' -1; printf -v jour '%(%Y-%m-%d_%H%M%S)T' -1   # secondes : pas d'ecrasement entre deux envois
+  for key in "${!RT_PEND[@]}"; do
+    case "${RT_PEND[$key]}" in del|deldir) suspects=$((suspects + 1)) ;; esac
+  done
+  suspects=$((suspects + ${#RT_MOD[@]}))
+  if rt_paused; then
+    RT_PEND=(); RT_MOD=(); RT_FIRST=0; return 0
+  fi
+  # reprise confirmee depuis la derniere fois : la fenetre de detection repart de zero
+  local rep; rep=$(cat "$STATE_DIR/rt-$R_NAME.reprise" 2>/dev/null)
+  if [ -n "$rep" ] && [ "$rep" != "${RT_REPRISE_VUE:-}" ]; then RT_WIN_T=(); RT_WIN_N=(); RT_REPRISE_VUE="$rep"; fi
+  if [ "$R_ANOM" -gt 0 ]; then
+    rt_window "$now" "$suspects"
+    if [ "$RT_WIN_SUM" -ge "$R_ANOM" ]; then
+      rt_pause "Anomalie : $RT_WIN_SUM fichiers supprimés ou modifiés en moins de 10 minutes (seuil $R_ANOM)"
+      RT_PEND=(); RT_MOD=(); RT_CREATED=(); RT_FIRST=0; return 0
+    fi
+  fi
+  tmp=$(mktemp -d)
+  for key in "${!RT_PEND[@]}"; do
+    src="${key%%|*}"; rel="${key#*|}"; act="${RT_PEND[$key]}"; path="$src/$rel"
+    for i in "${!R_SRCS[@]}"; do [ "${R_SRCS[i]}" = "$src" ] && break; done
+    case "$act" in
+      up|del)
+        if [ -f "$path" ]; then printf '%s\n' "$rel" >> "$tmp/$i.up"
+        elif [ ! -e "$path" ]; then printf '%s\n' "$rel" >> "$tmp/$i.del"; fi ;;
+      updir)  [ -d "$path" ] && printf '%s\n' "$rel" >> "$tmp/$i.updir" ;;
+      deldir) [ -e "$path" ] || printf '%s\n' "$rel" >> "$tmp/$i.deldir" ;;
+    esac
+  done
+  RT_PEND=(); RT_MOD=(); RT_FIRST=0
+  local -a common=(--log-file "$log" --log-level INFO --retries 3)
+  [ -n "$R_BW" ] && common+=(--bwlimit "$R_BW")
+  local n o f fail=0
+  for i in "${!R_SRCS[@]}"; do
+    src="${R_SRCS[i]}"; d=$(rt_dest_of "$src"); tr="$(rt_trash_of "$src")/$jour"
+    local -a keep=(); [ "$R_DEL" = corbeille ] && keep=(--backup-dir "$tr")
+    if [ -s "$tmp/$i.up" ]; then
+      n=$(cnt "$tmp/$i.up"); o=0
+      while IFS= read -r f; do o=$((o + $(stat -c %s "$src/$f" 2>/dev/null || echo 0))); done < "$tmp/$i.up"
+      if rcl "rt-$R_NAME" copy "$src" "$d" --files-from-raw "$tmp/$i.up" --no-traverse "${keep[@]}" "${common[@]}" < /dev/null; then
+        rt_trace envoi "$o" ok "$n"
+      else
+        rt_trace envoi 0 echec "$n"; fail=1
+      fi
+    fi
+    if [ -s "$tmp/$i.updir" ]; then
+      while IFS= read -r f; do
+        n=$(find "$src/$f" -type f 2>/dev/null | wc -l); o=$(du -sb "$src/$f" 2>/dev/null | cut -f1)
+        local -a kd=(); [ "$R_DEL" = corbeille ] && kd=(--backup-dir "$tr/$f")
+        if rcl "rt-$R_NAME" copy "$src/$f" "$d/$f" "${RT_FILT[@]}" "${kd[@]}" "${common[@]}" < /dev/null; then
+          rt_trace envoi "${o:-0}" ok "$n"
+        else
+          rt_trace envoi 0 echec "$n"; fail=1
+        fi
+      done < "$tmp/$i.updir"
+    fi
+    [ "$R_DEL" = copie ] && continue
+    if [ -s "$tmp/$i.deldir" ]; then
+      while IFS= read -r f; do
+        if [ "$R_DEL" = corbeille ]; then
+          rclone move "$d/$f" "$tr/$f" --delete-empty-src-dirs "${common[@]}" < /dev/null && rclone rmdirs "$d/$f" -q 2>/dev/null; rc=$?
+        else
+          rclone purge "$d/$f" "${common[@]}" < /dev/null; rc=$?
+        fi
+        if [ $rc -eq 0 ]; then rt_trace suppression 0 ok 1; else rt_trace suppression 0 echec 1; fi
+      done < "$tmp/$i.deldir"
+    fi
+    if [ -s "$tmp/$i.del" ]; then
+      n=$(cnt "$tmp/$i.del")
+      if [ "$R_DEL" = corbeille ]; then
+        rclone move "$d" "$tr" --files-from-raw "$tmp/$i.del" --no-traverse "${common[@]}" < /dev/null; rc=$?
+      else
+        rclone delete "$d" --files-from-raw "$tmp/$i.del" "${common[@]}" < /dev/null; rc=$?
+      fi
+      if [ $rc -eq 0 ]; then rt_trace suppression 0 ok "$n"; else rt_trace suppression 0 echec "$n"; fi
+    fi
+  done
+  rm -rf "$tmp"
+  if [ $fail = 0 ]; then
+    notify ok "rt-$R_NAME" "Sauvegarde temps réel « $R_NAME »" "Les envois vers la destination fonctionnent de nouveau."
+  else
+    notify critique "rt-$R_NAME" "Sauvegarde temps réel « $R_NAME » : envoi en échec" "Des fichiers ne partent pas vers la destination ($R_DEST). Ils seront renvoyés au prochain rattrapage. Détails : $log"
+  fi
+  return 0
+}
+
+# --------------------------- rattrapage (cron) -----------------------
+rt_catchup() {  # rt_catchup <nom> [initial]
+  rt_get "$1" || die "sauvegarde temps reel '$1' introuvable."
+  need_rclone
+  if rt_paused; then echo "Sauvegarde « $R_NAME » en pause : pas de rattrapage."; return 0; fi
+  exec 6>"/run/nas-temps-reel-$R_NAME.lock"
+  flock -n 6 || { echo "Un rattrapage de « $R_NAME » est deja en cours."; return 0; }
+  perf_load "$R_PERF"; rt_filters
+  local log="$RT_LOG_DIR/$R_NAME.log" tmp src d tr rc=0 r jour n nd now f o=0 nc=0
+  mkdir -p "$RT_LOG_DIR"; tmp=$(mktemp); jour=$(date +%Y-%m-%d_%H%M%S)
+  local -a min=(--min-age 2m) common=(--log-level INFO --retries 3)
+  # envoi complet, ou reprise confirmee : etat actuel repercute tout de suite (sans attendre 2 min)
+  [ "${2:-}" = initial ] && min=()
+  [ -f "$STATE_DIR/rt-$R_NAME.autorise" ] && min=()
+  [ -n "$R_BW" ] && common+=(--bwlimit "$R_BW")
+  rt_log "rattrapage$( [ "${2:-}" = initial ] && echo " (envoi complet)") : debut"
+  for src in "${R_SRCS[@]}"; do
+    src="${src%/}"
+    [ -d "$src" ] || { rt_log "ERROR : dossier introuvable : $src"; rc=1; continue; }
+    d=$(rt_dest_of "$src"); tr=$(rt_trash_of "$src")
+    if [ "$R_DEL" = copie ]; then
+      rcl "rt-$R_NAME" copy "$src" "$d" "${min[@]}" "${RT_FILT[@]}" "${common[@]}" --log-file "$tmp" < /dev/null || rc=1
+      continue
+    fi
+    # garde-fou : trop de suppressions d'un coup -> pause, rien n'est supprime
+    # (sauf juste apres une reprise confirmee par l'utilisateur)
+    if [ "$R_ANOM" -gt 0 ] && [ ! -f "$STATE_DIR/rt-$R_NAME.autorise" ]; then
+      nd=$(rclone sync "$src" "$d" "${min[@]}" "${RT_FILT[@]}" --dry-run --log-level NOTICE 2>&1 < /dev/null | grep -cE 'Skipped (delete|move)')
+      if [ "${nd:-0}" -ge "$R_ANOM" ]; then
+        rt_pause "Anomalie : le rattrapage supprimerait $nd fichiers d'un coup (seuil $R_ANOM)"
+        rm -f "$tmp"; return 1
+      fi
+    fi
+    local -a keep=(); [ "$R_DEL" = corbeille ] && keep=(--backup-dir "$tr/$jour")
+    rcl "rt-$R_NAME" sync "$src" "$d" "${min[@]}" "${keep[@]}" "${RT_FILT[@]}" "${common[@]}" --log-file "$tmp" < /dev/null; r=$?
+    [ $r -ne 0 ] && rc=1
+    if [ "$R_DEL" = corbeille ] && [ "$R_RET" -gt 0 ] && [ $r -eq 0 ]; then
+      trash_purge "$tr" "$R_RET"
+    fi
+  done
+  rm -f "$STATE_DIR/rt-$R_NAME.autorise"
+  now=$(date +%s)
+  while IFS= read -r f; do
+    nc=$((nc + 1))
+    for src in "${R_SRCS[@]}"; do
+      [ -f "${src%/}/$f" ] && { o=$((o + $(stat -c %s "${src%/}/$f" 2>/dev/null || echo 0))); break; }
+    done
+  done < <(grep -E ' INFO +: .+: Copied \(' "$tmp" | sed -E 's/^.* INFO +: (.+): Copied \(.*$/\1/')
+  [ "$nc" -gt 0 ] && echo "$now|envoi|$o|ok|$nc" >> "$STATE_DIR/rt-$R_NAME.transferts.log"
+  n=$(grep -cE ' INFO +: .+: (Deleted|Moved \(server-side\))' "$tmp")
+  [ "${n:-0}" -gt 0 ] && echo "$now|$( [ "$R_DEL" = corbeille ] && echo corbeille || echo suppression)|0|ok|$n" >> "$STATE_DIR/rt-$R_NAME.transferts.log"
+  [ $rc -ne 0 ] && echo "$now|rattrapage|0|echec|1" >> "$STATE_DIR/rt-$R_NAME.transferts.log"
+  cat "$tmp" >> "$log"; rm -f "$tmp"
+  rt_log "rattrapage : fin ($nc envoi(s), ${n:-0} suppression(s), code $rc)"
+  if [ $rc -eq 0 ]; then
+    notify ok "rt-$R_NAME" "Sauvegarde temps réel « $R_NAME »" "Les envois vers la destination fonctionnent de nouveau."
+  else
+    notify critique "rt-$R_NAME" "Sauvegarde temps réel « $R_NAME » : envoi en échec" "Le rattrapage n'a pas pu tout envoyer vers $R_DEST. Détails : $log"
+  fi
+  return $rc
+}
+
+# --------------------------- service et planification ----------------
+# NAS_SANS_SYSTEMD=1 : surveillance lancee en arriere-plan sans service (tests du moteur)
+has_systemd() { [ -z "${NAS_SANS_SYSTEMD:-}" ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null; }
+
+rt_unit_install() {
+  has_systemd || return 0
+  local want
+  want=$(printf '[Unit]\nDescription=Sauvegarde temps reel %%i (nas-debian)\nAfter=network-online.target local-fs.target\nWants=network-online.target\n\n[Service]\nExecStart=%s temps-reel surveiller %%i\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\n' "$SELF")
+  if [ "$(cat "$RT_UNIT" 2>/dev/null)" != "$want" ]; then
+    printf '%s\n' "$want" > "$RT_UNIT"
+    systemctl daemon-reload
+  fi
+}
+
+rt_active() {  # rt_active <nom>
+  if has_systemd; then systemctl is-active --quiet "nas-temps-reel@$1"; return; fi
+  local p; p=$(cat "$STATE_DIR/rt-$1.pid" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null
+}
+
+rt_start() {
+  rt_get "$1" || die "sauvegarde temps reel '$1' introuvable."
+  rt_unit_install
+  if has_systemd; then
+    systemctl enable --now "nas-temps-reel@$R_NAME" >/dev/null 2>&1 || die "le service ne demarre pas : journalctl -u nas-temps-reel@$R_NAME -n 50"
+  else
+    rt_active "$R_NAME" || { nohup setsid "$SELF" temps-reel surveiller "$R_NAME" >/dev/null 2>&1 < /dev/null & }
+  fi
+  sleep 1
+  if rt_active "$R_NAME"; then vert "Sauvegarde temps reel « $R_NAME » : surveillance active."; else rouge "La surveillance de « $R_NAME » ne demarre pas (voir $RT_LOG_DIR/$R_NAME.log)."; return 1; fi
+}
+
+rt_stop() {  # rt_stop <nom> [garder-auto]
+  local p
+  if has_systemd; then
+    if [ "${2:-}" = garder-auto ]; then systemctl stop "nas-temps-reel@$1" 2>/dev/null; else systemctl disable --now "nas-temps-reel@$1" >/dev/null 2>&1; fi
+  fi
+  p=$(cat "$STATE_DIR/rt-$1.pid" 2>/dev/null)
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then pkill -TERM -s "$(ps -o sid= -p "$p" | tr -d ' ')" 2>/dev/null || kill "$p"; fi
+  rm -f "$STATE_DIR/rt-$1.pid"
+  vert "Sauvegarde temps reel « $1 » : surveillance arretee."
+}
+
+rt_gen_cron() {
+  # variables R_* locales : la sauvegarde en cours de traitement par l'appelant reste intacte
+  local n line m R_NAME R_DIRS R_DEST R_DEL R_RET R_EXCL R_TYPES R_DELAY R_CATCH R_ANOM R_PERF R_BW
+  local -a R_SRCS
+  {
+    echo "# Genere automatiquement par nas-debian (rattrapage des sauvegardes temps reel)"
+    echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    for n in $(rt_names); do
+      rt_get "$n" || continue
+      m="$R_CATCH"
+      [ "$m" -gt 0 ] 2>/dev/null || continue
+      if [ "$m" -lt 60 ]; then line="*/$m * * * *"
+      elif [ "$m" -lt 1440 ]; then line="17 */$((m / 60)) * * *"
+      else line="17 4 * * *"; fi
+      echo "$line root $SELF temps-reel rattrapage $n >/dev/null 2>&1"
+    done
+  } > "$RT_CRON.new"
+  chmod 644 "$RT_CRON.new"; mv -f "$RT_CRON.new" "$RT_CRON"
+  if [ ! -f /etc/logrotate.d/nas-temps-reel ]; then
+    printf '%s/*.log {\n  weekly\n  rotate 4\n  compress\n  missingok\n  notifempty\n  copytruncate\n}\n%s/rt-*.transferts.log {\n  weekly\n  rotate 1\n  missingok\n  notifempty\n  copytruncate\n}\n' "$RT_LOG_DIR" "$STATE_DIR" > /etc/logrotate.d/nas-temps-reel
+  fi
+}
+
+# --------------------------- configuration ---------------------------
+rt_api_save() {  # nouveau|modif NOM DOSSIERS DESTINATION SUPPRESSION CORBEILLE EXCLUSIONS TYPES DELAI RATTRAPAGE ANOMALIE [MEMOIRE] [DEBIT]
+  local kind="$1"; shift
+  [ $# -ge 10 ] && [ $# -le 12 ] || die "usage : nas-debian temps-reel save <nouveau|modif> NOM DOSSIERS DESTINATION SUPPRESSION CORBEILLE EXCLUSIONS TYPES DELAI RATTRAPAGE ANOMALIE [MEMOIRE] [DEBIT]"
+  R_NAME="$1" R_DIRS="$2" R_DEST="$3" R_DEL="$4" R_RET="$5" R_EXCL="$6" R_TYPES="$7" R_DELAY="$8" R_CATCH="$9" R_ANOM="${10}" R_PERF="${11:-}" R_BW="${12:-}"
+  [[ "$R_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || die "nom invalide (lettres, chiffres, - et _)."
+  case "$kind" in
+    nouveau) rt_exists "$R_NAME" && die "une sauvegarde temps reel '$R_NAME' existe deja." ;;
+    modif)   rt_exists "$R_NAME" || die "sauvegarde temps reel '$R_NAME' introuvable." ;;
+    *)       die "type inconnu : $kind" ;;
+  esac
+  local s b all="" n=0
+  local -A vus=()
+  IFS=';' read -ra R_SRCS <<< "$R_DIRS"
+  for s in "${R_SRCS[@]}"; do
+    s="${s%/}"
+    [ -n "$s" ] || continue
+    [[ "$s" == /* && "$s" != *"|"* ]] || die "dossier invalide : $s"
+    [ -d "$s" ] || die "dossier introuvable : $s"
+    b="${s##*/}"; [ -n "${vus[$b]:-}" ] && die "deux dossiers surveilles portent le meme nom ($b) : renomme l'un d'eux."
+    vus[$b]=1; all="${all:+$all;}$s"; n=$((n + 1))
+  done
+  [ $n -gt 0 ] || die "choisis au moins un dossier a surveiller."
+  R_DIRS="$all"; IFS=';' read -ra R_SRCS <<< "$R_DIRS"
+  [[ "$R_DEST" =~ ^[A-Za-z0-9_-]+:[^|]*$ ]] || die "destination invalide (remote:chemin)."
+  [[ "${R_DEST#*:}" == *..* ]] && die "destination invalide."
+  [[ "$R_DEL" =~ ^(directe|corbeille|copie)$ ]] || die "suppression invalide (directe, corbeille ou copie)."
+  [[ "$R_RET" =~ ^[0-9]+$ ]] || die "nombre de jours de corbeille invalide."
+  [ "$R_DEL" = corbeille ] && [ "$R_RET" -eq 0 ] && die "corbeille : indique un nombre de jours (1 au minimum)."
+  [[ "$R_EXCL$R_TYPES" != *"|"* ]] || die "caractere | interdit dans les filtres."
+  [[ "$R_DELAY" =~ ^[0-9]+$ ]] && [ "$R_DELAY" -ge 1 ] && [ "$R_DELAY" -le 3600 ] || die "delai de regroupement invalide (1 a 3600 s)."
+  [[ " ${RT_CATCH_OK[*]} " == *" $R_CATCH "* ]] || die "rattrapage invalide (${RT_CATCH_OK[*]} minutes)."
+  [[ "$R_ANOM" =~ ^[0-9]+$ ]] || die "seuil d'anomalie invalide (nombre de fichiers, 0 = desactive)."
+  valid_perf "$R_PERF" || die "reglage memoire invalide."
+  [[ -z "$R_BW" || "$R_BW" =~ ^[0-9A-Za-z:.,\ -]+$ ]] || die "limite de debit invalide (ex. 5M)."
+  need_rclone
+  [ "${R_DEST%%:*}" = "$CRYPT" ] && ensure_crypt
+  rclone listremotes 2>/dev/null | grep -x "${R_DEST%%:*}:" >/dev/null || die "remote '${R_DEST%%:*}' introuvable (rclone listremotes)."
+  local o
+  for o in $(rt_names); do
+    [ "$o" = "$R_NAME" ] && continue
+    [ "$(grep -m1 "^$o|" "$RT_CONF" | cut -d'|' -f3)" = "$R_DEST" ] && jaune "Attention : la sauvegarde temps reel '$o' envoie deja vers $R_DEST."
+  done
+  rt_save_line; rt_gen_cron
+  logl "temps reel $R_NAME : configuration enregistree ($R_DIRS -> $R_DEST, $R_DEL)"
+  vert "Sauvegarde temps reel « $R_NAME » enregistree : ${R_DIRS//;/, } -> $R_DEST"
+  if [ "$kind" = nouveau ] || rt_active "$R_NAME"; then
+    rt_active "$R_NAME" && rt_stop "$R_NAME" garder-auto >/dev/null
+    rt_start "$R_NAME"
+  fi
+}
+
+rt_api_delete() {  # rt_api_delete <nom> [effacer-destination]
+  rt_get "$1" || die "sauvegarde temps reel '$1' introuvable."
+  rt_stop "$R_NAME" >/dev/null
+  local tmp; tmp=$(mktemp); grep -v "^$R_NAME|" "$RT_CONF" > "$tmp"; cat "$tmp" > "$RT_CONF"; rm -f "$tmp"
+  rt_gen_cron
+  if [ "${2:-}" = effacer-destination ]; then
+    need_rclone
+    local s; for s in "${R_SRCS[@]}"; do rclone purge "$(rt_dest_of "$s")" -q 2>/dev/null; done
+    rclone purge "$(rt_trash_root)" -q 2>/dev/null
+    vert "Fichiers effaces de la destination : $R_DEST"
+  else
+    jaune "Les fichiers deja envoyes sont conserves : $R_DEST"
+  fi
+  rm -f "$STATE_DIR/rt-$R_NAME".* "$STATE_DIR/alertes/rt-$R_NAME" "$STATE_DIR/alertes/rt-pause-$R_NAME" "$STATE_DIR/alertes/rt-service-$R_NAME"
+  logl "temps reel $R_NAME : supprimee"
+  vert "Sauvegarde temps reel « $R_NAME » supprimee."
+}
+
+# Reprise apres une pause : l'utilisateur confirme que les changements sont voulus.
+# Le rattrapage suivant n'applique pas le garde-fou (une fois) et la fenetre de
+# detection de la surveillance repart de zero ; ce rattrapage est lance tout de suite.
+rt_resume() {
+  rt_get "$1" || die "sauvegarde temps reel '$1' introuvable."
+  rt_paused || { vert "« $R_NAME » n'est pas en pause."; return 0; }
+  date +%s > "$STATE_DIR/rt-$R_NAME.reprise"
+  touch "$STATE_DIR/rt-$R_NAME.autorise"
+  rm -f "$STATE_DIR/rt-$R_NAME.pause"
+  rt_log "reprise demandee : l'etat actuel du dossier va etre repercute"
+  notify ok "rt-pause-$R_NAME" "Sauvegarde temps réel « $R_NAME »" "La sauvegarde a repris."
+  nohup setsid "$SELF" temps-reel rattrapage "$R_NAME" >/dev/null 2>&1 < /dev/null &
+  vert "Sauvegarde temps reel « $R_NAME » reprise : le rattrapage repercute maintenant l'etat actuel du dossier."
+}
+
+rt_list() {
+  local n
+  [ -n "$(rt_names)" ] || { jaune "Aucune sauvegarde temps reel."; return 0; }
+  for n in $(rt_names); do
+    rt_get "$n"
+    printf '%-14s %-8s %-10s %s -> %s\n' "$n" "$(rt_active "$n" && echo actif || echo arrete)" "$R_DEL" "${R_DIRS//;/, }" "$R_DEST"
+    rt_paused && echo "               EN PAUSE : $(cut -d'|' -f2- "$STATE_DIR/rt-$n.pause")"
+  done
+}
+
+temps_reel_main() {
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  mkdir -p "$CONF_DIR" "$STATE_DIR" "$RT_LOG_DIR"
+  case "${1:-liste}" in
+    liste)       rt_list ;;
+    save)        shift; rt_api_save "$@" ;;
+    supprimer)   [ -n "${2:-}" ] || die "usage : temps-reel supprimer <NOM> [effacer-destination]"; rt_api_delete "$2" "${3:-}" ;;
+    demarrer)    rt_start "${2:-}" ;;
+    arreter)     rt_stop "${2:-}" ;;
+    redemarrer)  rt_stop "${2:-}" garder-auto >/dev/null; rt_start "${2:-}" ;;
+    reprendre)   rt_resume "${2:-}" ;;
+    pause)       rt_get "${2:-}" || die "introuvable."; rt_pause "Mise en pause manuelle"; vert "En pause." ;;
+    rattrapage)  rt_catchup "${2:-}" ;;
+    envoi-complet) rt_catchup "${2:-}" initial ;;
+    surveiller)  rt_watch "${2:-}" ;;
+    gen-cron)    rt_gen_cron ;;
+    redemarrer-tout)
+      local n; for n in $(rt_names); do rt_active "$n" && { rt_stop "$n" garder-auto >/dev/null; rt_start "$n" >/dev/null; }; done; echo "Surveillances redemarrees." ;;
+    *) die "usage : nas-debian temps-reel liste | save ... | supprimer | demarrer | arreter | redemarrer | pause | reprendre | rattrapage | envoi-complet <NOM>" ;;
+  esac
+}
+
 # =========================== Installation / migration ================
 install_base() {
   mkdir -p "$CONF_DIR" "$STATE_DIR/alertes"
@@ -841,6 +1473,46 @@ install_base() {
 
 is_legacy() { [ -f "$BIN_DIR/$1" ] && [ ! -L "$BIN_DIR/$1" ]; }
 
+# Ancienne synchro des cameras (install-cam-sync.sh) -> CAM_SRC, CAM_DEST, CAM_MIN, CAM_NEW
+cam_legacy_read() {
+  CAM_SRC=$(grep -m1 '^SRC=' "$BIN_DIR/cam-sync.sh" | cut -d'"' -f2)
+  CAM_DEST=$(grep -m1 '^DEST=' "$BIN_DIR/cam-sync.sh" | cut -d'"' -f2); CAM_DEST="${CAM_DEST:-gcrypt:}"
+  CAM_MIN=$(grep -oE '^\*/[0-9]+' /etc/cron.d/cam-sync 2>/dev/null | tr -d '*/'); CAM_MIN="${CAM_MIN:-15}"
+  [[ " ${RT_CATCH_OK[*]} " == *" $CAM_MIN "* ]] || CAM_MIN=15
+  CAM_NEW=Cameras; local i=2
+  while rt_exists "$CAM_NEW"; do CAM_NEW="Cameras$i"; i=$((i + 1)); done
+}
+
+cam_legacy_migrate() {  # cam_legacy_migrate <dossier des anciens fichiers>
+  local dest="$1" p i f
+  cam_legacy_read
+  [ -n "$CAM_SRC" ] || { rouge "Dossier des cameras introuvable dans cam-sync.sh : synchro des cameras laissee en place."; return 1; }
+  # attendre la fin de l'envoi d'une video (10 min au plus) et d'un rattrapage en cours
+  for i in $(seq 600); do
+    p=""
+    for f in $(cat /sys/fs/cgroup/system.slice/cam-sync.service/cgroup.procs 2>/dev/null); do
+      [ "$(cat "/proc/$f/comm" 2>/dev/null)" = rclone ] && p=1
+    done
+    [ -z "$p" ] && break
+    [ "$i" = 1 ] && jaune "Envoi d'une video en cours : attente de la fin..."
+    sleep 1
+  done
+  flock -w 900 /run/cam-sync-full.lock true 2>/dev/null
+  systemctl disable --now cam-sync >/dev/null 2>&1
+  mkdir -p "$dest"
+  for f in "$BIN_DIR/cam-sync.sh" "$BIN_DIR/cam-sync-catchup.sh" /etc/systemd/system/cam-sync.service /etc/cron.d/cam-sync /etc/logrotate.d/cam-sync; do
+    [ -e "$f" ] && mv -f "$f" "$dest/"
+  done
+  has_systemd && systemctl daemon-reload
+  R_NAME="$CAM_NEW" R_DIRS="${CAM_SRC%/}" R_DEST="$CAM_DEST" R_DEL=directe R_RET=0 R_EXCL="" R_TYPES="" R_DELAY=5 R_CATCH="$CAM_MIN" R_ANOM=0 R_PERF="" R_BW=""
+  R_SRCS=("$R_DIRS")
+  rt_save_line; rt_gen_cron
+  cat "$STATE_DIR/cam-transferts.log.1" "$STATE_DIR/cam-transferts.log" 2>/dev/null >> "$STATE_DIR/rt-$CAM_NEW.transferts.log"
+  agent_conf_set CAM_JOB "$CAM_NEW"
+  vert "OK : cameras -> sauvegarde temps reel « $CAM_NEW »"
+  rt_start "$CAM_NEW" || true
+}
+
 migrer() {  # migrer <simulation|appliquer>
   local mode="${1:-simulation}" n todo=0 dest
   [ -x "$SELF" ] || die "installe d'abord nas-debian dans $SELF."
@@ -856,7 +1528,11 @@ migrer() {  # migrer <simulation|appliquer>
   [ -f "$JOBS" ] && echo "- sauvegardes programmees conservees : $(grep -cvE '^#|^$' "$JOBS") (reglages et historique inchanges)"
   [ -f "$NOTIFY_CONF" ] && echo "- alertes Home Assistant conservees ($(grep -m1 '^HA_URL=' "$NOTIFY_CONF" | cut -d'"' -f2))"
   [ -f /root/.config/mosquitto_pub ] && echo "- connexion MQTT conservee"
-  [ -f /usr/local/bin/cam-sync.sh ] && echo "- synchro des cameras : laissee en place (reprise par les sauvegardes temps reel dans une prochaine version)"
+  if [ -f "$BIN_DIR/cam-sync.sh" ]; then
+    todo=1; cam_legacy_read
+    echo "- synchro des cameras (cam-sync) : reprise comme sauvegarde temps reel « $CAM_NEW » ($CAM_SRC -> $CAM_DEST,"
+    echo "  suppressions directes comme avant, rattrapage toutes les $CAM_MIN min, historique des envois conserve)"
+  fi
   if [ $todo = 0 ]; then vert "Rien a migrer : l'installation utilise deja nas-debian."; return 0; fi
   [ "$mode" = appliquer ] || { echo; jaune "Simulation : rien n'a ete modifie."; return 0; }
 
@@ -871,6 +1547,7 @@ migrer() {  # migrer <simulation|appliquer>
   done
   install_base >/dev/null
   gen_cron
+  [ -f "$BIN_DIR/cam-sync.sh" ] && cam_legacy_migrate "$dest"
   logl "migration vers nas-debian $SCRIPT_VERSION (anciens scripts dans $dest)"
   vert "Migration terminee. Anciens scripts gardes dans $dest"
 }
@@ -1320,8 +1997,7 @@ run_job() {
     [ "$RCL_MAX" -gt "$ram" ] && ram=$RCL_MAX
   fi
   if [ "$J_MODE" = sync ] && [ "${J_RET:-0}" -gt 0 ] && [ ! -f "$STOPF" ] && [ ! -f "$jstop" ]; then
-    rclone delete "$trash" --min-age "${J_RET}d" -q 2>/dev/null
-    rclone rmdirs "$trash" --leave-root -q 2>/dev/null
+    trash_purge "$trash" "$J_RET"
   fi
 
   rm -f "$runf"; kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
@@ -1722,8 +2398,8 @@ reglages() {  # reglages voir | ram <profil> [Mo] [transferts] [verifs] [tampon]
       if [ -n "$mo" ] && [ "$mo" -gt $(( tot * 3 / 4 )) ]; then
         jaune "Attention : $mo Mo, c'est plus des 3/4 de la memoire de la machine ($tot Mo)."
       fi
-      mkdir -p "$CONF_DIR"
-      printf 'RAM_PROFIL=%s\nRAM_MO=%s\nTRANSFERTS=%s\nVERIFS=%s\nTAMPON=%s\n' "$p" "$mo" "$t" "$c" "$b" > "$AGENT_CONF"
+      agent_conf_set RAM_PROFIL "$p"; agent_conf_set RAM_MO "$mo"; agent_conf_set TRANSFERTS "$t"
+      agent_conf_set VERIFS "$c"; agent_conf_set TAMPON "$b"
       perf_load
       vert "Memoire de rclone : profil $PERF_PROFIL, limite $PERF_MO Mo (${PERF_FLAGS[*]})." ;;
     *) die "usage : nas-debian reglages voir | ram <profil> [Mo] [transferts] [verifs] [tampon]" ;;
@@ -1779,6 +2455,7 @@ agent_main() {
     notify)    shift; notify_cmd "$@" ;;
     check)     check_cmd ;;
     ha-status) ha_status_cmd ;;
+    temps-reel) shift; temps_reel_main "$@" ;;
     *)         backup_main "$@" ;;
   esac
 }

@@ -15,7 +15,6 @@ on:
       - "nas-manager/CHANGELOG.md"
       - "nas-debian.sh"
       - "nas-synology.sh"
-      - "install-cam-sync.sh"
       - "versions-scripts.json"
       - ".github/workflows/nas-manager.yml"
   pull_request:
@@ -23,7 +22,6 @@ on:
       - "nas-manager/**"
       - "nas-debian.sh"
       - "nas-synology.sh"
-      - "install-cam-sync.sh"
       - "versions-scripts.json"
       - "maj-versions-scripts.py"
       - "ancien/**"
@@ -47,7 +45,7 @@ jobs:
         with:
           workspaces: nas-manager
       - name: Dependances
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync inotify-tools shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync inotify-tools shellcheck rclone
       - name: Faux OMV et faux Synology
         run: sudo bash tests/faux-nas.sh "$RUNNER_TEMP/app"
       - name: Tests
@@ -56,10 +54,12 @@ jobs:
           NAS_MANAGER_LIVE_TEST: "1"
           NAS_MANAGER_TEST_SUDO: Secret123
         run: cargo test --locked -- --test-threads=1
+      - name: Moteur des sauvegardes temps reel (vrai rclone, inotify)
+        run: sudo bash tests/temps-reel.sh /usr/bin/rclone
       - name: Syntaxe des scripts
         working-directory: .
         run: |
-          for f in nas-debian.sh nas-synology.sh install-cam-sync.sh nas-manager/tests/faux-nas.sh; do bash -n "$f"; done
+          for f in nas-debian.sh nas-synology.sh nas-manager/tests/faux-nas.sh nas-manager/tests/temps-reel.sh; do bash -n "$f"; done
           shellcheck -S warning -e SC2034,SC1090,SC2155,SC2015 nas-debian.sh nas-synology.sh
       - name: Versions des scripts (versions-scripts.json a jour)
         working-directory: .

@@ -47,6 +47,13 @@ pub fn summary(app: &App) -> (Level, String) {
         if s.cameras.installe && !s.cameras.actif {
             problems.push(tr("caméras arrêtées").into());
         }
+        for j in &s.temps_reel {
+            if j.pause.is_some() {
+                problems.push(tf("temps réel {0} en pause", &[&j.nom]));
+            } else if !j.actif && j.demarrage_auto {
+                problems.push(tf("temps réel {0} arrêté", &[&j.nom]));
+            }
+        }
         if !s.alertes.is_empty() {
             problems.push(tf("{0} alerte(s)", &[&(s.alertes.len())]));
         }
@@ -161,6 +168,19 @@ pub fn diff_omv(prev: &OmvStatus, new: &OmvStatus) -> Vec<(String, String)> {
     }
     if prev.cameras.installe && !prev.cameras.actif && new.cameras.actif {
         ev.push((tr("📹 Caméras : synchro relancée").into(), String::new()));
+    }
+    for j in &new.temps_reel {
+        let Some(p) = prev.temps_reel.iter().find(|p| p.nom == j.nom) else { continue };
+        if p.pause.is_none() {
+            if let Some(z) = &j.pause {
+                ev.push((tf("⏸ Temps réel « {0} » en pause", &[&j.nom]), z.raison.clone()));
+            }
+        } else if j.pause.is_none() {
+            ev.push((tf("▶ Temps réel « {0} » repris", &[&j.nom]), String::new()));
+        }
+        if p.actif && !j.actif && j.demarrage_auto && j.pause.is_none() {
+            ev.push((tf("❌ Temps réel « {0} » arrêté", &[&j.nom]), tr("La surveillance ne tourne plus.").into()));
+        }
     }
     if let (Some(p), Some(n)) = (&prev.restauration, &new.restauration) {
         if p.etat == "en_cours" && n.etat != "en_cours" {

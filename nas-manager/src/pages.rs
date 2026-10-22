@@ -32,6 +32,22 @@ pub fn card_pub<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::U
     card(ui, title, add)
 }
 
+pub fn page_title_pub(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    page_title(ui, title, subtitle)
+}
+
+pub fn host_banner_pub(app: &mut App, ui: &mut egui::Ui, h: HostId) -> bool {
+    host_banner(app, ui, h)
+}
+
+pub fn badge_pub(ui: &mut egui::Ui, text: &str, col: Color32) {
+    badge(ui, text, col)
+}
+
+pub fn dot_label_pub(ui: &mut egui::Ui, col: Color32, text: impl Into<RichText>) -> egui::Response {
+    dot_label(ui, col, text)
+}
+
 pub fn info_banner(ui: &mut egui::Ui, text: &str) {
     banner(ui, INFO, text);
 }
@@ -373,46 +389,61 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
         .map(|s| s.sauvegardes.iter().filter(|j| !j.en_cours && j.dernier_etat.as_deref() == Some("ECHEC")).count())
         .unwrap_or(0);
     let alerts = omv.as_ref().map(|s| s.alertes.len()).unwrap_or(0);
-    let cam_bad = omv.as_ref().map(|s| s.cameras.installe && !s.cameras.actif).unwrap_or(false);
+    let rt_badge = omv.as_ref().and_then(crate::realtime::nav_badge);
     let copy_run = syno.as_ref().map(|s| s.copie.en_cours).unwrap_or(false);
     let mig_run = syno.as_ref().map(|s| s.migration.en_cours).unwrap_or(false);
     let mig_q = syno.as_ref().map(|s| s.migration.file.len()).unwrap_or(0);
 
-    egui::Panel::left("nav").exact_size(220.0).show(ui, |ui| {
+    let items: Vec<(Page, &str, Option<(String, Color32)>)> = vec![
+        (Page::Dashboard, tr("\u{E2C2}  Tableau de bord"), None),
+        (
+            Page::Backups,
+            tr("\u{E248}  Sauvegardes programmées"),
+            if running_jobs > 0 {
+                Some((tf("{0} en cours", &[&running_jobs]), INFO))
+            } else if failed_jobs > 0 {
+                Some((tf("{0} échec", &[&failed_jobs]), ERR))
+            } else {
+                None
+            },
+        ),
+        (Page::Realtime, tr("\u{E094}  Sauvegardes temps réel"), rt_badge),
+        (Page::History, tr("\u{E154}  Historique"), None),
+        (Page::Alerts, tr("\u{E0CE}  Alertes"), if alerts > 0 { Some((alerts.to_string(), ERR)) } else { None }),
+        (Page::Copy, tr("\u{E390}  Copie → OMV"), if copy_run { Some((tr("en cours").into(), INFO)) } else { None }),
+        (
+            Page::Migration,
+            tr("\u{E1AA}  Migration oCIS"),
+            if mig_run {
+                Some((tr("en cours").into(), INFO))
+            } else if mig_q > 0 {
+                Some((tf("{0} en file", &[&mig_q]), WARN))
+            } else {
+                None
+            },
+        ),
+        (Page::Logs, tr("\u{EB7A}  Journaux"), None),
+        (Page::Install, tr("\u{ECA0}  Installation"), None),
+        (Page::Help, tr("\u{E63A}  Aide"), None),
+        (Page::Settings, tr("\u{E270}  Paramètres"), None),
+    ];
+    // largeur du menu : le libelle le plus long (et sa pastille) tient sans etre coupe,
+    // quelle que soit la langue ; 220 au minimum, 340 au maximum
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    let need = ui.ctx().fonts_mut(|f| {
+        items
+            .iter()
+            .map(|(_, l, b)| {
+                let w = f.layout_no_wrap((*l).to_string(), egui::FontId::proportional(14.5), Color32::WHITE).size().x;
+                let bw = b.as_ref().map(|(t, _)| f.layout_no_wrap(t.clone(), small.clone(), Color32::WHITE).size().x + 14.0).unwrap_or(0.0);
+                w + bw
+            })
+            .fold(0.0_f32, f32::max)
+    });
+    let width = (need + 40.0).clamp(220.0, 340.0);
+
+    egui::Panel::left("nav").exact_size(width).show(ui, |ui| {
         ui.add_space(10.0);
-        let items: Vec<(Page, &str, Option<(String, Color32)>)> = vec![
-            (Page::Dashboard, tr("\u{E2C2}  Tableau de bord"), None),
-            (
-                Page::Backups,
-                tr("\u{E248}  Sauvegardes"),
-                if running_jobs > 0 {
-                    Some((tf("{0} en cours", &[&running_jobs]), INFO))
-                } else if failed_jobs > 0 {
-                    Some((tf("{0} échec", &[&failed_jobs]), ERR))
-                } else {
-                    None
-                },
-            ),
-            (Page::History, tr("\u{E154}  Historique"), None),
-            (Page::Cameras, tr("\u{E4DA}  Caméras"), if cam_bad { Some((tr("arrêtée").into(), ERR)) } else { None }),
-            (Page::Alerts, tr("\u{E0CE}  Alertes"), if alerts > 0 { Some((alerts.to_string(), ERR)) } else { None }),
-            (Page::Copy, tr("\u{E390}  Copie → OMV"), if copy_run { Some((tr("en cours").into(), INFO)) } else { None }),
-            (
-                Page::Migration,
-                tr("\u{E1AA}  Migration oCIS"),
-                if mig_run {
-                    Some((tr("en cours").into(), INFO))
-                } else if mig_q > 0 {
-                    Some((tf("{0} en file", &[&mig_q]), WARN))
-                } else {
-                    None
-                },
-            ),
-            (Page::Logs, tr("\u{EB7A}  Journaux"), None),
-            (Page::Install, tr("\u{ECA0}  Installation"), None),
-            (Page::Help, tr("\u{E63A}  Aide"), None),
-            (Page::Settings, tr("\u{E270}  Paramètres"), None),
-        ];
         for (p, label, b) in items {
             let sel = app.page == p;
             let mut btn = egui::Button::selectable(sel, RichText::new(label).size(14.5))
@@ -448,7 +479,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
         banner(ui, ERR, &tf("OMV : {0} (dernières informations affichées)", &[&e]));
     }
     if let Some(s) = &omv {
-        let uses_crypt = s.sauvegardes.iter().any(|j| j.chiffre) || s.cameras.installe;
+        let uses_crypt = s.sauvegardes.iter().any(|j| j.chiffre) || s.cameras.installe || s.temps_reel.iter().any(|j| j.chiffre);
         if uses_crypt && !app.settings.passwords_noted {
             ui.horizontal(|ui| {
                 banner(ui, WARN, tr("\u{E2D6} As-tu noté les mots de passe de chiffrement hors du NAS ? Sans eux, les sauvegardes chiffrées sont illisibles si le NAS tombe en panne."));
@@ -473,7 +504,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 
         // ---- Sauvegardes
         let k = next(cols);
-        card(&mut cols[k], tr("\u{E248} Sauvegardes Drive"), |ui| {
+        card(&mut cols[k], tr("\u{E248} Sauvegardes programmées"), |ui| {
             match &omv {
                 None => {
                     ui.label(RichText::new("—").weak());
@@ -513,46 +544,17 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             }
-            if ui.link(tr("Gérer les sauvegardes →")).clicked() {
+            if ui.link(tr("Gérer les sauvegardes programmées →")).clicked() {
                 goto = Some(Page::Backups);
             }
         });
         cols[k].add_space(10.0);
 
-        // ---- Cameras
+        // ---- Sauvegardes temps reel
         let k = next(cols);
-        card(&mut cols[k], tr("\u{E4DA} Caméras"), |ui| {
-            match omv.as_ref().map(|s| &s.cameras) {
-                None => {
-                    ui.label(RichText::new("—").weak());
-                }
-                Some(c) if !c.installe => {
-                    ui.label(RichText::new(tr("Synchro des caméras non installée.")).weak());
-                }
-                Some(c) => {
-                    dot_label(
-                        ui,
-                        if c.actif { OK } else { ERR },
-                        if c.actif { tr("Synchro temps réel active") } else { tr("Synchro ARRÊTÉE") },
-                    );
-                    match c.dernier_envoi.as_deref().and_then(fmt::parse_rclone_ts) {
-                        Some(t) => ui.label(tf("Dernière vidéo envoyée {0}", &[&(fmt::ago(t, now))])),
-                        None => ui.label(RichText::new(tr("Aucun envoi récent dans le journal")).weak()),
-                    };
-                    ui.label(tf("{0} envoi(s) aujourd'hui", &[&c.envois_aujourdhui]));
-                    if c.erreurs_aujourdhui > 0 {
-                        ui.colored_label(ERR, tf("{0} erreur(s) aujourd'hui", &[&c.erreurs_aujourdhui]));
-                    }
-                    if c.rattrapage_en_cours {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(tr("Rattrapage en cours"));
-                        });
-                    }
-                }
-            }
-            if ui.link(tr("Voir les caméras →")).clicked() {
-                goto = Some(Page::Cameras);
+        card(&mut cols[k], tr("\u{E094} Sauvegardes temps réel"), |ui| {
+            if crate::realtime::dashboard_card(ui, omv.as_ref(), now) {
+                goto = Some(Page::Realtime);
             }
         });
         cols[k].add_space(10.0);
@@ -686,7 +688,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 // =====================================================================
 
 pub fn backups(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, tr("Sauvegardes vers Google Drive"), tr("Script nas-debian sur l'OMV / Debian"));
+    page_title(ui, tr("Sauvegardes programmées"), tr("Sauvegardes vers Google Drive à heure fixe ou à la demande"));
     if !host_banner(app, ui, HostId::Omv) {
         return;
     }
@@ -1426,20 +1428,14 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
 //  Cameras
 // =====================================================================
 
-pub fn cameras(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, tr("Caméras"), tr("Synchro temps réel chiffrée du dossier des caméras vers Google Drive"));
-    if !host_banner(app, ui, HostId::Omv) {
-        return;
-    }
-    let s = app.omv.status.clone().unwrap();
+/// Ancienne synchro des cameras (install-cam-sync.sh), tant qu'elle n'est pas migree
+pub fn cameras_legacy(app: &mut App, ui: &mut egui::Ui, s: &OmvStatus) {
     let c = s.cameras.clone();
-    if !c.installe {
-        banner(ui, IDLE, tr("La synchro des caméras n'est pas installée sur l'OMV (script install-cam-sync.sh)."));
-        return;
-    }
+    ui.add_space(4.0);
+    ui.label(RichText::new(tr("Ancienne synchro des caméras (cam-sync)")).strong().size(16.0));
     let now = s.maintenant.max(fmt::now());
     ui.columns(3, |cols| {
-        card(&mut cols[0], tr("Service temps réel"), |ui| {
+        card(&mut cols[0], tr("Service cam-sync"), |ui| {
             dot_label(ui, if c.actif { OK } else { ERR }, RichText::new(if c.actif { tr("Actif") } else { tr("Arrêté") }).strong());
             ui.label(RichText::new(if c.demarrage_auto { tr("Démarre avec l'OMV") } else { tr("Ne démarre PAS avec l'OMV") }).small().weak());
             if c.actif && !c.actif_depuis.is_empty() {
@@ -1609,6 +1605,15 @@ pub fn alert_label(tag: &str) -> String {
     }
     if let Some(n) = tag.strip_prefix("retard-") {
         return tf("Sauvegarde « {0} » en retard", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("rt-pause-") {
+        return tf("Temps réel « {0} » en pause (anomalie)", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("rt-service-") {
+        return tf("Temps réel « {0} » arrêté", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("rt-") {
+        return tf("Temps réel « {0} » : envoi en échec", &[&n]);
     }
     match tag {
         "gdrive" => tr("Google Drive inaccessible").into(),
@@ -2463,7 +2468,14 @@ pub fn log_sources(app: &App) -> Vec<LogSource> {
             });
         }
     }
-    v.push(LogSource { label: tr("Caméras (cam-sync.log)").into(), host: HostId::Omv, path: "/var/log/cam-sync.log".into() });
+    if let Some(s) = &app.omv.status {
+        for j in &s.temps_reel {
+            v.push(LogSource { label: tf("Temps réel « {0} »", &[&j.nom]), host: HostId::Omv, path: format!("/var/log/nas-temps-reel/{}.log", j.nom) });
+        }
+        if s.cameras.installe {
+            v.push(LogSource { label: tr("Caméras (cam-sync.log)").into(), host: HostId::Omv, path: "/var/log/cam-sync.log".into() });
+        }
+    }
     v.push(LogSource { label: tr("Restauration").into(), host: HostId::Omv, path: "/var/lib/nas-backup/restauration.log".into() });
     if app.settings.syno.is_set() {
         v.push(LogSource { label: tr("Copie → OMV : progression").into(), host: HostId::Syno, path: "/root/.copie-omv/progression.log".into() });
@@ -2606,7 +2618,7 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
 
     let mut save = false;
     ui.columns(2, |cols| {
-        card(&mut cols[0], tr("2. OMV / Debian (sauvegardes, caméras, alertes)"), |ui| {
+        card(&mut cols[0], tr("2. OMV / Debian (sauvegardes programmées et temps réel, alertes)"), |ui| {
             host_settings(ui, "omvset", &mut app.edit.omv, tr("Si l'utilisateur n'est pas root"));
         });
         card(&mut cols[1], tr("3. Synology (copie vers l'OMV, migration oCIS)"), |ui| {

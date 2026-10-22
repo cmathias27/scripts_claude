@@ -135,6 +135,10 @@ DEPOT="$(cd "$(dirname "$0")/../.." && pwd)"
 rm -f /usr/local/bin/nas-debian /usr/local/bin/nas-debian.bak /usr/local/bin/nas-synology /usr/local/bin/nas-synology.bak
 rm -f /usr/local/bin/nas-backup /usr/local/bin/nas-ha-status /usr/local/bin/copie-omv /usr/local/bin/migre-drive-ocis
 rm -rf /root/.nas-manager/ancien /root/.nas-synology /etc/nas-backup/agent.conf
+# sauvegardes temps reel laissees par un test precedent
+command -v systemctl >/dev/null && systemctl list-units --plain --no-legend 'nas-temps-reel@*' 2>/dev/null | awk '{print $1}' | xargs -r systemctl disable --now 2>/dev/null || true
+pkill -f '/usr/local/bin/nas-debian temps-reel surveiller' 2>/dev/null || true
+rm -f /etc/nas-backup/temps-reel.conf /etc/cron.d/nas-temps-reel /var/lib/nas-backup/rt-* /var/log/nas-temps-reel/*.log
 install -m 755 "$DEPOT/ancien/nas-backup.sh" /usr/local/bin/nas-backup
 sed 's/^OMV_HOST="[^"]*"/OMV_HOST="127.0.0.1"/' "$DEPOT/ancien/copie-omv.sh" > /usr/local/bin/copie-omv
 install -m 755 "$DEPOT/ancien/migre-drive-ocis.sh" /usr/local/bin/migre-drive-ocis

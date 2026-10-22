@@ -87,7 +87,7 @@ Une version testable par étape (1.1, 1.2…).
    actuelles · bouton « Installer / Mettre à jour » depuis GitHub (vérification automatique et forcée)
    · installation automatique de tous les outils · entretien des outils et connexion aux clouds depuis
    l'application · contrôle de la RAM attribuée à rclone.
-2. **Sauvegardes programmées / temps réel** : séparation des deux types et renommage des pages ·
+2. **Sauvegardes programmées / temps réel** *(1.2.0)* : séparation des deux types et renommage des pages ·
    temps réel sur n'importe quel(s) dossier(s) · modes de suppression et réglages fins du temps réel ·
    détection d'anomalie.
 3. **Destinations et sécurité des données** : autres destinations · multi-destinations chiffrées ·
@@ -102,14 +102,14 @@ Une version testable par étape (1.1, 1.2…).
    Assistant · page d'aide avec exemples de configuration.
 
 #### Détail
-- [ ] **Distinguer deux types de sauvegardes** dans l'application :
+- [x] **Distinguer deux types de sauvegardes** dans l'application :
   - **Sauvegardes programmées** : celles d'aujourd'hui (`nas-backup`, lancées à horaire fixe ou à la main).
   - **Sauvegardes temps réel** : envoi au fil de l'eau dès qu'un fichier est créé, modifié ou supprimé
     (fonctionnement actuel de la synchro caméras : `inotifywait` + rattrapage périodique).
-- [ ] **Ouvrir le temps réel à n'importe quel dossier** : la synchro caméras devient un cas parmi d'autres.
+- [x] **Ouvrir le temps réel à n'importe quel dossier** : la synchro caméras devient un cas parmi d'autres.
   - Choisir **un ou plusieurs dossiers à surveiller**.
   - La synchro caméras existante est reprise comme une sauvegarde temps réel parmi les autres.
-- [ ] **Renommer les pages en conséquence** (menu, raccourcis, aide, traduction anglaise) :
+- [x] **Renommer les pages en conséquence** (menu, raccourcis, aide, traduction anglaise) :
   - « Caméras » → **« Sauvegardes temps réel »** (*Real-time backups*).
   - « Sauvegardes » → **« Sauvegardes programmées »** (*Scheduled backups*).
 - [x] **Installation automatique de TOUS les outils nécessaires** : l'application détecte ce qui manque
@@ -164,11 +164,11 @@ Une version testable par étape (1.1, 1.2…).
   - Fonctionne dans un terminal simple (80 colonnes, sans souris, couleurs facultatives).
 
 #### Sécurité des données
-- [ ] **Suppressions en temps réel au choix**, réglable par sauvegarde :
+- [x] **Suppressions en temps réel au choix**, réglable par sauvegarde :
   - **suppression directe** (fonctionnement actuel des caméras) ;
   - **corbeille de X jours** sur la destination, comme les sauvegardes programmées ;
   - **copie seule** : rien n'est jamais supprimé sur la destination.
-- [ ] **Détection d'anomalie** : si beaucoup de fichiers sont supprimés ou modifiés en peu de temps
+- [x] **Détection d'anomalie** : si beaucoup de fichiers sont supprimés ou modifiés en peu de temps
       (seuil réglable), la synchro se met en pause et une alerte critique est envoyée, au lieu de tout
       répercuter (protection contre les rançongiciels et les fausses manipulations). Reprise manuelle.
 - [ ] **Sauvegarde de ce qui permet de restaurer** : `rclone.conf`, mots de passe de chiffrement,
@@ -257,7 +257,7 @@ Une version testable par étape (1.1, 1.2…).
       le débit réel de la connexion.
 - [ ] **Détection des doublons** sur le NAS (photos notamment), pour libérer de la place et
       réduire le volume envoyé. Suppression uniquement après confirmation.
-- [ ] **Réglages fins du temps réel** : exclusions par dossier, filtre par type de fichier,
+- [x] **Réglages fins du temps réel** : exclusions par dossier, filtre par type de fichier,
       regroupement des envois d'un fichier modifié en boucle (document en cours d'édition).
 - [ ] **Actions depuis Home Assistant** : boutons MQTT pour lancer une sauvegarde, mettre en pause
       ou reprendre le temps réel (utilisables dans des automatisations).

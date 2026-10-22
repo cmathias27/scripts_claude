@@ -297,7 +297,19 @@ pub fn diagnostic_report(app: &App) -> String {
         for j in &s.sauvegardes {
             r.push_str(&tf("  · {0} : {1} · horaire {2} · dernière exécution {3}\n", &[&j.nom, &(j.dernier_etat.as_deref().unwrap_or("jamais")), &j.horaire, &(j.derniere_execution.as_deref().unwrap_or("-"))]));
         }
-        r.push_str(&tf("Caméras : installé {0} · actif {1} · dernier envoi {2}\n", &[&s.cameras.installe, &s.cameras.actif, &(s.cameras.dernier_envoi.as_deref().unwrap_or("-"))]));
+        if s.cameras.installe {
+            r.push_str(&tf("Caméras : installé {0} · actif {1} · dernier envoi {2}\n", &[&s.cameras.installe, &s.cameras.actif, &(s.cameras.dernier_envoi.as_deref().unwrap_or("-"))]));
+        }
+        for j in &s.temps_reel {
+            r.push_str(&format!(
+                "  · temps réel {} : {} · {} · {} envoi(s) aujourd'hui{}\n",
+                j.nom,
+                crate::realtime::state(j).1,
+                j.suppression,
+                j.envois_aujourdhui,
+                j.pause.as_ref().map(|p| format!(" · PAUSE : {}", p.raison)).unwrap_or_default()
+            ));
+        }
     }
     if let Some(s) = &app.syno.status {
         let ag = s.agent.as_ref().map(|a| format!("{} {} (API {})", a.script, a.version, a.api)).unwrap_or_else(|| "absent".into());
@@ -378,8 +390,8 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     let pages = [
         Page::Dashboard,
         Page::Backups,
+        Page::Realtime,
         Page::History,
-        Page::Cameras,
         Page::Alerts,
         Page::Copy,
         Page::Migration,
