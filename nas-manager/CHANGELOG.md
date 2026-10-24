@@ -1,5 +1,28 @@
 # Journal des modifications
 
+## 1.2.1
+
+Migration Drive → oCIS : un suivi qui ne prête plus à confusion (script nas-synology 2.1.0).
+
+### Avancement
+- **Calculé sur la vraie taille de la source** : au début de chaque migration, la source est mesurée avec les mêmes exclusions que rclone (nombre de fichiers et taille). La barre affiche « 431 176 / 452 310 fichiers » au lieu du pourcentage de rclone, dont le total grossit tant qu'il parcourt le dossier.
+- **Reste estimé** sur les 5 dernières minutes, en fichiers et en débit (le plus long des deux), au lieu de l'ETA de rclone qui sautait de 2 h à 6 h d'une seconde à l'autre avec les petits fichiers.
+- Données envoyées et taille de la source, débit, fichiers par minute.
+
+### Signalements
+- « rclone parcourt encore la source » tant que son total grossit.
+- « Au moins X renvoyés » quand rclone a envoyé plus que la taille de la source (nouveaux essais) : c'est ce qui faisait dépasser la taille du dossier d'origine.
+- Nouveaux essais de rclone et fichiers en erreur, avec leur liste dans un fichier à part (erreurs-<libellé>.txt).
+
+### Bilan de fin d'étape
+- Fichiers et taille sur le Synology et dans oCIS, comptés de la même façon : identique, fichiers manquants (avec alerte Home Assistant) ou fichiers en plus déjà présents dans la destination.
+- Nouveaux essais, fichiers en erreur, reprises automatiques et durée. Le résumé apparaît aussi dans l'historique.
+
+### Journal
+- Le journal de la page Migration ne montre plus que les événements (étapes, erreurs, nouveaux essais, bilan) : l'avancement est déjà dans la barre.
+- rclone écrit ses statistiques toutes les 10 s au lieu de 2 s (journal 5 fois plus léger).
+- S'applique aux migrations lancées après la mise à jour du script ; une migration déjà en cours garde l'ancien affichage.
+
 ## 1.2.0
 
 Étape 2 de la feuille de route : sauvegardes programmées et sauvegardes temps réel.

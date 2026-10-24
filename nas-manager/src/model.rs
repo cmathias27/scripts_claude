@@ -363,6 +363,28 @@ pub struct Etape {
     pub ligne: String,
     pub pct: Option<i64>,
     pub ram_mo: Option<i64>,
+    pub avancement: Option<Avancement>,
+}
+
+/// Avancement detaille d'un transfert (script 2.1+), par rapport a la taille reelle de la source
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Avancement {
+    pub pct: Option<i64>,
+    pub fichiers: u64,
+    pub ref_fichiers: Option<u64>,
+    pub ref_octets: Option<u64>,
+    pub envoye: u64,
+    pub total_rclone: u64,
+    /// le total annonce par rclone grossit encore (parcours de la source en cours)
+    pub provisoire: bool,
+    /// octets envoyes au-dela de la taille de la source (nouveaux essais), au moins
+    pub surplus: u64,
+    pub vitesse: Option<u64>,
+    pub fich_min: Option<u64>,
+    pub eta: Option<i64>,
+    pub essais: u64,
+    pub erreurs: u64,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]

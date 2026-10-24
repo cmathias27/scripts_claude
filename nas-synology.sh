@@ -25,7 +25,7 @@
 # =====================================================================
 set -o pipefail
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 API_VERSION=3
 
 # --------------------------- Reglages --------------------------------
@@ -848,19 +848,259 @@ mg_start() {
 # Lance rclone en arriere-plan, releve sa memoire (Mo) toutes les 3 s, renvoie son code.
 # La sortie d'erreur (traces de plantage, parfois enormes) va dans un fichier a part ;
 # seules les premieres lignes sont recopiees dans le journal.
+# Avec MG_SUIVI="<etape> <position du journal au debut de l'etape> <libelle>", rclone ouvre
+# en plus son controle a distance (127.0.0.1, port libre, mot de passe aleatoire) et
+# mg_monitor en tire l'avancement detaille (fichier avancement).
 run_rclone() {
-  local pid rss max=0 rc
-  GOGC=50 GOMEMLIMIT="$MEMLIM" rclone "$@" < /dev/null 2>"$MG_STATE/rclone-err.log" &
+  local pid rss max=0 rc mon="" port="" pw=""
+  local -a rcopt=()
+  if [ -n "${MG_SUIVI:-}" ] && command -v python3 >/dev/null 2>&1; then
+    port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])' 2>/dev/null)
+    pw=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    [ -n "$port" ] && [ -n "$pw" ] && rcopt=(--rc --rc-addr "127.0.0.1:$port")
+  fi
+  # identifiants du controle a distance par l'environnement (invisibles dans « ps »)
+  RCLONE_RC_USER=rc RCLONE_RC_PASS="$pw" GOGC=50 GOMEMLIMIT="$MEMLIM" \
+    rclone "$@" "${rcopt[@]}" < /dev/null 2>"$MG_STATE/rclone-err.log" &
   pid=$!
+  if [ ${#rcopt[@]} -gt 0 ]; then
+    # shellcheck disable=SC2086
+    MG_RC_PASS="$pw" mg_monitor "$pid" "$port" $MG_SUIVI &
+    mon=$!
+  fi
   while kill -0 "$pid" 2>/dev/null && ! grep -q '^State:.*Z' "/proc/$pid/status" 2>/dev/null; do
     rss=$(awk '/^VmRSS:/{print int($2/1024)}' "/proc/$pid/status" 2>/dev/null)
     if [ -n "$rss" ]; then [ "$rss" -gt "$max" ] && max=$rss; echo "$rss $max" > "$MG_STATE/rss"; fi
     sleep 3
   done
   wait "$pid"; rc=$?
+  [ -n "$mon" ] && wait "$mon" 2>/dev/null   # derniere mise a jour de l'avancement
   RSS_MAX=$max; rm -f "$MG_STATE/rss"
   [ -s "$MG_STATE/rclone-err.log" ] && head -n 15 "$MG_STATE/rclone-err.log" | sed 's/^/    stderr: /' >> "$MG_LOGF"
   return $rc
+}
+
+hdur() {  # duree lisible : hdur <secondes>
+  local s=${1:-0}
+  if [ "$s" -ge 86400 ]; then printf '%d j %d h' $((s/86400)) $((s%86400/3600))
+  elif [ "$s" -ge 3600 ]; then printf '%d h %02d min' $((s/3600)) $((s%3600/60))
+  elif [ "$s" -ge 60 ]; then printf '%d min' $((s/60))
+  else printf '%d s' "$s"; fi
+}
+
+# Taille de reference de la source, mesuree comme rclone la voit (memes exclusions) :
+# mg_reference <source> <etape>  -> fichier reference (REF_ETAPE, REF_FICHIERS, REF_OCTETS)
+mg_reference() {
+  local j f o
+  j=$(GOGC=50 GOMEMLIMIT="$MEMLIM" rclone size --json "$1" "${MG_EXCL[@]}" < /dev/null 2>/dev/null) || return 0
+  f=$(sed -n 's/.*"count":\([0-9]*\).*/\1/p' <<< "$j"); o=$(sed -n 's/.*"bytes":\([0-9]*\).*/\1/p' <<< "$j")
+  [ -n "$f" ] && [ -n "$o" ] || return 0
+  printf 'REF_ETAPE=%s\nREF_FICHIERS=%s\nREF_OCTETS=%s\nREF_MAJ=%s\n' "$2" "$f" "$o" "$(date +%s)" > "$MG_STATE/reference.tmp" \
+    && mv -f "$MG_STATE/reference.tmp" "$MG_STATE/reference"
+}
+
+# Suivi detaille d'un transfert : interroge rclone (core/stats) toutes les 3 s et ecrit
+# le fichier avancement (variables PG_*), lu par le suivi et par l'application :
+#   PG_PCT        avancement en fichiers par rapport a la reference (vide tant qu'elle manque)
+#   PG_FICHIERS   fichiers traites (envoyes + deja presents) / PG_REF_FICHIERS
+#   PG_ENVOYE     octets envoyes par rclone (nouveaux essais compris) / PG_REF_OCTETS
+#   PG_TOTAL_RCLONE  total annonce par rclone (grossit tant qu'il parcourt la source)
+#   PG_PROVISOIRE 1 si ce total a grossi dans les 30 dernieres secondes
+#   PG_SURPLUS    octets envoyes au-dela de la taille de la source (renvois), au moins
+#   PG_VITESSE, PG_FICH_MIN, PG_ETA   moyennes sur 5 min, reste estime (s)
+#   PG_ESSAIS     nouveaux essais complets de rclone (« Attempt N/M failed »)
+#   PG_ERREURS    fichiers ayant eu une erreur (liste : erreurs-<libelle>.txt)
+# mg_monitor <pid rclone> <port> <etape> <position du journal> <libelle>
+mg_monitor() {
+  python3 - "$MG_STATE" "$@" <<'PYEOF'
+import base64, json, os, re, sys, time, urllib.request
+M, pid, port, etape, off, lab = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], int(sys.argv[5]), sys.argv[6]
+auth = "Basic " + base64.b64encode(("rc:" + os.environ.get("MG_RC_PASS", "")).encode()).decode()
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+logf, out, errf = M + "/progression.log", M + "/avancement", M + "/erreurs-" + lab + ".txt"
+pos, essais, erreurs, nerr_ecrit = off, 0, set(), -1
+samples, tb_last, tb_change, last = [], None, time.time(), None
+
+def alive():
+    try:
+        with open("/proc/%d/status" % pid) as f:
+            return not re.search(r"^State:\s+Z", f.read(), re.M)
+    except OSError:
+        return False
+
+def stats():
+    r = urllib.request.Request("http://127.0.0.1:%s/core/stats" % port, data=b"{}",
+                               headers={"Content-Type": "application/json", "Authorization": auth})
+    with opener.open(r, timeout=5) as h:
+        return json.load(h)
+
+def scan():  # nouvelles lignes du journal depuis le debut de l'etape
+    global pos, essais
+    try:
+        with open(logf, "rb") as f:
+            f.seek(pos)
+            data = f.read()
+    except OSError:
+        return
+    k = data.rfind(b"\n")
+    if k < 0:
+        return
+    pos += k + 1
+    for l in data[:k].decode(errors="ignore").splitlines():
+        if "ERROR : " not in l:
+            continue
+        if re.search(r"Attempt \d+/\d+ failed", l):
+            essais += 1
+            continue
+        m = re.search(r"ERROR : (.+?): (?:Failed to |failed to |[Cc]ouldn't |corrupted |[Ee]rror |Src file |Not )", l) \
+            or re.search(r"ERROR : (.+?): ", l)
+        if m and " root '" not in m.group(1) and not m.group(1).startswith(("Local file system", "webdav")):
+            erreurs.add(m.group(1))
+
+def ref():
+    v = {}
+    try:
+        with open(M + "/reference") as f:
+            for l in f:
+                k, _, x = l.strip().partition("=")
+                v[k] = x
+    except OSError:
+        return 0, 0
+    if v.get("REF_ETAPE") != etape:
+        return 0, 0
+    try:
+        return int(v.get("REF_FICHIERS", 0)), int(v.get("REF_OCTETS", 0))
+    except ValueError:
+        return 0, 0
+
+def write(s):
+    global nerr_ecrit
+    now = time.time()
+    b, tb = int(s.get("bytes", 0)), int(s.get("totalBytes", 0))
+    fichiers = int(s.get("checks", 0)) + int(s.get("transfers", 0))
+    rf, rb = ref()
+    pct = eta = vit = fmin = ""
+    if rf > 0:
+        pct = min(99, fichiers * 100 // rf)
+    samples.append((now, b, fichiers))
+    while len(samples) > 2 and now - samples[1][0] >= 300:
+        samples.pop(0)
+    t0, b0, f0 = samples[0]
+    if now - t0 >= 60:
+        vb, vf = (b - b0) / (now - t0), (fichiers - f0) / (now - t0)
+        vit, fmin = int(vb), int(vf * 60)
+        cands = []
+        if rf > 0 and vf > 0:
+            cands.append(max(0, rf - fichiers) / vf)
+        if rb > 0 and vb > 0:
+            avg = rb / rf if rf else 0
+            cands.append(max(0, rb - b - int(s.get("checks", 0)) * avg) / vb)
+        if cands:
+            eta = int(max(cands))
+    surplus = max(0, b - rb) if rb > 0 else 0
+    v = dict(PG_ETAPE=etape, PG_MAJ=int(now), PG_PCT=pct, PG_FICHIERS=fichiers, PG_REF_FICHIERS=rf or "",
+             PG_REF_OCTETS=rb or "", PG_ENVOYE=b, PG_TOTAL_RCLONE=tb,
+             PG_PROVISOIRE=1 if now - tb_change < 30 else 0, PG_SURPLUS=surplus, PG_VITESSE=vit,
+             PG_FICH_MIN=fmin, PG_ETA=eta, PG_ESSAIS=essais, PG_ERREURS=len(erreurs),
+             PG_EN_COURS=len(s.get("transferring") or []))
+    with open(out + ".tmp", "w") as f:
+        f.write("".join("%s=%s\n" % kv for kv in v.items()))
+    os.replace(out + ".tmp", out)
+    if len(erreurs) != nerr_ecrit:
+        with open(errf + ".tmp", "w") as f:
+            f.write("".join(e + "\n" for e in sorted(erreurs)))
+        os.replace(errf + ".tmp", errf)
+        nerr_ecrit = len(erreurs)
+
+while True:
+    vivant = alive()
+    try:
+        s = stats()
+        tb = int(s.get("totalBytes", 0))
+        if tb_last is None or tb > tb_last:
+            if tb_last is not None:
+                tb_change = time.time()
+            tb_last = tb
+        last = s
+    except Exception:
+        pass
+    scan()
+    if last is not None:
+        try:
+            write(last)
+        except OSError:
+            pass
+    if not vivant:
+        break
+    time.sleep(3)
+PYEOF
+}
+
+# Bilan d'une etape : compte les fichiers sur le Synology et dans oCIS (memes exclusions),
+# et resume nouveaux essais, erreurs, reprises et duree dans le journal.
+# mg_bilan <source> <sous-dossier> <etape> <debut (epoch)> <reprises> <libelle>  -> BILAN_MSG
+mg_bilan() {
+  local s="$1" sub="$2" n="$3" t0="$4" rep="${5:-0}" lab="$6" js jd sf so df dob v l
+  local PG_ETAPE="" PG_ESSAIS=0 PG_ERREURS=0 PG_SURPLUS=0
+  BILAN_MSG=""
+  echo "PHASE=bilan" >> "$MG_STATE/etape"
+  echo "=== [$n] bilan : comptage des fichiers sur le Synology et dans oCIS" >> "$MG_LOGF"
+  js=$(GOGC=50 GOMEMLIMIT="$MEMLIM" rclone size --json "$s" "${MG_EXCL[@]}" < /dev/null 2>/dev/null)
+  jd=$(GOGC=50 GOMEMLIMIT="$MEMLIM" rclone size --json "ocis:$sub" "${MG_EXCL[@]}" "${RCLONE_K[@]}" \
+        --disable-http2 --checkers 4 < /dev/null 2>/dev/null)
+  sf=$(sed -n 's/.*"count":\([0-9]*\).*/\1/p' <<< "$js"); so=$(sed -n 's/.*"bytes":\([0-9]*\).*/\1/p' <<< "$js")
+  df=$(sed -n 's/.*"count":\([0-9]*\).*/\1/p' <<< "$jd"); dob=$(sed -n 's/.*"bytes":\([0-9]*\).*/\1/p' <<< "$jd")
+  if [ -z "$sf" ] || [ -z "$so" ] || [ -z "$df" ] || [ -z "$dob" ]; then
+    v="comptage impossible ($( [ -z "$sf" ] && echo Synology || echo oCIS))"
+    BILAN_MSG="bilan : $v"
+  else
+    l="Synology $sf fichier(s) / $(hsize "$so") · oCIS $df fichier(s) / $(hsize "$dob")"
+    if [ "$df" -eq "$sf" ] && [ "$dob" -eq "$so" ]; then
+      v="$l · identique"; BILAN_MSG="bilan : oCIS = Synology ($sf fichiers, $(hsize "$so"))"
+    elif [ "$df" -lt "$sf" ]; then
+      v="$l · il MANQUE $((sf - df)) fichier(s) dans oCIS"; BILAN_MSG="bilan : il manque $((sf - df)) fichier(s) dans oCIS"
+      notify critique "Migration oCIS : fichiers manquants" "$lab : $((sf - df)) fichier(s) du Synology absent(s) d'oCIS à la fin du transfert (détail dans le journal de la migration)."
+    elif [ "$df" -gt "$sf" ]; then
+      v="$l · oCIS contient $((df - sf)) fichier(s) de plus (deja presents dans la destination)"
+      BILAN_MSG="bilan : tout est dans oCIS (+$((df - sf)) fichier(s) deja presents)"
+    else
+      v="$l · meme nombre de fichiers, $(hsize $(( so > dob ? so - dob : dob - so ))) d'ecart (fichiers modifies pendant la migration ?)"
+      BILAN_MSG="bilan : meme nombre de fichiers, tailles differentes"
+    fi
+  fi
+  echo "=== [$n] bilan : $v" >> "$MG_LOGF"
+  # shellcheck disable=SC1090
+  [ -f "$MG_STATE/avancement" ] && . "$MG_STATE/avancement"
+  [ "$PG_ETAPE" = "$n" ] || { PG_ESSAIS=0; PG_ERREURS=0; PG_SURPLUS=0; }
+  l="${PG_ESSAIS:-0} nouvel(s) essai(s) rclone · ${PG_ERREURS:-0} fichier(s) en erreur pendant le transfert"
+  [ "${PG_ERREURS:-0}" -gt 0 ] && l="$l (liste : $MG_STATE/erreurs-$(safe "$lab").txt)"
+  [ "${PG_SURPLUS:-0}" -gt 0 ] && l="$l · au moins $(hsize "$PG_SURPLUS") renvoyes"
+  l="$l · $rep reprise(s) automatique(s) · duree $(hdur $(( $(date +%s) - t0 )))"
+  echo "=== [$n] bilan : $l" >> "$MG_LOGF"
+  if [ "${PG_ESSAIS:-0}" -gt 0 ] || [ "${PG_ERREURS:-0}" -gt 0 ]; then
+    BILAN_MSG="$BILAN_MSG ; ${PG_ESSAIS:-0} nouvel(s) essai(s), ${PG_ERREURS:-0} fichier(s) en erreur"
+  fi
+}
+
+# Ligne d'avancement detaille pour le suivi en terminal -> PG_LINE, PG_P (echec si indisponible)
+mg_pg_line() {
+  local PG_ETAPE="" PG_MAJ=0 l
+  PG_LINE=""; PG_P=""
+  # shellcheck disable=SC1090
+  [ -f "$MG_STATE/avancement" ] && . "$MG_STATE/avancement" || return 1
+  [ "$PG_ETAPE" = "$ETAPE" ] && [ $(( $(date +%s) - ${PG_MAJ:-0} )) -lt 30 ] || return 1
+  if [ -n "$PG_REF_FICHIERS" ]; then
+    l="$PG_FICHIERS/$PG_REF_FICHIERS fichiers"; PG_P="$PG_PCT"
+  else
+    l="$PG_FICHIERS fichiers (mesure de la source...)"
+  fi
+  [ -n "$PG_ETA" ] && l="$l · reste ~$(hdur "$PG_ETA")"
+  l="$l · $(hsize "$PG_ENVOYE") envoyes${PG_REF_OCTETS:+ / source $(hsize "$PG_REF_OCTETS")}"
+  [ -n "$PG_FICH_MIN" ] && l="$l · $PG_FICH_MIN fich/min, $(hsize "${PG_VITESSE:-0}")/s"
+  [ "${PG_PROVISOIRE:-0}" = 1 ] && l="$l · parcours en cours"
+  [ "${PG_SURPLUS:-0}" -gt 0 ] && l="$l · +$(hsize "$PG_SURPLUS") renvoyes"
+  if [ "${PG_ESSAIS:-0}" -gt 0 ] || [ "${PG_ERREURS:-0}" -gt 0 ]; then l="$l · $PG_ESSAIS essai(s), $PG_ERREURS erreur(s)"; fi
+  PG_LINE="$l"
 }
 
 cnt() { [ -s "$1" ] && grep -c '' "$1" || echo 0; }
@@ -914,7 +1154,7 @@ verify_and_delete() {
     # --ignore-times : renvoie meme si taille et date sont identiques (copie abimee)
     run_rclone copy "$s" "ocis:$sub" --files-from-raw "$d/renvoi" --ignore-times "${RCLONE_K[@]}" \
       --transfers 1 --checkers 2 --buffer-size 0 --disable-http2 --retries 3 --low-level-retries 20 \
-      --stats 2s --stats-one-line --stats-log-level NOTICE --log-level NOTICE --log-file "$MG_LOGF"
+      --stats 10s --stats-one-line --stats-log-level NOTICE --log-level NOTICE --log-file "$MG_LOGF"
     echo "PHASE=verification" >> "$MG_STATE/etape"
     check_run --files-from-raw "$d/renvoi"
     delete_ok
@@ -947,7 +1187,7 @@ verify_and_delete() {
 
 mg_worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
   load_conf
-  local obs i=0 ok=0 ko=0 s l id n dav sub t del rc st
+  local obs i=0 ok=0 ko=0 s l id n dav sub t del rc st refpid="" soff
   obs=$(rclone obscure "$OCIS_PASS")
   perf_load; MEMLIM="$PERF_MEM"
   {
@@ -959,6 +1199,11 @@ mg_worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
     local t0; t0=$(date +%s)
     printf 'ETAPE=%s\nE_SRC=%q\nE_LABEL=%q\nE_SPACE=%q\nE_TOTAL=%s\nE_DEL=%s\n' "$i" "$s" "$l" "$n${sub:+/$sub}" "$t" "$del" > "$MG_STATE/etape"
     dav=$(to_base "$dav")
+    # taille de reference de la source (memes exclusions que rclone), mesuree en parallele
+    [ -n "$refpid" ] && { pkill -P "$refpid" 2>/dev/null; kill "$refpid" 2>/dev/null; }
+    rm -f "$MG_STATE/reference" "$MG_STATE/avancement"
+    refpid=""; [ -d "$s" ] && [ "$del" != verif ] && { mg_reference "$s" "$i" & refpid=$!; }
+    soff=$(stat -c %s "$MG_LOGF" 2>/dev/null || echo 0)
     export RCLONE_CONFIG_OCIS_TYPE=webdav RCLONE_CONFIG_OCIS_URL="$dav" RCLONE_CONFIG_OCIS_VENDOR="${OCIS_VENDOR:-owncloud}" \
            RCLONE_CONFIG_OCIS_USER="$OCIS_USER" RCLONE_CONFIG_OCIS_PASS="$obs"
     echo "=== [$i] $s -> $n${sub:+/$sub}  via ${dav%%/dav/*}  ($(date '+%F %T'))$(case "$del" in oui) echo "  + suppression des originaux controles";; verif) echo "  controle + suppression sans transfert";; esac)" >> "$MG_LOGF"
@@ -974,10 +1219,11 @@ mg_worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
       else
         # --buffer-size 0 : pas de tampon de lecture (inutile depuis un disque local)
         # --disable-http2 : les envois en HTTP/2 font gonfler la memoire de rclone
-        run_rclone copy "$s" "ocis:$sub" --create-empty-src-dirs "${MG_EXCL[@]}" "${RCLONE_K[@]}" \
+        # stats toutes les 10 s dans le journal : l'avancement detaille vient de mg_monitor
+        MG_SUIVI="$i $soff $(safe "$l")" run_rclone copy "$s" "ocis:$sub" --create-empty-src-dirs "${MG_EXCL[@]}" "${RCLONE_K[@]}" \
           --transfers "$tr" --checkers "$ck" --buffer-size 0 --disable-http2 \
           --retries 5 --low-level-retries 20 \
-          --stats 2s --stats-one-line --stats-log-level NOTICE --log-level NOTICE --log-file "$MG_LOGF"
+          --stats 10s --stats-one-line --stats-log-level NOTICE --log-level NOTICE --log-file "$MG_LOGF"
         rc=$?
       fi
       [ $rc -eq 0 ] && break
@@ -1013,6 +1259,7 @@ mg_worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
     done
     if [ $rc -eq 0 ]; then
       ok=$((ok+1)); st=OK; requeue=0; why=""; [ $try -gt 1 ] && why="apres $((try-1)) reprise(s) automatique(s)"
+      [ -d "$s" ] && { mg_bilan "$s" "$sub" "$i" "$t0" $((try-1)) "$l"; why="${why:+$why, }$BILAN_MSG"; }
       if [ "$del" = oui ] || [ "$del" = verif ]; then
         if ! verify_and_delete "$s" "$sub" "$l"; then
           requeue=1; VERIF_MSG="$VERIF_MSG ; remise en file d'attente"
@@ -1029,6 +1276,7 @@ mg_worker() {  # tourne en arriere-plan : traite le lot ligne par ligne
     echo "$i|$st|$l|$n${sub:+/$sub}|$why" >> "$MG_STATE/resultats"
     [ $requeue -eq 1 ] && echo "$s|$l|$id|$n|$dav|$sub|$t|$del" >> "$MG_QUEUE"   # remis en file pour reprise
   done < "$MG_STATE/lot"
+  [ -n "$refpid" ] && { pkill -P "$refpid" 2>/dev/null; kill "$refpid" 2>/dev/null; }
   echo "$ok|$ko" > "$MG_STATE/code"
   local msg="$ok migration(s) reussie(s)"; [ $ko -gt 0 ] && msg="$msg, $ko en echec (remise(s) en file d'attente pour reprise)"
   if [ $ko -eq 0 ]; then notify info "Migration Drive -> oCIS terminée" "$msg."
@@ -1073,11 +1321,24 @@ mg_follow() {
           status " $( [ "$PHASE" = relecture ] && echo "Controle par relecture depuis oCIS" || echo "Controle des empreintes dans oCIS") : ${line:-demarrage...}$ram" ;;
         suppression)
           status " Suppression des originaux controles sur le Synology..." ;;
+        bilan)
+          status " Bilan : comptage des fichiers sur le Synology et dans oCIS..." ;;
         renvoi)
           line=$(tail -n 60 "$MG_LOGF" 2>/dev/null | awk '/^=== /{l=""} /NOTICE:/{l=$0} END{print l}' | sed 's/.*NOTICE: *//; s/  */ /g')
           status " Renvoi des fichiers en defaut : ${line:-demarrage...}$ram" ;;
         *)
-          # derniere ligne de stats apres le dernier marqueur "===" (journal sans detail par fichier)
+          # avancement detaille (mg_monitor) : par rapport a la vraie taille de la source
+          if mg_pg_line; then
+            if [ -n "$PG_P" ]; then
+              n=$(( PG_P * 30 / 100 ))
+              bar=$(printf '%*s' "$n" '' | tr ' ' '#')$(printf '%*s' $((30-n)) '' | tr ' ' '.')
+              status " [$bar] $PG_P% · $PG_LINE$ram"
+            else
+              status " $PG_LINE$ram"
+            fi
+            sleep 2; continue
+          fi
+          # sinon : derniere ligne de stats apres le dernier marqueur "===" (journal sans detail par fichier)
           line=$(tail -n 60 "$MG_LOGF" 2>/dev/null | awk '/^=== /{l=""} /NOTICE:/{l=$0} END{print l}' | sed 's/.*NOTICE: *//; s/  */ /g')
           if [[ "$line" =~ ([0-9]+)% ]]; then
             pct="${BASH_REMATCH[1]}"; n=$(( pct * 30 / 100 ))

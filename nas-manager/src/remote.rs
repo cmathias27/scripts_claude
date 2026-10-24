@@ -556,6 +556,19 @@ if e and mg["en_cours"]:
     rss = rd(M + "/rss").split()
     if rss:
         et["ram_mo"] = ival(rss[0])
+    # avancement detaille (script 2.1+) : par rapport a la vraie taille de la source
+    pg = src_vars(M + "/avancement", ["PG_ETAPE", "PG_MAJ", "PG_PCT", "PG_FICHIERS", "PG_REF_FICHIERS", "PG_REF_OCTETS",
+                                      "PG_ENVOYE", "PG_TOTAL_RCLONE", "PG_PROVISOIRE", "PG_SURPLUS", "PG_VITESSE",
+                                      "PG_FICH_MIN", "PG_ETA", "PG_ESSAIS", "PG_ERREURS"])
+    if pg and pg["PG_ETAPE"] == e["ETAPE"] and e["PHASE"] in ("", "transfert") and time.time() - ival(pg["PG_MAJ"]) < 60:
+        opt = lambda k: ival(pg[k]) if pg[k] != "" else None
+        et["avancement"] = {"pct": opt("PG_PCT"), "fichiers": ival(pg["PG_FICHIERS"]), "ref_fichiers": opt("PG_REF_FICHIERS"),
+                            "ref_octets": opt("PG_REF_OCTETS"), "envoye": ival(pg["PG_ENVOYE"]),
+                            "total_rclone": ival(pg["PG_TOTAL_RCLONE"]), "provisoire": pg["PG_PROVISOIRE"] == "1",
+                            "surplus": ival(pg["PG_SURPLUS"]), "vitesse": opt("PG_VITESSE"), "fich_min": opt("PG_FICH_MIN"),
+                            "eta": opt("PG_ETA"), "essais": ival(pg["PG_ESSAIS"]), "erreurs": ival(pg["PG_ERREURS"])}
+        if et["avancement"]["pct"] is not None:
+            et["pct"] = et["avancement"]["pct"]
     mg["etape"] = et
 res = []
 for line in rd(M + "/resultats").splitlines():
@@ -566,7 +579,9 @@ mg["resultats"] = res
 code = rd(M + "/code")
 mg["bilan"] = code if code else None
 mg["historique"] = [l for l in rd(M + "/historique.log").splitlines() if l.strip()][-40:]
-mg["journal"] = [l for l in tail(M + "/progression.log", 12000).splitlines() if l.strip()][-14:]
+# journal : evenements seulement (etapes, erreurs, nouveaux essais, bilan), sans les lignes de stats
+ev = re.compile(r"^(===|    (dmesg|stderr):)|ERROR|CRITICAL|Attempt \d")
+mg["journal"] = [l for l in tail(M + "/progression.log", 200000).splitlines() if l.strip() and ev.search(l)][-14:]
 out["migration"] = mg
 print(json.dumps(out, ensure_ascii=False))
 PYEOF

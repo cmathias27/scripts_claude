@@ -112,6 +112,58 @@ fn progress_bar(ui: &mut egui::Ui, pct: Option<i64>, text: String) {
     ui.add(bar);
 }
 
+/// Avancement detaille d'une migration (script 2.1+) : fichiers et donnees par rapport a la
+/// taille reelle de la source, reste estime ; en mode complet, debit et signalements
+/// (total de rclone provisoire, octets renvoyes, nouveaux essais et erreurs).
+fn mig_avancement(ui: &mut egui::Ui, a: &Avancement, complet: bool) {
+    let mut txt = match a.ref_fichiers {
+        Some(rf) => tf("{0} / {1} fichiers", &[&(fmt::count(a.fichiers)), &(fmt::count(rf))]),
+        None => tf("{0} fichiers · mesure de la source…", &[&(fmt::count(a.fichiers))]),
+    };
+    if let Some(p) = a.pct {
+        txt = format!("{p} % · {txt}");
+    }
+    if let Some(eta) = a.eta {
+        txt = format!("{txt} · {}", tf("reste ~{0}", &[&(fmt::duration(eta))]));
+    }
+    progress_bar(ui, a.pct, txt);
+    if !complet {
+        return;
+    }
+    let mut d = match a.ref_octets {
+        Some(r) => tf("Envoyé {0} · source {1}", &[&(fmt::bytes(a.envoye)), &(fmt::bytes(r))]),
+        None => tf("Envoyé {0}", &[&(fmt::bytes(a.envoye))]),
+    };
+    if let Some(v) = a.vitesse {
+        d = format!("{d} · {}/s", fmt::bytes(v));
+    }
+    if let Some(f) = a.fich_min {
+        d = format!("{d} · {}", tf("{0} fichiers/min", &[&(fmt::count(f))]));
+    }
+    ui.label(RichText::new(d).small().weak());
+    if a.provisoire {
+        ui.label(
+            RichText::new(tf("rclone parcourt encore la source : son total ({0}) grossit et n'est pas la taille du dossier", &[&(fmt::bytes(a.total_rclone))]))
+                .small()
+                .color(INFO),
+        );
+    }
+    if a.surplus > 0 {
+        ui.label(
+            RichText::new(tf("Au moins {0} renvoyés (nouveaux essais) : c'est pourquoi rclone affiche plus que la taille de la source", &[&(fmt::bytes(a.surplus))]))
+                .small()
+                .color(WARN),
+        );
+    }
+    if a.essais > 0 || a.erreurs > 0 {
+        ui.label(
+            RichText::new(tf("{0} nouvel(s) essai(s) de rclone · {1} fichier(s) en erreur, renvoyés automatiquement (le bilan de fin dira s'il en manque)", &[&(a.essais), &(a.erreurs)]))
+                .small()
+                .color(WARN),
+        );
+    }
+}
+
 /// Bandeau quand un NAS n'est pas joignable ; renvoie false si aucune donnee n'est disponible.
 fn host_banner(app: &mut App, ui: &mut egui::Ui, h: HostId) -> bool {
     let cfg = app.host_cfg(h).clone();
@@ -637,7 +689,10 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                     if m.en_cours {
                         if let Some(e) = &m.etape {
                             ui.label(RichText::new(format!("[{}/{}] {} → {}", e.etape, m.nb, e.libelle, e.espace)).strong());
-                            progress_bar(ui, e.pct, if e.ligne.is_empty() { tr("Comparaison avec oCIS…").into() } else { fmt::stats_line(&e.ligne) });
+                            match &e.avancement {
+                                Some(a) => mig_avancement(ui, a, false),
+                                None => progress_bar(ui, e.pct, if e.ligne.is_empty() { tr("Comparaison avec oCIS…").into() } else { fmt::stats_line(&e.ligne) }),
+                            }
                         } else {
                             ui.label(tr("Migration en cours…"));
                         }
@@ -2144,15 +2199,22 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
                     "relecture" => tr("Contrôle par relecture depuis oCIS"),
                     "suppression" => tr("Suppression des originaux contrôlés"),
                     "renvoi" => tr("Renvoi des fichiers en défaut"),
+                    "bilan" => tr("Bilan : comptage des fichiers sur le Synology et dans oCIS"),
                     _ => tr("Transfert"),
                 };
                 ui.label(phase);
-                let line = if e.ligne.is_empty() {
-                    if e.phase.is_empty() { tr("Comparaison avec ce qui est déjà dans oCIS…").into() } else { tr("démarrage…").into() }
+                if let Some(a) = &e.avancement {
+                    mig_avancement(ui, a, true);
+                } else if e.phase == "bilan" {
+                    progress_bar(ui, None, tr("comptage…").into());
                 } else {
-                    fmt::stats_line(&e.ligne)
-                };
-                progress_bar(ui, e.pct, line);
+                    let line = if e.ligne.is_empty() {
+                        if e.phase.is_empty() { tr("Comparaison avec ce qui est déjà dans oCIS…").into() } else { tr("démarrage…").into() }
+                    } else {
+                        fmt::stats_line(&e.ligne)
+                    };
+                    progress_bar(ui, e.pct, line);
+                }
                 let mut extra = Vec::new();
                 if let Some(r) = e.ram_mo {
                     extra.push(tf("RAM rclone {0} Mo", &[&r]));
@@ -2366,7 +2428,7 @@ pub fn migration(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.add_space(10.0);
 
-    egui::CollapsingHeader::new(tr("Journal de la migration (dernières lignes)")).show(ui, |ui| {
+    egui::CollapsingHeader::new(tr("Journal de la migration (derniers événements)")).show(ui, |ui| {
         for l in &m.journal {
             ui.label(RichText::new(l).monospace().size(12.0));
         }

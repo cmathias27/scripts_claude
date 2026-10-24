@@ -81,6 +81,20 @@ pub fn rclone_dur(s: &str) -> String {
         .replace(" j ", " j ")
 }
 
+/// Nombre avec separateur de milliers : 431176 -> "431 176" (en anglais "431,176")
+pub fn count(n: u64) -> String {
+    let sep = if crate::i18n::is_english() { ',' } else { '\u{202F}' };
+    let d = n.to_string();
+    let mut out = String::with_capacity(d.len() + d.len() / 3);
+    for (i, c) in d.chars().enumerate() {
+        if i > 0 && (d.len() - i) % 3 == 0 {
+            out.push(sep);
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub fn duration(secs: i64) -> String {
     let s = secs.max(0);
     if s < 60 {
@@ -238,6 +252,25 @@ mod tests {
         assert_eq!(schedule_human("03:30/67"), "le week-end 03:30");
         assert!(next_run_sched("03:30").is_some());
         assert!(next_run_sched("manuel").is_none());
+        assert_eq!(count(0), "0");
+        assert_eq!(count(999), "999");
+        assert_eq!(count(431176), "431\u{202F}176");
+        assert_eq!(count(1234567), "1\u{202F}234\u{202F}567");
+    }
+
+    #[test]
+    fn avancement_migration() {
+        // format envoye par l'etat du Synology (script 2.1+) ; champs vides -> None
+        let j = r#"{"etape": 1, "phase": "", "pct": 95, "avancement": {"pct": 95, "fichiers": 431176, "ref_fichiers": 452310,
+                   "ref_octets": 102000000000, "envoye": 104000000000, "total_rclone": 106000000000, "provisoire": true,
+                   "surplus": 2000000000, "vitesse": null, "fich_min": null, "eta": null, "essais": 1, "erreurs": 3}}"#;
+        let e: crate::model::Etape = serde_json::from_str(j).unwrap();
+        let a = e.avancement.unwrap();
+        assert_eq!((a.fichiers, a.ref_fichiers, a.surplus, a.eta), (431176, Some(452310), 2000000000, None));
+        assert!(a.provisoire);
+        // ancien script : pas d'avancement detaille
+        let e: crate::model::Etape = serde_json::from_str(r#"{"etape": 1, "pct": 98}"#).unwrap();
+        assert!(e.avancement.is_none());
     }
 }
 
