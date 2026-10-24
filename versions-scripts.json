@@ -13,14 +13,14 @@
     ]
   },
   "nas-synology": {
-    "version": "2.0.0",
+    "version": "2.1.0",
     "fichier": "nas-synology.sh",
-    "sha256": "13f9a4e577fb70732ab30e94f1c7cc4b0d55dafc165b9d2c333e097eaba5cb7f",
+    "sha256": "d3eb9ff31c012b5da28b7792f0159795579a20f1d1121157d8c753141f4fd0bd",
     "nouveautes": [
-      "Un seul script (remplace copie-omv et migre-drive-ocis, dont les noms restent utilisables)",
-      "Mémoire de rclone réglable pour la migration oCIS",
-      "Mise à jour de rclone et contrôle du jeton oCIS depuis l'application",
-      "Adresse de l'OMV et de Home Assistant réglables sans modifier le script"
+      "Migration oCIS : avancement calculé sur la vraie taille de la source (fichiers et données), et non plus sur le total provisoire de rclone",
+      "Reste estimé sur 5 minutes (fichiers et débit), signalement du parcours en cours, des renvois, des nouveaux essais et des fichiers en erreur",
+      "Bilan de fin d'étape : fichiers et taille sur le Synology et dans oCIS, alerte s'il en manque",
+      "Journal allégé : statistiques toutes les 10 s, liste des fichiers en erreur à part"
     ]
   }
 }
