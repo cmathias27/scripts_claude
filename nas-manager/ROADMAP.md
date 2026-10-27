@@ -202,6 +202,13 @@ Une version testable par étape (1.1, 1.2…).
       si l'utilisateur le demande.
 
 #### Transferts
+- [ ] **Copie Synology → OMV d'un seul fichier** (ex. une archive compressée .zip / .7z / .tar.gz),
+      et plus seulement d'un dossier entier :
+  - l'explorateur permet de choisir un fichier ou un dossier ;
+  - le fichier est copié dans le dossier de destination choisi sur l'OMV, sous le même nom ;
+  - mêmes options que pour un dossier : file d'attente, suivi (taille réelle du fichier),
+    reprise d'un gros fichier interrompu, contrôle puis suppression de l'original en option
+    (mode « déplacer »).
 - [ ] **Migration vers oCIS depuis d'autres sources que le Synology** : choisir le dossier à migrer
       (avec le même explorateur de dossiers que pour les sauvegardes) :
   - **sur le serveur local** (OMV / Debian), et plus seulement sur le Synology distant :
