@@ -202,6 +202,17 @@ Une version testable par étape (1.1, 1.2…).
       si l'utilisateur le demande.
 
 #### Transferts
+- [ ] **Migration vers oCIS depuis d'autres sources que le Synology** : choisir le dossier à migrer
+      (avec le même explorateur de dossiers que pour les sauvegardes) :
+  - **sur le serveur local** (OMV / Debian), et plus seulement sur le Synology distant :
+    la migration est alors exécutée par le script de cette machine ;
+  - **sur le disque dur du PC** (dossier local Windows, disque USB branché au PC) : envoi
+    depuis l'application, par le même moteur (rclone vers WebDAV d'oCIS).
+  - Mêmes options que la migration actuelle : file d'attente, suivi sur la vraie taille de la
+    source, reprise après interruption, dates conservées, contrôle de chaque fichier puis
+    suppression des originaux en option (renvoi des fichiers en défaut), bilan de fin.
+  - Pour le PC : prévenir que le PC doit rester allumé pendant la migration ; reprise
+    automatique au redémarrage de l'application.
 - [ ] **Transferts oCIS → dossier Synology (DSM) ou Debian** : sens inverse de la migration actuelle.
       Choix de l'espace oCIS (personnel ou projet) et d'un sous-dossier, puis du dossier de destination
       sur le Synology ou la machine Debian. Passage par l'API WebDAV d'oCIS (jamais de lecture directe
