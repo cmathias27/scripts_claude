@@ -25,7 +25,7 @@
 # =====================================================================
 set -o pipefail
 
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.1.1"
 API_VERSION=3
 
 # --------------------------- Reglages --------------------------------
@@ -60,6 +60,44 @@ CP_HIST="$CP_STATE/historique.log"
 CP_QUEUE="$CP_STATE/file-attente"
 CP_SSH_OPTS=(-i "$CP_KEY" -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new)
 CP_EXCL=(--exclude '@eaDir/' --exclude '#recycle/' --exclude '#snapshot/' --exclude '.DS_Store' --exclude 'Thumbs.db' --exclude '@SynoResource')
+# Filtre de la sortie de rsync (liste incrementale : la copie demarre tout de suite).
+# Le % de rsync ne porte que sur la partie de la liste deja parcourue et ignore les
+# fichiers deja presents sur l'OMV (reprise) : il est recalcule ici sur la taille
+# mesuree de la source (tot), en ajoutant les fichiers deja a jour (lignes CPI|.f).
+# Les lignes CPI| (une par fichier) ne vont pas dans le journal.
+CP_AWK='
+function nb(s,  m, c) {
+  m = 1; c = substr(s, length(s), 1)
+  if (c ~ /[kKMGTP]/) { m = (c ~ /[kK]/) ? 1e3 : (c == "M") ? 1e6 : (c == "G") ? 1e9 : (c == "T") ? 1e12 : 1e15; s = substr(s, 1, length(s) - 1) }
+  else gsub(/[,.]/, "", s)   # octets exacts avec separateurs de milliers
+  gsub(/,/, "", s); return s * m
+}
+function hum(b,  i, u) {
+  split("K M G T", u); i = 0
+  while (b >= 1024 && i < 4) { b /= 1024; i++ }
+  return i ? sprintf("%.2f%s", b, u[i]) : sprintf("%d", b)
+}
+function hms(s) { s = int(s); return sprintf("%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60) }
+BEGIN { RS = "\r"; deja = 0 }
+{
+  n = split($0, L, "\n")
+  for (k = 1; k <= n; k++) {
+    l = L[k]
+    if (l ~ /^CPI\|/) {
+      split(l, f, "|"); if (f[2] ~ /^\.f/) { s = f[3]; gsub(/[^0-9]/, "", s); deja += s }
+      continue
+    }
+    if (l ~ /^ *[0-9][0-9.,]*[kKMGTP]? +[0-9]+% / && tot > 0) {
+      split(l, f, " "); v = f[3]; sub(/B\/s$/, "", v)
+      fait = deja + nb(f[1]); vit = nb(v)
+      pct = (fait >= tot) ? 100 : int(fait * 100 / tot); if (pct > 99 && fait < tot) pct = 99
+      eta = (fait >= tot) ? "0:00:00" : (vit > 0) ? hms((tot - fait) / vit) : f[4]
+      printf "%14s %3d%% %13s %10s\r", hum(fait), pct, f[3], eta; fflush()
+      continue
+    }
+    if (l != "") { print l; fflush() }
+  }
+}'
 
 # migration oCIS
 MG_STATE="/root/.migre-ocis"
@@ -187,6 +225,17 @@ cp_browse() {
   done
 }
 
+# --------------------------- Taille de la source ---------------------
+# cp_measure <source>  -> total (octets) et nbf (fichiers), avec les memes exclusions
+# que rsync. -prune : les dossiers exclus (miniatures @eaDir, corbeille, instantanes)
+# ne sont pas parcourus du tout.
+cp_measure() {
+  total=$(du -sb --exclude='@eaDir' --exclude='#recycle' --exclude='#snapshot' --exclude='@SynoResource' \
+    --exclude='.DS_Store' --exclude='Thumbs.db' "$1" 2>/dev/null | cut -f1)
+  nbf=$(find "$1" -mindepth 1 \( -name '@eaDir' -o -name '#recycle' -o -name '#snapshot' -o -name '@SynoResource' \) -prune \
+    -o -type f ! -name '.DS_Store' ! -name 'Thumbs.db' -print 2>/dev/null | wc -l)
+}
+
 # --------------------------- Etat de la copie ------------------------
 cp_running() { [ -f "$CP_RUN" ] && . "$CP_RUN" && kill -0 "$PID" 2>/dev/null; }
 
@@ -251,11 +300,13 @@ DEBUT=$(date +%s)
 EOF
   : > "$CP_LOGF"; rm -f "$CP_STATE/code"
 
-  # Copie en arriere-plan, independante de la session SSH
-  nohup setsid bash -c '
-    rsync -rlt --partial --no-inc-recursive --info=progress2 --human-readable \
-      "${@:6}" -e "ssh ${5}" "$1" "$2:$3/" >>"'"$CP_LOGF"'" 2>&1
-    rc=$?
+  # Copie en arriere-plan, independante de la session SSH.
+  # Liste incrementale (pas de --no-inc-recursive) : rsync commence a copier sans
+  # attendre d'avoir parcouru toute la source et toute la destination.
+  CP_AWK="$CP_AWK" CP_TOT="${total:-0}" nohup setsid bash -c '
+    rsync -rlt --partial --info=progress2 -ii --out-format="CPI|%i|%l" \
+      "${@:6}" -e "ssh ${5}" "$1" "$2:$3/" 2>&1 | awk -v tot="$CP_TOT" "$CP_AWK" >>"'"$CP_LOGF"'" 2>&1
+    rc=${PIPESTATUS[0]}
     echo $rc > "'"$CP_STATE/code"'"
     if [ $rc -eq 0 ] && [ "$4" = deplacement ]; then
       find "$1" -mindepth 1 -depth -type d -empty -delete 2>/dev/null
@@ -285,8 +336,7 @@ cp_new_copy() {
   echo -e "${B}== Recapitulatif ==${N}"
   echo "Calcul de la taille..."
   local total nbf free
-  total=$(du -sb --exclude='@eaDir' --exclude='#recycle' "$src" 2>/dev/null | cut -f1)
-  nbf=$(find "$src" -type f ! -path '*/@eaDir/*' ! -path '*/#recycle/*' 2>/dev/null | wc -l)
+  cp_measure "$src"
   free=$(osh "df -B1 --output=avail $(q "$dst") | tail -n 1" | tr -d ' ')
   # Placement : dans un sous-dossier du meme nom, ou directement dans la destination
   local name="${src##*/}" pdef=1 p
@@ -382,8 +432,7 @@ cp_api_launch() {  # cp_api_launch <source NAS> <dossier OMV> <dossier|contenu> 
   local rsrc="$src" final="$dst/${src##*/}"
   [ "$place" = contenu ] && { rsrc="$src/"; final="$dst"; }
   local total nbf
-  total=$(du -sb --exclude='@eaDir' --exclude='#recycle' "$src" 2>/dev/null | cut -f1)
-  nbf=$(find "$src" -type f ! -path '*/@eaDir/*' ! -path '*/#recycle/*' 2>/dev/null | wc -l)
+  cp_measure "$src"
   cp_start_copy "$src" "$dst" "$rsrc" "$final" "$mode" "${total:-0}" "$nbf" "$bw"
 }
 
