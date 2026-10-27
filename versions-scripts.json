@@ -13,14 +13,13 @@
     ]
   },
   "nas-synology": {
-    "version": "2.1.0",
+    "version": "2.1.1",
     "fichier": "nas-synology.sh",
-    "sha256": "d3eb9ff31c012b5da28b7792f0159795579a20f1d1121157d8c753141f4fd0bd",
+    "sha256": "1180b109f6229798506db6af75c4a5250ca1d1da96df2cc1825253cc50bc6841",
     "nouveautes": [
-      "Migration oCIS : avancement calculé sur la vraie taille de la source (fichiers et données), et non plus sur le total provisoire de rclone",
-      "Reste estimé sur 5 minutes (fichiers et débit), signalement du parcours en cours, des renvois, des nouveaux essais et des fichiers en erreur",
-      "Bilan de fin d'étape : fichiers et taille sur le Synology et dans oCIS, alerte s'il en manque",
-      "Journal allégé : statistiques toutes les 10 s, liste des fichiers en erreur à part"
+      "Copie vers l'OMV : démarrage immédiat, sans attendre que rsync ait listé toute la source et toute la destination (fini la longue « Préparation de la liste des fichiers »)",
+      "Avancement calculé sur la taille mesurée de la source, fichiers déjà présents sur l'OMV compris : une reprise ne repart plus de 0 % et va jusqu'à 100 %",
+      "Mesure de la source plus rapide : miniatures @eaDir, corbeille et instantanés #snapshot ne sont plus parcourus (ni comptés dans la taille)"
     ]
   }
 }
