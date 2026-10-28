@@ -94,7 +94,7 @@ Une version testable par étape (1.1, 1.2…).
    sauvegardes versionnées (restic) · sauvegarde de ce qui permet de restaurer.
 4. **Être prévenu et surveiller** *(1.4.0)* : notifications ntfy / Telegram / Discord / e-mail · santé des
    disques · rapport hebdomadaire / mensuel.
-5. **Fiabilité et restauration** : test de restauration à blanc · retour à une date précise ·
+5. **Fiabilité et restauration** *(1.5.0)* : test de restauration à blanc · retour à une date précise ·
    Wake-on-LAN.
 6. **Nouvelles fonctions** : transferts oCIS → Synology / Debian · sauvegarde du PC Windows ·
    version SSH de NAS Manager.
@@ -235,9 +235,9 @@ Une version testable par étape (1.1, 1.2…).
       espace restant, santé des disques.
 
 #### Fiabilité
-- [ ] **Réveil des machines (Wake-on-LAN)** : réveiller le NAS de destination en veille ou éteint
+- [x] **Réveil des machines (Wake-on-LAN)** *(1.5.0)* : réveiller le NAS de destination en veille ou éteint
       avant une sauvegarde ou un transfert, option pour le laisser se rendormir ensuite.
-- [ ] **Retour à une date précise** : grâce aux corbeilles datées, restaurer un dossier tel qu'il
+- [x] **Retour à une date précise** *(1.5.0)* : grâce aux corbeilles datées, restaurer un dossier tel qu'il
       était à une date choisie (« mes documents au 3 octobre »).
 - [x] **Contrôle de la mémoire (RAM) attribuée à rclone**, réglable depuis l'application :
   - Par machine, avec possibilité de surcharger par sauvegarde / transfert.
@@ -250,7 +250,7 @@ Une version testable par étape (1.1, 1.2…).
     pendant une opération (pic conservé dans l'historique).
   - Avertissement si la valeur choisie est trop haute pour la machine, et repli automatique sur
     1 fichier à la fois après un manque de mémoire (déjà fait pour la migration, à généraliser).
-- [ ] **Test de restauration à blanc** : régulièrement, quelques fichiers au hasard sont restaurés
+- [x] **Test de restauration à blanc** *(1.5.0)* : régulièrement, quelques fichiers au hasard sont restaurés
       dans un dossier temporaire, comparés aux originaux puis effacés ; alerte en cas d'écart.
 
 #### PC Windows

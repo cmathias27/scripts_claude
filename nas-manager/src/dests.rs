@@ -501,6 +501,7 @@ fn dest_card(app: &mut App, ui: &mut egui::Ui, d: &Destination, s: &OmvStatus, n
             RichText::new(if users.is_empty() { tr("Utilisée par aucune sauvegarde.").to_string() } else { tf("Utilisée par : {0}", &[&(users.join(", "))]) })
                 .small(),
         );
+        crate::fiabilite::dest_line(app, ui, d, s);
     });
 }
 

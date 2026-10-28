@@ -1,5 +1,29 @@
 # Journal des modifications
 
+## 1.5.0
+
+Étape 5 de la feuille de route : fiabilité et restauration (scripts nas-debian 2.4.0 et nas-synology 2.3.0).
+
+### Test de restauration à blanc
+- Menu ⋯ d'une sauvegarde > **« Tester la restauration »** : quelques fichiers pris au hasard (plus anciens que la dernière sauvegarde réussie) sont restaurés depuis **chaque destination** (déchiffrés si besoin) dans un dossier temporaire, comparés octet par octet aux originaux, puis effacés.
+- **Test automatique** de toutes les sauvegardes (page Sauvegardes programmées) : jours, heure et nombre de fichiers par sauvegarde.
+- Résultat sur la carte de la sauvegarde (fichiers identiques, différents, absents de la sauvegarde, destination illisible) avec le détail ; **alerte critique** en cas d'écart, levée au test réussi suivant. Sauvegardes versionnées comprises (dernière version).
+
+### Retour à une date précise
+- Fenêtre de restauration, onglet **« À une date »** : un dossier (ou toute la sauvegarde) remis tel qu'il était à la date choisie, dans un dossier de restauration (les fichiers actuels ne sont pas touchés).
+- Sauvegarde **miroir avec corbeille** : reconstitué à partir de la corbeille datée (fichiers supprimés depuis, anciennes versions des fichiers modifiés, sans les fichiers créés après), aussi loin que la durée de la corbeille. Sauvegarde **versionnée** : la dernière version avant la date.
+- Dates possibles affichées, **aperçu** (nombre de fichiers, volume, part reprise de la corbeille) avant de lancer ; dates de modification conservées.
+
+### Réveil des machines (Wake-on-LAN)
+- **Depuis ce PC** : adresse MAC de chaque machine dans les Paramètres (bouton « Détecter ») ; quand elle ne répond pas, bouton **« Réveiller »**.
+- **Avant les sauvegardes** : page Destinations > « Réveil (Wake-on-LAN) » pour un autre NAS ou un PC. Une destination qui ne répond pas est réveillée avant chaque sauvegarde, vérification, test ou restauration ; la sauvegarde attend qu'elle réponde, puis la laisse se rendormir, la remet en veille ou l'éteint (au choix).
+- **Copies Synology → OMV** : l'OMV est réveillé avant la copie s'il dort, et peut être remis en veille ou éteint après la dernière copie de la file.
+- Une destination en veille avec réveil configuré ne déclenche plus d'alerte « injoignable » lors de la vérification horaire ; le temps réel ne la réveille que s'il y a quelque chose à envoyer.
+
+### Aussi
+- Aide : sections « S'assurer qu'on peut restaurer » et « Machines en veille ou éteintes ».
+- Tests automatiques du moteur avec les vrais rclone et restic (`tests/restauration.sh`).
+
 ## 1.4.0
 
 Étape 4 de la feuille de route : être prévenu et surveiller (scripts nas-debian 2.3.0 et nas-synology 2.2.0).

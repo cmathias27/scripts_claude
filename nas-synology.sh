@@ -20,20 +20,23 @@
 #    installer              liens copie-omv / migre-drive-ocis
 #    outils etat | installer | rclone-maj
 #    reglages voir | ram <auto|econome|equilibre|performant> [Mo] [transferts] [verifs]
-#             | omv <adresse> | ha <adresse> <webhook>
+#             | omv <adresse> | ha <adresse> <webhook> | omv-reveil <MAC|-> [rien|veille|arret]
+#    reveil <MAC> [adresse]           envoi d'un paquet de reveil (Wake-on-LAN)
 #    migrer simulation | appliquer   reprise d'une installation avec les anciens scripts
 #    disques verifier | etat         sante des disques (SMART) et du RAID, alertes
 # =====================================================================
 set -o pipefail
 
-SCRIPT_VERSION="2.2.0"
-API_VERSION=4
+SCRIPT_VERSION="2.3.0"
+API_VERSION=5
 
 # --------------------------- Reglages --------------------------------
 # Valeurs par defaut, modifiables avec « nas-synology reglages » (fichier SYNO_CONF)
 OMV_HOST="192.168.1.190"          # adresse de l'OMV / de la machine Debian (copie)
 OMV_USER="root"
 OMV_ROOT="/srv"                   # point de depart pour choisir la destination
+OMV_MAC=""                        # adresse MAC de l'OMV : reveil (Wake-on-LAN) avant les copies
+OMV_APRES="rien"                  # apres les copies, si l'OMV a ete reveille : rien, veille ou arret
 HA_HOST="192.168.1.222"           # Home Assistant (notification de fin), vide = pas de notification
 HA_WEBHOOK="nas-c09f382daf2d01deb430abbd"
 AUTO_REPRISE=5                    # migration : relances automatiques si rclone s'arrete
@@ -166,8 +169,91 @@ perf_load() {  # -> PERF_PROFIL, PERF_MO, PERF_MEM, PERF_T, PERF_C
 }
 
 # =========================== Copie vers l'OMV ========================
+# --------------------------- Reveil de l'OMV (Wake-on-LAN) ----------
+# Paquet magique (UDP 9 et 7) : diffusion generale et diffusion de chaque reseau du NAS
+wol_send() {  # wol_send <MAC> [adresse]
+  python3 - "$1" "${2:-}" <<'PYWOL'
+import re, socket, subprocess, sys
+mac, host = sys.argv[1], sys.argv[2]
+pkt = b"\xff" * 6 + bytes.fromhex(re.sub(r"[^0-9A-Fa-f]", "", mac)) * 16
+cibles = {"255.255.255.255"}
+try:
+    out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+    cibles |= set(re.findall(r"\bbrd (\d+\.\d+\.\d+\.\d+)", out))
+except Exception:
+    pass
+if host:
+    try:
+        ip = socket.gethostbyname(host)
+        cibles |= {ip, ip.rsplit(".", 1)[0] + ".255"}
+    except OSError:
+        pass
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+n = 0
+for c in sorted(cibles):
+    for port in (9, 7):
+        try:
+            s.sendto(pkt, (c, port))
+            n += 1
+        except OSError:
+            pass
+sys.exit(0 if n else 1)
+PYWOL
+}
+
+# L'OMV accepte-t-il les connexions SSH ? (« refusee » = allume)
+omv_up() {
+  python3 - "$OMV_HOST" <<'PYUP'
+import errno, socket, sys
+try:
+    s = socket.create_connection((sys.argv[1], 22), timeout=3)
+    s.close()
+except ConnectionRefusedError:
+    pass
+except OSError:
+    sys.exit(1)
+PYUP
+}
+
+# Reveille l'OMV s'il ne repond pas (adresse MAC reglee) -> 0 s'il repond
+omv_wake() {
+  [ -n "$OMV_MAC" ] || return 0
+  omv_up && return 0
+  local i t0; t0=$(date +%s)
+  echo "L'OMV ne repond pas : envoi du paquet de reveil ($OMV_MAC)..."
+  wol_send "$OMV_MAC" "$OMV_HOST" || true
+  for ((i = 1; i <= 36; i++)); do
+    sleep 5
+    if omv_up; then
+      sleep "${REVEIL_DEMARRAGE:-15}"   # services encore en demarrage
+      date +%s > "$CP_STATE/omv-reveille"
+      echo "OMV reveille en $(( $(date +%s) - t0 )) s."
+      return 0
+    fi
+    [ $((i % 6)) -eq 0 ] && { wol_send "$OMV_MAC" "$OMV_HOST" || true; }
+  done
+  echo "L'OMV ne repond pas apres 3 minutes (Wake-on-LAN active dans son BIOS ? adresse MAC correcte ?)."
+  return 1
+}
+
+# Apres les copies : remise en veille (ou arret) de l'OMV si c'est nous qui l'avons reveille
+omv_rest() {
+  [ -f "$CP_STATE/omv-reveille" ] || return 0
+  rm -f "$CP_STATE/omv-reveille"
+  local cmd
+  case "$OMV_APRES" in
+    veille) cmd='systemctl suspend 2>/dev/null || pm-suspend 2>/dev/null || echo mem > /sys/power/state' ;;
+    arret)  cmd='systemctl poweroff 2>/dev/null || poweroff' ;;
+    *) return 0 ;;
+  esac
+  timeout 30 ssh "${CP_SSH_OPTS[@]}" "$OMV_USER@$OMV_HOST" "$cmd" >/dev/null 2>&1 < /dev/null &
+  return 0
+}
+
 # --------------------------- Cle SSH vers l'OMV ----------------------
 cp_ensure_ssh() {
+  omv_wake || die "l'OMV ne repond pas."
   [ -f "$CP_KEY" ] || ssh-keygen -t ed25519 -N "" -C "copie-omv@$(hostname)" -f "$CP_KEY" -q
   if ! osh true 2>/dev/null; then
     echo -e "${J}Premiere connexion a l'OMV : autorisation de la cle SSH du NAS.${N}"
@@ -426,6 +512,7 @@ cp_api_launch() {  # cp_api_launch <source NAS> <dossier OMV> <dossier|contenu> 
   cp_running && die "une copie est deja en cours."
   [ -d "$src" ] || die "dossier source introuvable : $src"
   [[ "$mode" =~ ^(copie|deplacement)$ ]] || die "mode invalide (copie ou deplacement)."
+  omv_wake || die "l'OMV ne repond pas (eteint ou en veille, et le reveil n'a pas fonctionne)."
   [ -f "$CP_KEY" ] && osh true 2>/dev/null \
     || die "la connexion automatique NAS -> OMV n'est pas configuree : autorise la cle du Synology sur l'OMV depuis NAS Manager (page Copie), ou lance une fois 'sudo bash $SELF copie' en SSH (Nouvelle copie)."
   osh "[ -d $(q "$dst") ]" || die "dossier introuvable sur l'OMV : $dst"
@@ -1572,6 +1659,8 @@ case "${1:-}" in
     if [ "$rc" = 0 ] && [ -s "$CP_STATE/file-attente" ]; then
       bash "$SELF" copie lancer-file >> "$CP_STATE/file-attente.log" 2>&1
     fi
+    # plus rien a copier : l'OMV reveille pour la copie peut se rendormir
+    cp_running || omv_rest
     exit ;;
 esac
 
@@ -1755,8 +1844,8 @@ reglages() {
   case "${1:-voir}" in
     voir)
       agent_conf_load; perf_load
-      printf '{"omv":"%s","ha":"%s","webhook":"%s","profil":"%s","mo":"%s","transferts":"%s","verifs":"%s","effectif":{"profil":"%s","mo":%s,"options":"--transfers %s --checkers %s"},"ram_total_mo":%s,"ram_dispo_mo":%s}\n' \
-        "$OMV_HOST" "$HA_HOST" "$HA_WEBHOOK" "$RAM_PROFIL" "$RAM_MO" "$TRANSFERTS" "$VERIFS" "$PERF_PROFIL" "$PERF_MO" "$PERF_T" "$PERF_C" "$(ram_total_mo)" "$(ram_dispo_mo)" ;;
+      printf '{"omv":"%s","ha":"%s","webhook":"%s","omv_mac":"%s","omv_apres":"%s","profil":"%s","mo":"%s","transferts":"%s","verifs":"%s","effectif":{"profil":"%s","mo":%s,"options":"--transfers %s --checkers %s"},"ram_total_mo":%s,"ram_dispo_mo":%s}\n' \
+        "$OMV_HOST" "$HA_HOST" "$HA_WEBHOOK" "$OMV_MAC" "$OMV_APRES" "$RAM_PROFIL" "$RAM_MO" "$TRANSFERTS" "$VERIFS" "$PERF_PROFIL" "$PERF_MO" "$PERF_T" "$PERF_C" "$(ram_total_mo)" "$(ram_dispo_mo)" ;;
     ram)
       local p="${2:-auto}" mo="${3:-}" t="${4:-}" c="${5:-}"
       [[ "$p" =~ ^(auto|econome|equilibre|performant)$ ]] || die "profil invalide (auto, econome, equilibre, performant)."
@@ -1775,7 +1864,15 @@ reglages() {
     ha)
       [[ "${2:-}" =~ ^[A-Za-z0-9._:-]*$ && "${3:-}" =~ ^[A-Za-z0-9_-]*$ ]] || die "adresse ou webhook invalide."
       conf_set HA_HOST "${2:-}"; conf_set HA_WEBHOOK "${3:-}"; echo -e "${V}Notifications Home Assistant : ${2:-(desactivees)}${N}" ;;
-    *) die "usage : nas-synology reglages voir | ram <profil> [Mo] [transferts] [verifs] | omv <adresse> | ha <adresse> <webhook>" ;;
+    omv-reveil)   # omv-reveil <MAC|-> [rien|veille|arret]
+      local mac="${2:-}" ap="${3:-rien}"
+      [ "$mac" = - ] && mac=""
+      [[ -z "$mac" || "$mac" =~ ^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$ ]] || die "adresse MAC invalide (ex. 00:11:32:AA:BB:CC)."
+      [[ "$ap" =~ ^(rien|veille|arret)$ ]] || die "apres invalide (rien, veille ou arret)."
+      conf_set OMV_MAC "${mac^^}"; conf_set OMV_APRES "$ap"
+      if [ -n "$mac" ]; then echo -e "${V}Reveil de l'OMV avant les copies : $mac$( [ "$ap" != rien ] && echo " (remis en $ap apres)").${N}"
+      else echo -e "${V}Reveil de l'OMV desactive.${N}"; fi ;;
+    *) die "usage : nas-synology reglages voir | ram <profil> [Mo] [transferts] [verifs] | omv <adresse> | ha <adresse> <webhook> | omv-reveil <MAC|-> [rien|veille|arret]" ;;
   esac
 }
 
@@ -2154,13 +2251,15 @@ syno_main() {
       esac ;;
     reglages)  shift; reglages "$@" ;;
     migrer)    migrer "${2:-simulation}" ;;
+    reveil)    [[ "${2:-}" =~ ^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$ ]] || die "usage : nas-synology reveil <MAC> [adresse]"
+               wol_send "$2" "${3:-}" || die "envoi impossible."; echo -e "${V}Paquet de reveil envoye a $2.${N}" ;;
     disques)
       case "${2:-etat}" in
         verifier) disques_verifier; cat "$DISQUES_JSON" 2>/dev/null ;;
         etat)     cat "$DISQUES_JSON" 2>/dev/null || echo '{}' ;;
         *) die "usage : nas-synology disques verifier | etat" ;;
       esac ;;
-    *)         die "commande inconnue : $1 (copie, migration, version, outils, reglages, migrer, disques)" ;;
+    *)         die "commande inconnue : $1 (copie, migration, version, outils, reglages, migrer, disques, reveil)" ;;
   esac
 }
 

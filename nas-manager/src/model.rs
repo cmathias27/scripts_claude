@@ -96,6 +96,8 @@ pub struct Maintenance {
 #[serde(default)]
 pub struct DestState {
     pub ok: bool,
+    /// en veille, reveil configure (pas d'alerte)
+    pub veille: bool,
     pub verifie: i64,
     pub total: Option<u64>,
     pub utilise: Option<u64>,
@@ -180,6 +182,9 @@ pub struct Perf {
     pub omv: String,
     pub ha: String,
     pub webhook: String,
+    /// Synology : reveil de l'OMV avant les copies (nas-synology 2.3+)
+    pub omv_mac: String,
+    pub omv_apres: String,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -214,6 +219,59 @@ pub struct Job {
     pub rotation: String,
     pub dest_en_cours: Option<DestProgress>,
     pub entretien: Option<Maintenance>,
+    /// dernier test de restauration a blanc (script 2.4+)
+    pub test: Option<RestoreTest>,
+    pub test_en_cours: bool,
+}
+
+/// Un fichier du test de restauration
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct TestFile {
+    pub destination: String,
+    pub chemin: String,
+    pub taille: u64,
+    /// identique, different, absent ou erreur
+    pub resultat: String,
+    pub detail: String,
+}
+
+/// Test de restauration a blanc (fichiers au hasard restaures puis compares)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct RestoreTest {
+    pub debut: i64,
+    pub fin: i64,
+    /// ok, ecarts, echec ou vide
+    pub etat: String,
+    pub nb: i64,
+    pub identiques: i64,
+    pub ecarts: i64,
+    pub erreurs: i64,
+    /// « gdrive:ok;usb:ecarts »
+    pub destinations: String,
+    pub message: String,
+    pub fichiers: Vec<TestFile>,
+}
+
+/// Reveil (Wake-on-LAN) d'une destination
+#[derive(Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct ReveilDest {
+    pub mac: String,
+    pub adresse: String,
+    pub attente: u32,
+    /// rien, veille ou arret
+    pub apres: String,
+    pub ssh: String,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Reveil {
+    /// cle publique pour la remise en veille (vide tant qu'elle n'existe pas)
+    pub cle: String,
+    pub destinations: std::collections::BTreeMap<String, ReveilDest>,
 }
 
 impl Job {
@@ -279,6 +337,8 @@ pub struct Restore {
     pub element: String,
     /// sauvegarde versionnee : version restauree
     pub version: String,
+    /// retour a une date : date restauree (secondes, vide sinon)
+    pub date: String,
     pub avancement: Option<Progress>,
 }
 
@@ -413,6 +473,10 @@ pub struct OmvStatus {
     pub notif: Option<NotifConf>,
     /// sante des disques et du RAID (script 2.3+)
     pub sante_disques: Option<DiskHealth>,
+    /// test de restauration automatique : "JOURS HH:MM NB" ou vide (script 2.4+)
+    pub test_auto: String,
+    /// reveil des destinations (script 2.4+)
+    pub reveil: Option<Reveil>,
 }
 
 impl OmvStatus {

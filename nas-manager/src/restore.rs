@@ -1,5 +1,6 @@
 //! Restauration : tout, un element choisi en parcourant le Drive (dechiffre),
-//! ou un fichier de la corbeille du Drive (supprime / ancienne version).
+//! un fichier de la corbeille du Drive (supprime / ancienne version), ou l'etat
+//! d'un dossier a une date precise (corbeille datee ou versions).
 
 #[allow(unused_imports)]
 use crate::i18n::{tf, tr};
@@ -32,6 +33,30 @@ pub struct Snapshot {
     pub ajoute: Option<u64>,
 }
 
+/// Dates auxquelles on peut revenir (date plage)
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct DateRange {
+    /// corbeille, versions ou aucune
+    pub methode: String,
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+    pub points: Vec<i64>,
+    pub jours: Option<i64>,
+}
+
+/// Apercu d'une restauration a une date (date apercu)
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct DatePreview {
+    pub methode: String,
+    pub fichiers: Option<u64>,
+    pub octets: Option<u64>,
+    pub depuis_corbeille: Option<u64>,
+    pub version: Option<String>,
+    pub date_version: Option<i64>,
+}
+
 #[derive(Clone, Default)]
 pub struct RestoreState {
     pub job: String,
@@ -55,6 +80,19 @@ pub struct RestoreState {
     pub snaps: Vec<Snapshot>,
     pub snap: Option<String>,
     pub snaps_loading: bool,
+    /// retour a une date (onglet 3, script 2.4+) : possible pour cette sauvegarde
+    pub has_date: bool,
+    pub day: String,
+    pub time: String,
+    /// dossier a remettre dans son etat (vide = tout)
+    pub folder: String,
+    pub range: Option<DateRange>,
+    pub range_loading: bool,
+    pub preview: Option<DatePreview>,
+    pub preview_loading: bool,
+    pub date_error: String,
+    /// parcourir la destination pour choisir le dossier
+    pub date_browse: bool,
 }
 
 impl RestoreState {
@@ -66,6 +104,7 @@ impl RestoreState {
             .map(|d| format!("/srv/{d}"))
             .unwrap_or_else(|| source.rsplit_once('/').map(|(a, _)| a.to_string()).unwrap_or_default());
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H%M");
+        let hier = chrono::Local::now() - chrono::Duration::days(1);
         RestoreState {
             job: job.into(),
             source: source.into(),
@@ -73,6 +112,9 @@ impl RestoreState {
             has_trash: j.mode == "sync" && j.corbeille > 0,
             dests: j.dests(),
             versions: j.versions(),
+            has_date: (j.mode == "sync" && j.corbeille > 0) || j.versions(),
+            day: hier.format("%Y-%m-%d").to_string(),
+            time: "12:00".into(),
             ..Default::default()
         }
     }
@@ -130,6 +172,195 @@ pub fn snap_label(s: &Snapshot) -> String {
     t
 }
 
+/// Dates possibles pour le retour a une date (destination choisie)
+fn load_range(app: &mut App) {
+    let Some(r) = &mut app.restore else { return };
+    r.range_loading = true;
+    r.range = None;
+    r.preview = None;
+    r.date_error.clear();
+    let (job, dest) = (r.job.clone(), r.dest);
+    app.exec(
+        HostId::Omv,
+        tr("Dates disponibles"),
+        remote::date_range(&job, dest),
+        300,
+        Box::new(move |app, res| {
+            let Some(r) = &mut app.restore else { return };
+            if r.job != job || r.dest != dest {
+                return;
+            }
+            r.range_loading = false;
+            match res {
+                Ok(o) => match serde_json::from_str::<DateRange>(o.stdout.trim().lines().last().unwrap_or("")) {
+                    Ok(v) => r.range = Some(v),
+                    Err(_) => r.date_error = o.text().lines().last().unwrap_or(tr("Lecture impossible")).to_string(),
+                },
+                Err(e) => r.date_error = e.to_string(),
+            }
+        }),
+    );
+}
+
+fn date_ts(r: &RestoreState) -> Option<i64> {
+    fmt::parse_local(&r.day, &r.time)
+}
+
+fn load_preview(app: &mut App) {
+    let Some(r) = &mut app.restore else { return };
+    let Some(ts) = date_ts(r) else { return };
+    r.preview_loading = true;
+    r.preview = None;
+    r.date_error.clear();
+    let (job, dest, folder) = (r.job.clone(), r.dest, r.folder.trim().trim_matches('/').to_string());
+    app.exec(
+        HostId::Omv,
+        tr("Aperçu"),
+        remote::date_preview(&job, dest, ts, &folder),
+        900,
+        Box::new(move |app, res| {
+            let Some(r) = &mut app.restore else { return };
+            if r.job != job {
+                return;
+            }
+            r.preview_loading = false;
+            match res {
+                Ok(o) if o.code == 0 => match serde_json::from_str::<DatePreview>(o.stdout.trim().lines().last().unwrap_or("")) {
+                    Ok(v) => r.preview = Some(v),
+                    Err(_) => r.date_error = o.text().lines().last().unwrap_or(tr("Lecture impossible")).to_string(),
+                },
+                Ok(o) => r.date_error = o.text().lines().last().unwrap_or("").replace("ERREUR : ", ""),
+                Err(e) => r.date_error = e.to_string(),
+            }
+        }),
+    );
+}
+
+/// Onglet « À une date »
+fn date_tab(ui: &mut egui::Ui, r: &mut RestoreState, nav: &mut Option<String>, preview: &mut bool) {
+    ui.label(RichText::new(if r.versions {
+        tr("Remet le dossier tel qu'il était à la date choisie : la dernière version enregistrée avant cette date est restaurée.")
+    } else {
+        tr("Reconstitue le dossier tel qu'il était à la date choisie, grâce à la corbeille datée de la destination : fichiers supprimés depuis, anciennes versions des fichiers modifiés, sans les fichiers créés après.")
+    })
+    .small());
+    match (&r.range, r.range_loading) {
+        (_, true) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(tr("Lecture des dates disponibles…")).small());
+            });
+        }
+        (Some(g), _) if g.methode == "aucune" => {
+            ui.colored_label(WARN, tr("Pas de retour à une date pour cette sauvegarde (il faut le mode miroir avec corbeille, ou versionné)."));
+        }
+        (Some(g), _) => {
+            if let Some(min) = g.min {
+                let txt = if g.methode == "versions" {
+                    tf("Possible du {0} à aujourd'hui ({1} version(s)).", &[&(fmt::date_full(min)), &(g.points.len())])
+                } else {
+                    tf("Possible du {0} à aujourd'hui (corbeille de {1} jours) · {2} sauvegarde(s) avec des changements.", &[&(fmt::date_full(min)), &(g.jours.unwrap_or(0)), &(g.points.len())])
+                };
+                ui.label(RichText::new(txt).small().color(INFO));
+            } else if g.methode == "versions" {
+                ui.colored_label(WARN, tr("Aucune version enregistrée pour l'instant."));
+            }
+        }
+        _ => {}
+    }
+    ui.horizontal(|ui| {
+        ui.label(tr("Date :"));
+        let a = ui.add(egui::TextEdit::singleline(&mut r.day).desired_width(95.0).hint_text("AAAA-MM-JJ"));
+        ui.label(tr("heure :"));
+        let b = ui.add(egui::TextEdit::singleline(&mut r.time).desired_width(50.0).hint_text("HH:MM"));
+        if a.changed() || b.changed() {
+            r.preview = None;
+        }
+        for (lab, days) in [(tr("hier"), 1), (tr("il y a 1 semaine"), 7), (tr("il y a 1 mois"), 30)] {
+            if ui.small_button(lab).clicked() {
+                r.day = (chrono::Local::now() - chrono::Duration::days(days)).format("%Y-%m-%d").to_string();
+                r.preview = None;
+            }
+        }
+    });
+    let ts = date_ts(r);
+    match ts {
+        None => {
+            ui.colored_label(ERR, tr("Date ou heure invalide (AAAA-MM-JJ et HH:MM)."));
+        }
+        Some(t) if t > fmt::now() => {
+            ui.colored_label(ERR, tr("La date est dans le futur."));
+        }
+        Some(t) => {
+            if let Some(min) = r.range.as_ref().and_then(|g| g.min) {
+                if t < min {
+                    ui.colored_label(WARN, tr("Date plus ancienne que ce que garde la sauvegarde : le résultat sera incomplet."));
+                }
+            }
+        }
+    }
+    ui.horizontal(|ui| {
+        ui.label(tr("Dossier :"));
+        let resp = ui.add(egui::TextEdit::singleline(&mut r.folder).desired_width(300.0).hint_text(tr("vide = toute la sauvegarde")));
+        if resp.changed() {
+            r.preview = None;
+        }
+        if !r.versions && ui.small_button(if r.date_browse { tr("Fermer") } else { tr("Choisir…") }).clicked() {
+            r.date_browse = !r.date_browse;
+            if r.date_browse {
+                *nav = Some(String::new());
+            }
+        }
+    });
+    if r.date_browse && !r.versions {
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!r.path.is_empty(), egui::Button::new("\u{E08E}")).on_hover_text(tr("Remonter")).clicked() {
+                *nav = Some(r.path.rsplit_once('/').map(|(a, _)| a.to_string()).unwrap_or_default());
+            }
+            ui.label(RichText::new(if r.path.is_empty() { tr("(racine)").to_string() } else { format!("/{}", r.path) }).strong());
+            if r.loading {
+                ui.spinner();
+            }
+        });
+        egui::Frame::new().fill(ui.visuals().extreme_bg_color).corner_radius(6.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(160.0).auto_shrink([false, true]).show(ui, |ui| {
+                for e in r.entries.iter().filter(|e| e.is_dir) {
+                    let full = join(&r.path, &e.name);
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::Button::selectable(r.folder == full, format!("\u{E24A} {}", e.name)).min_size(egui::vec2(300.0, 0.0))).clicked() {
+                            r.folder = full.clone();
+                            r.preview = None;
+                        }
+                        if ui.small_button(tr("Ouvrir")).clicked() {
+                            *nav = Some(full.clone());
+                        }
+                    });
+                }
+            });
+        });
+        ui.label(RichText::new(tr("Dossiers présents aujourd'hui ; un dossier supprimé depuis peut être tapé à la main.")).small().weak());
+    }
+    ui.horizontal(|ui| {
+        if r.preview_loading {
+            ui.spinner();
+            ui.label(RichText::new(tr("Calcul…")).small());
+        } else if ui.add_enabled(ts.map(|t| t <= fmt::now()).unwrap_or(false), egui::Button::new(tr("Aperçu"))).clicked() {
+            *preview = true;
+        }
+        if let Some(p) = &r.preview {
+            let txt = if p.methode == "versions" {
+                tf("Version du {0} ({1})", &[&(p.date_version.map(fmt::date_full).unwrap_or_default()), &(p.version.clone().unwrap_or_default().get(..8).unwrap_or("").to_string())])
+            } else {
+                tf("{0} fichier(s), {1}, dont {2} repris de la corbeille", &[&(p.fichiers.unwrap_or(0)), &(fmt::bytes(p.octets.unwrap_or(0))), &(p.depuis_corbeille.unwrap_or(0))])
+            };
+            ui.label(RichText::new(txt).strong().color(INFO));
+        }
+    });
+    if !r.date_error.is_empty() {
+        ui.colored_label(WARN, &r.date_error);
+    }
+}
+
 fn list(app: &mut App, path: String) {
     let Some(r) = &mut app.restore else { return };
     if r.versions && r.snap.is_none() {
@@ -150,7 +381,7 @@ fn list(app: &mut App, path: String) {
         HostId::Omv,
         tr("Lecture de la sauvegarde"),
         script,
-        120,
+        300,
         Box::new(move |app, res| {
             let Some(r) = &mut app.restore else { return };
             if r.path != path {
@@ -204,6 +435,8 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     let mut dest_changed = false;
     let mut snap_changed = false;
     let mut reload_snaps = false;
+    let mut want_preview = false;
+    let date_api = app.omv.status.as_ref().map(|s| s.nb_api >= 9).unwrap_or(false);
     egui::Window::new(RichText::new(if r.versions { tf("Versions de « {0} »", &[&r.job]) } else { tf("Restaurer « {0} »", &[&r.job]) }).strong())
         .id(egui::Id::unique("restore"))
         .collapsible(false)
@@ -252,9 +485,14 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                 if r.has_trash {
                     tab_changed |= ui.selectable_value(&mut r.tab, 2, tr("\u{E4A6} Corbeille")).changed();
                 }
+                if r.has_date && date_api {
+                    tab_changed |= ui.selectable_value(&mut r.tab, 3, tr("\u{E1A0} À une date")).changed();
+                }
             });
             ui.separator();
-            if r.tab == 0 {
+            if r.tab == 3 {
+                date_tab(ui, &mut r, &mut nav, &mut want_preview);
+            } else if r.tab == 0 {
                 ui.label(if r.versions {
                     tr("Tout le dossier, tel qu'il était à la date de la version choisie, est recopié dans le dossier ci-dessous.")
                 } else {
@@ -318,8 +556,11 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                     browse_target = true;
                 }
             });
-            if r.tab != 2 {
+            if r.tab != 2 && r.tab != 3 {
                 ui.checkbox(&mut r.to_origin, tr("À son emplacement d'origine sur l'OMV"));
+            }
+            if r.tab == 3 {
+                r.to_origin = false;
             }
             let dest = effective_target(&r);
             if r.to_origin || dest.trim_end_matches('/') == r.source.trim_end_matches('/') {
@@ -328,7 +569,11 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
             ui.label(RichText::new(tr("La restauration tourne en arrière-plan ; son avancement s'affiche sur la page Sauvegardes.")).small().weak());
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let can = (r.tab == 0 || r.selected.is_some()) && (!r.versions || r.snap.is_some());
+                let can = if r.tab == 3 {
+                    date_ts(&r).map(|t| t <= fmt::now()).unwrap_or(false) && r.range.as_ref().map(|g| g.methode != "aucune").unwrap_or(false)
+                } else {
+                    (r.tab == 0 || r.selected.is_some()) && (!r.versions || r.snap.is_some())
+                };
                 if ui
                     .add_enabled(can && !dest.trim().is_empty(), egui::Button::new(RichText::new(tr("\u{E20C} Restaurer")).color(Color32::WHITE)).fill(INFO))
                     .clicked()
@@ -347,6 +592,22 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         return;
     }
     if !open || cancel {
+        return;
+    }
+    if go && r.tab == 3 {
+        let ts = date_ts(&r).unwrap_or(0);
+        let folder = r.folder.trim().trim_matches('/').to_string();
+        let target = effective_target(&r);
+        let label = if folder.is_empty() { r.job.clone() } else { folder.clone() };
+        let script = remote::date_restore(&r.job, r.dest, ts, &target, &folder);
+        app.ask_confirm(
+            tr("Revenir à une date"),
+            &tf("« {0} » tel qu'il était le {1} va être recopié dans {2}. Les fichiers actuels ne sont pas modifiés.", &[&label, &(fmt::date_full(ts)), &target]),
+            tr("Restaurer"),
+            false,
+            None,
+            Box::new(move |app| app.action_toast(HostId::Omv, tr("Restauration"), script, 30)),
+        );
         return;
     }
     if go {
@@ -373,9 +634,20 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         }
         return;
     }
-    let need_snaps = r.versions && (dest_changed || reload_snaps || (r.snaps.is_empty() && !r.snaps_loading && r.error.is_empty()));
-    let need_list = (tab_changed || dest_changed || snap_changed) && r.tab != 0;
+    let need_range = r.tab == 3 && (dest_changed || (tab_changed && r.range.is_none())) && !r.range_loading;
+    if r.tab == 3 && dest_changed {
+        r.preview = None;
+    }
+    let need_snaps = r.versions && r.tab != 3 && (dest_changed || reload_snaps || (r.snaps.is_empty() && !r.snaps_loading && r.error.is_empty()));
+    let need_list = (tab_changed || dest_changed || snap_changed) && r.tab != 0 && r.tab != 3;
     app.restore = Some(r);
+    if need_range {
+        load_range(app);
+    }
+    if want_preview {
+        load_preview(app);
+        return;
+    }
     if need_snaps {
         load_snaps(app);
     } else if need_list {

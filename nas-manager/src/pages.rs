@@ -192,6 +192,9 @@ fn host_banner(app: &mut App, ui: &mut egui::Ui, h: HostId) -> bool {
             if matches!(e, SshError::KeyRefused | SshError::HostKeyChanged) && ui.button(tr("\u{E270} Paramètres")).clicked() {
                 app.page = Page::Settings;
             }
+            if matches!(e, SshError::Unreachable(_) | SshError::Timeout) {
+                crate::fiabilite::wake_button(app, ui, h);
+            }
         });
         ui.add_space(6.0);
     } else if !has {
@@ -846,6 +849,7 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
         }
     });
     verif_planner(app, ui, &s.verif_auto);
+    crate::fiabilite::test_planner(app, ui, &s);
     if s.arret_demande && !any_running {
         ui.colored_label(WARN, tr("Un arrêt a été demandé : les sauvegardes reprendront à leur prochain horaire (ou en les lançant ici)."));
     }
@@ -863,7 +867,10 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
                     "echec" => (ERR, tr("Échec")),
                     _ => (WARN, tr("Interrompue")),
                 };
-                let what = if r.element.is_empty() { r.nom.clone() } else { format!("{} / {}", r.nom, r.element) };
+                let mut what = if r.element.is_empty() { r.nom.clone() } else { format!("{} / {}", r.nom, r.element) };
+                if let Ok(d) = r.date.parse::<i64>() {
+                    what = tf("{0}, tel qu'au {1}", &[&what, &(fmt::date_full(d))]);
+                }
                 dot_label(ui, col, tf("{0} : « {1} » → {2}", &[&t, &what, &r.cible]));
                 if let Some(p) = &r.avancement {
                     progress_bar(ui, p.pct, progress_text(p));
@@ -938,6 +945,16 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         .clicked()
                     {
                         app.action_toast(HostId::Omv, tr("Vérification"), remote::nb_verify(&name), 30);
+                        ui.close();
+                    }
+                    if app.omv.status.as_ref().map(|s| s.nb_api >= 9).unwrap_or(false)
+                        && ui
+                            .add_enabled(!j.test_en_cours, egui::Button::new(tr("\u{E606} Tester la restauration")))
+                            .on_hover_text(tr("Restaure quelques fichiers au hasard depuis chaque destination, les compare aux originaux, puis les efface"))
+                            .clicked()
+                    {
+                        let nb = app.omv.status.as_ref().and_then(|s| s.test_auto.split_whitespace().nth(2).and_then(|n| n.parse().ok())).unwrap_or(5);
+                        app.action_toast(HostId::Omv, tr("Test de restauration"), remote::test_run(&name, nb), 30);
                         ui.close();
                     }
                     if ui.button(tr("\u{E4A6} Supprimer la sauvegarde…")).clicked() {
@@ -1110,6 +1127,7 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
         if let Some(v) = &j.verification {
             verification_box(app, ui, &j.nom, v);
         }
+        crate::fiabilite::test_box(app, ui, j, now);
         if j.mode == "sync" && j.corbeille > 0 {
             ui.label(
                 RichText::new(tf("Fichiers supprimés/modifiés gardés {0} jours dans la corbeille de la destination", &[&j.corbeille]))
@@ -1899,6 +1917,9 @@ pub fn alert_label(tag: &str) -> String {
     if let Some(n) = tag.strip_prefix("restore-") {
         return tf("Restauration « {0} » en échec", &[&n]);
     }
+    if let Some(n) = tag.strip_prefix("test-") {
+        return tf("Test de restauration « {0} » : écarts", &[&n]);
+    }
     if let Some(n) = tag.strip_prefix("disque-") {
         return tf("Disque en danger (n° de série {0})", &[&n]);
     }
@@ -2280,6 +2301,8 @@ pub fn copy(app: &mut App, ui: &mut egui::Ui) {
     }
     ui.add_space(10.0);
 
+    crate::fiabilite::syno_omv_wake(app, ui);
+    ui.add_space(6.0);
     egui::CollapsingHeader::new(tr("\u{E5D4} Réparer les droits d'un dossier sur l'OMV")).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut app.perms.dir).desired_width(380.0).hint_text(tr("dossier de l'OMV")));
@@ -2917,9 +2940,11 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) {
     ui.columns(2, |cols| {
         card(&mut cols[0], tr("2. OMV / Debian (sauvegardes programmées et temps réel, alertes)"), |ui| {
             host_settings(ui, "omvset", &mut app.edit.omv, tr("Si l'utilisateur n'est pas root"));
+            crate::fiabilite::mac_settings(app, ui, HostId::Omv);
         });
         card(&mut cols[1], tr("3. Synology (copie vers l'OMV, migration oCIS)"), |ui| {
             host_settings(ui, "synoset", &mut app.edit.syno, tr("Compte administrateur du Synology (la connexion root est désactivée par défaut sur DSM)"));
+            crate::fiabilite::mac_settings(app, ui, HostId::Syno);
             ui.label(RichText::new(tr("Service SSH à activer : DSM > Panneau de configuration > Terminal & SNMP.")).small().weak());
         });
     });
@@ -3123,8 +3148,8 @@ fn sites_card(app: &mut App, ui: &mut egui::Ui) {
             if ui.add_enabled(!name.is_empty() && !taken, egui::Button::new(tr("+ Ajouter un site"))).clicked() {
                 app.settings.sites.push(crate::config::Site {
                     name: name.clone(),
-                    omv: crate::config::HostCfg { host: String::new(), port: 22, user: "root".into(), sudo: false, saved_pass: String::new() },
-                    syno: crate::config::HostCfg { host: String::new(), port: 22, user: String::new(), sudo: true, saved_pass: String::new() },
+                    omv: crate::config::HostCfg { host: String::new(), port: 22, user: "root".into(), sudo: false, saved_pass: String::new(), mac: String::new() },
+                    syno: crate::config::HostCfg { host: String::new(), port: 22, user: String::new(), sudo: true, saved_pass: String::new(), mac: String::new() },
                 });
                 app.edit.sites = app.settings.sites.clone();
                 let _ = crate::config::save(&app.settings);

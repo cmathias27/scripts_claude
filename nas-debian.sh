@@ -37,6 +37,10 @@
 #    versions liste | ls | restaurer | entretien   sauvegardes versionnees (restic)
 #    secours etat | sauvegarder | telecharger | restaurer | mots-de-passe
 #                                   kit de secours (ce qui permet de tout reconstruire)
+#    test-restauration <NOM> [NB] | tout | planifier <JOURS|non> [HH:MM] [NB]
+#                                   test de restauration a blanc (fichiers au hasard)
+#    date plage | apercu | restaurer   retour a une date precise (corbeille datee, versions)
+#    reveil liste | regler | retirer | tester | envoyer   reveil des destinations (Wake-on-LAN)
 #    mots-de-passe                  mots de passe de chiffrement (affichage)
 #    <commandes de nas-backup>      run, run-at, run-all, stop, save, delete, restore,
 #                                   ls, simulate, verifier, verifier-tout, verif-plan,
@@ -44,8 +48,8 @@
 # =====================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="2.3.0"
-API_VERSION=8
+SCRIPT_VERSION="2.4.0"
+API_VERSION=9
 
 # --------------------------- Parametres ------------------------------
 GDRIVE="gdrive"                  # remote Google Drive deja configure
@@ -660,7 +664,10 @@ check_cmd() {
     for d in $(dest_list 2>/dev/null | python3 -c 'import json,sys; print(" ".join(x["nom"] for x in json.load(sys.stdin)))' 2>/dev/null); do
       local tg="dest-$d" tq="quota-$d" lab="Destination « $d »"
       [ "$d" = "$GDRIVE" ] && { tg=gdrive; tq=quota; lab="Google Drive"; }
-      if dest_check "$d"; then
+      local dc=0; dest_check "$d" || dc=$?
+      if [ $dc -eq 2 ]; then
+        $N ok "$tg" "$lab" "La destination répond de nouveau (en veille : réveillée avant chaque sauvegarde)."
+      elif [ $dc -eq 0 ]; then
         [ "$d" = "$GDRIVE" ] && GD=true
         $N ok "$tg" "$lab" "La connexion fonctionne de nouveau."
         local u t
@@ -2026,9 +2033,19 @@ PYDL
 }
 
 # Test d'une destination ; resultat garde dans destinations.json -> 0 si joignable
-dest_check() {  # dest_check <nom>
-  local n="$1" ok=false err="" about=""
-  if ! err=$(dest_ready "$n"); then
+dest_check() {  # dest_check <nom> [reveiller]  -> 0 joignable, 1 non, 2 en veille (reveil configure)
+  local n="$1" ok=false err="" about="" veille=false a
+  # machine en veille avec reveil configure : pas d'alerte (reveillee avant chaque usage),
+  # sauf test explicite (reveiller)
+  if reveil_get "$n"; then
+    a="${W_ADDR:-$(dest_host "$n")}"
+    if [ -n "$a" ] && ! wol_up "$a"; then
+      if [ "${2:-}" = reveiller ]; then dest_wake "$n" >/dev/null || true; else veille=true; fi
+    fi
+  fi
+  if [ "$veille" = true ]; then
+    err="en veille : reveillee automatiquement avant chaque sauvegarde"
+  elif ! err=$(dest_ready "$n"); then
     :
   elif err=$(timeout 120 rclone lsf "$n:" --max-depth 1 2>&1 >/dev/null < /dev/null) || echo "$err" | grep -qi 'directory not found'; then
     ok=true; err=""
@@ -2040,14 +2057,19 @@ dest_check() {  # dest_check <nom>
   [ "$ok" = true ] || [ -n "$err" ] || err="destination injoignable"
   mkdir -p "$STATE_DIR"
   ( flock 5
-    python3 - "$DEST_JSON" "$n" "$ok" "$err" "$about" <<'PYDC'
+    python3 - "$DEST_JSON" "$n" "$ok" "$err" "$about" "$veille" <<'PYDC'
 import json, sys, time
-path, n, ok, err, about = sys.argv[1:6]
+path, n, ok, err, about, veille = sys.argv[1:7]
 try:
     d = json.load(open(path))
 except Exception:
     d = {}
 e = {"ok": ok == "true", "verifie": int(time.time())}
+if veille == "true":
+    e["veille"] = True
+    for k in ("total", "utilise", "libre"):
+        if (d.get(n) or {}).get(k) is not None:
+            e[k] = d[n][k]     # dernier espace connu
 if err:
     e["erreur"] = err
 try:
@@ -2063,6 +2085,7 @@ import os
 os.replace(path + ".new", path)
 PYDC
   ) 5>"$DEST_JSON.lock"
+  [ "$veille" = true ] && return 2
   [ "$ok" = true ]
 }
 
@@ -2229,6 +2252,7 @@ dest_delete() {  # dest_delete <nom>
   [ -z "$u" ] || die "destination utilisee par : $(echo "$u" | paste -sd, -). Retire-la d'abord de ces sauvegardes."
   rclone config delete "$n" || die "suppression impossible."
   remote_exists "$n-base" && rclone config delete "$n-base"
+  [ -f "$REVEIL_CONF" ] && { grep -v "^$n|" "$REVEIL_CONF" > "$REVEIL_CONF.new"; mv -f "$REVEIL_CONF.new" "$REVEIL_CONF"; }
   remote_exists "$(crypt_of "$n")" && [ "$n" != "$GDRIVE" ] && rclone config delete "$(crypt_of "$n")"
   python3 - "$DEST_JSON" "$n" <<'PYDD' 2>/dev/null
 import json, sys
@@ -2245,7 +2269,7 @@ destinations_main() {
   case "${1:-liste}" in
     liste)     need_root_rclone; dest_list ;;
     etat)      need_root_rclone
-               if [ -n "${2:-}" ]; then dest_check "$2" || true
+               if [ -n "${2:-}" ]; then dest_check "$2" reveiller || true
                else local d; for d in $(dest_list | python3 -c 'import json,sys; print(" ".join(x["nom"] for x in json.load(sys.stdin)))'); do dest_check "$d" || true; done; fi
                cat "$DEST_JSON" 2>/dev/null || echo '{}' ;;
     creer)     [ -n "${3:-}" ] || die "usage : destinations creer <NOM> <TYPE>  (parametres cle=valeur sur l'entree standard)"; dest_create "$2" "$3" ;;
@@ -2259,6 +2283,238 @@ need_root_rclone() {
   [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
   command -v rclone >/dev/null || die "rclone n'est pas installe (nas-debian outils installer)."
   mkdir -p "$CONF_DIR" "$STATE_DIR"
+}
+
+# =========================== Reveil des machines (Wake-on-LAN) =======
+# /etc/nas-backup/reveil.conf, une ligne par destination a reveiller (autre NAS, PC...) :
+#   NOM (destination)|MAC|ADRESSE (vide = celle de la destination)|ATTENTE_S|APRES|SSH
+#   APRES : rien (la machine se rendort d'elle-meme), veille ou arret : commande envoyee
+#           en SSH a SSH (utilisateur@machine, cle /root/.ssh/id_nas_reveil) apres usage,
+#           seulement si c'est nous qui l'avons reveillee.
+# Avant une sauvegarde, un test, une verification ou une restauration qui l'utilise, une
+# destination qui ne repond pas recoit le paquet magique, puis on attend qu'elle reponde.
+REVEIL_CONF="$CONF_DIR/reveil.conf"
+REVEIL_KEY="/root/.ssh/id_nas_reveil"
+REVEIL_ATTENTE=180
+
+valid_mac() { [[ "$1" =~ ^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$ ]]; }
+
+# Destination de base d'un remote (gbackup -> gdrive, usb-chiffre -> usb)
+base_remote() {
+  local r="${1%%:*}"
+  case "$r" in "$CRYPT"|gcrypt) echo "$GDRIVE" ;; *-chiffre) echo "${r%-chiffre}" ;; *) echo "$r" ;; esac
+}
+
+reveil_get() {  # reveil_get <destination> -> W_MAC W_ADDR W_WAIT W_AFTER W_SSH (1 si pas de reveil)
+  local line
+  [ -f "$REVEIL_CONF" ] || return 1
+  line=$(grep -m1 "^$1|" "$REVEIL_CONF" 2>/dev/null) || return 1
+  IFS='|' read -r _ W_MAC W_ADDR W_WAIT W_AFTER W_SSH <<< "$line"
+  [[ "${W_WAIT:-}" =~ ^[0-9]+$ ]] || W_WAIT=$REVEIL_ATTENTE
+  W_AFTER="${W_AFTER:-rien}"
+  valid_mac "$W_MAC"
+}
+
+# Adresse reseau d'une destination (SFTP, SMB, WebDAV ; alias vers l'un d'eux)
+dest_host() {  # dest_host <destination>
+  python3 - "$(rclone_conf_file)" "$1" <<'PYDH' 2>/dev/null
+import configparser, sys, urllib.parse
+cp = configparser.RawConfigParser(strict=False, interpolation=None)
+cp.read(sys.argv[1])
+n = sys.argv[2]
+for _ in range(4):
+    if not cp.has_section(n):
+        break
+    c = dict(cp.items(n))
+    t = c.get("type", "")
+    if t in ("sftp", "smb", "ftp"):
+        print(c.get("host", "")); break
+    if t == "webdav":
+        print(urllib.parse.urlsplit(c.get("url", "")).hostname or ""); break
+    if t in ("alias", "crypt") and ":" in c.get("remote", ""):
+        n = c["remote"].split(":", 1)[0]
+        continue
+    break
+PYDH
+}
+
+# Paquet magique (UDP 9 et 7) : diffusion generale, diffusion de chaque reseau de la machine,
+# et adresse de la machine quand elle est connue
+wol_send() {  # wol_send <MAC> [adresse]
+  python3 - "$1" "${2:-}" <<'PYWOL'
+import re, socket, subprocess, sys
+mac, host = sys.argv[1], sys.argv[2]
+pkt = b"\xff" * 6 + bytes.fromhex(re.sub(r"[^0-9A-Fa-f]", "", mac)) * 16
+cibles = {"255.255.255.255"}
+try:
+    out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+    cibles |= set(re.findall(r"\bbrd (\d+\.\d+\.\d+\.\d+)", out))
+except Exception:
+    pass
+if host:
+    try:
+        ip = socket.gethostbyname(host)
+        cibles |= {ip, ip.rsplit(".", 1)[0] + ".255"}
+    except OSError:
+        pass
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+n = 0
+for c in sorted(cibles):
+    for port in (9, 7):
+        try:
+            s.sendto(pkt, (c, port))
+            n += 1
+        except OSError:
+            pass
+sys.exit(0 if n else 1)
+PYWOL
+}
+
+# La machine repond-elle ? (connexion TCP sur les ports courants, « refusee » = allumee)
+wol_up() {  # wol_up <adresse>   (NAS_REVEIL_PORTS : ports testes, pour les tests)
+  python3 - "$1" "${NAS_REVEIL_PORTS:-22 445 139 80 443 5000 5001 2049 111 9200}" <<'PYUP'
+import errno, select, socket, sys, time
+try:
+    ip = socket.gethostbyname(sys.argv[1])
+except OSError:
+    sys.exit(1)
+socks = []
+for port in map(int, sys.argv[2].split()):
+    s = socket.socket()
+    s.setblocking(False)
+    r = s.connect_ex((ip, port))
+    if r in (0, errno.ECONNREFUSED):
+        sys.exit(0)
+    socks.append(s)
+fin = time.time() + 3
+while socks and time.time() < fin:
+    _, w, _ = select.select([], socks, [], max(0.05, fin - time.time()))
+    for s in w:
+        if s.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) in (0, errno.ECONNREFUSED):
+            sys.exit(0)
+        socks.remove(s)
+sys.exit(1)
+PYUP
+}
+
+# Reveille une destination si besoin -> 0 si elle repond (ou sans reveil configure) ; message sinon
+dest_wake() {  # dest_wake <destination>
+  local r a i t0
+  r=$(base_remote "$1")
+  reveil_get "$r" || return 0
+  a="${W_ADDR:-$(dest_host "$r")}"
+  [ -n "$a" ] || { echo "adresse de « $r » inconnue : indique-la dans le reveil de la destination"; return 1; }
+  wol_up "$a" && return 0
+  logl "$r : reveil (Wake-on-LAN $W_MAC, $a)"
+  t0=$(date +%s)
+  wol_send "$W_MAC" "$a" || true
+  for ((i = 1; i * 5 <= W_WAIT; i++)); do
+    sleep 5
+    if wol_up "$a"; then
+      sleep "${REVEIL_DEMARRAGE:-15}"     # services (SSH, partages) encore en demarrage
+      date +%s > "$STATE_DIR/reveil-$r"
+      logl "$r : reveillee en $(( $(date +%s) - t0 )) s"
+      return 0
+    fi
+    [ $((i % 6)) -eq 0 ] && { wol_send "$W_MAC" "$a" || true; }
+  done
+  logl "$r : ne repond pas apres le reveil ($W_WAIT s)"
+  echo "la machine ne repond pas apres le reveil ($W_WAIT s) : Wake-on-LAN active dans son BIOS / ses reglages, adresse MAC correcte ?"
+  return 1
+}
+
+# Apres usage : remise en veille ou arret, si c'est nous qui l'avons reveillee et que plus
+# rien ne l'utilise
+dest_rest() {  # dest_rest <destination>
+  local r cmd
+  r=$(base_remote "$1")
+  [ -f "$STATE_DIR/reveil-$r" ] || return 0
+  reveil_get "$r" || { rm -f "$STATE_DIR/reveil-$r"; return 0; }
+  pgrep -f "(rclone|restic) .*[ =:]$r(-chiffre)?:" >/dev/null && return 0
+  rm -f "$STATE_DIR/reveil-$r"
+  case "$W_AFTER" in
+    veille) cmd='systemctl suspend 2>/dev/null || pm-suspend 2>/dev/null || echo mem > /sys/power/state' ;;
+    arret)  cmd='systemctl poweroff 2>/dev/null || synoshutdown -s 2>/dev/null || poweroff' ;;
+    *) return 0 ;;
+  esac
+  [ -n "$W_SSH" ] && [ -f "$REVEIL_KEY" ] || { logl "$r : remise en $W_AFTER impossible (compte SSH ou cle absents)"; return 0; }
+  logl "$r : remise en $W_AFTER ($W_SSH)"
+  timeout 30 ssh -i "$REVEIL_KEY" -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+    "$W_SSH" "$cmd" >/dev/null 2>&1 < /dev/null &
+  return 0
+}
+
+reveil_list() {  # JSON : reglages de reveil de chaque destination
+  python3 - "$REVEIL_CONF" "$REVEIL_KEY.pub" <<'PYRL'
+import json, os, sys
+out = {"cle": "", "destinations": {}}
+try:
+    out["cle"] = open(sys.argv[2]).read().strip()
+except OSError:
+    pass
+try:
+    for l in open(sys.argv[1]):
+        p = l.rstrip("\n").split("|")
+        if len(p) >= 2 and p[0] and not p[0].startswith("#"):
+            p += [""] * (6 - len(p))
+            out["destinations"][p[0]] = {"mac": p[1], "adresse": p[2], "attente": int(p[3]) if p[3].isdigit() else 180,
+                                         "apres": p[4] or "rien", "ssh": p[5]}
+except OSError:
+    pass
+print(json.dumps(out, ensure_ascii=False))
+PYRL
+}
+
+reveil_main() {
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  mkdir -p "$CONF_DIR" "$STATE_DIR"
+  case "${1:-liste}" in
+    liste) reveil_list ;;
+    regler)   # regler NOM MAC [ADRESSE] [ATTENTE] [APRES] [SSH]
+      local n="${2:-}" mac="${3:-}" a="${4:-}" w="${5:-}" ap="${6:-rien}" s="${7:-}"
+      [ "$a" = - ] && a=""; [ "$w" = - ] && w=""; [ "$s" = - ] && s=""
+      [[ "$n" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]] || die "destination invalide : $n"
+      remote_exists "$n" || die "destination « $n » introuvable."
+      valid_mac "$mac" || die "adresse MAC invalide (ex. 00:11:32:AA:BB:CC)."
+      [[ -z "$a" || "$a" =~ ^[A-Za-z0-9._-]+$ ]] || die "adresse invalide : $a"
+      [[ -z "$w" || ( "$w" =~ ^[0-9]+$ && "$w" -ge 30 && "$w" -le 900 ) ]] || die "attente invalide (30 a 900 s)."
+      [[ "$ap" =~ ^(rien|veille|arret)$ ]] || die "apres invalide (rien, veille ou arret)."
+      [[ -z "$s" || "$s" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$ ]] || die "compte SSH invalide (utilisateur@machine)."
+      [ "$ap" = rien ] || [ -n "$s" ] || die "indique le compte SSH (utilisateur@machine) pour la mise en veille ou l'arret."
+      [ -n "$a" ] || [ -n "$(dest_host "$n")" ] || die "adresse de la machine inconnue pour « $n » : indique-la."
+      touch "$REVEIL_CONF"; chmod 600 "$REVEIL_CONF"
+      { grep -v "^$n|" "$REVEIL_CONF"; echo "$n|${mac^^}|$a|${w:-$REVEIL_ATTENTE}|$ap|$s"; } > "$REVEIL_CONF.new"
+      mv -f "$REVEIL_CONF.new" "$REVEIL_CONF"
+      if [ "$ap" != rien ] && [ ! -f "$REVEIL_KEY" ]; then
+        mkdir -p /root/.ssh; chmod 700 /root/.ssh
+        ssh-keygen -t ed25519 -N "" -C "nas-reveil@$(hostname -s 2>/dev/null)" -f "$REVEIL_KEY" -q
+      fi
+      vert "Reveil de « $n » enregistre ($mac)."
+      if [ "$ap" != rien ]; then
+        echo "Pour la mise en $ap, autorise cette cle sur $s (~/.ssh/authorized_keys) :"
+        cat "$REVEIL_KEY.pub"
+      fi ;;
+    retirer)
+      [ -n "${2:-}" ] || die "usage : reveil retirer <NOM>"
+      [ -f "$REVEIL_CONF" ] && { grep -v "^$2|" "$REVEIL_CONF" > "$REVEIL_CONF.new"; mv -f "$REVEIL_CONF.new" "$REVEIL_CONF"; }
+      rm -f "$STATE_DIR/reveil-$2"
+      vert "Reveil de « $2 » retire." ;;
+    tester)
+      [ -n "${2:-}" ] || die "usage : reveil tester <NOM>"
+      reveil_get "$2" || die "pas de reveil configure pour « $2 »."
+      local a t0 msg; a="${W_ADDR:-$(dest_host "$2")}"
+      if wol_up "$a"; then vert "« $2 » ($a) est deja allume : rien a reveiller."; return 0; fi
+      t0=$(date +%s)
+      REVEIL_DEMARRAGE=0 msg=$(dest_wake "$2") || die "$msg"
+      vert "« $2 » reveille en $(( $(date +%s) - t0 )) s."
+      dest_rest "$2" ;;
+    envoyer)   # envoyer MAC [ADRESSE]
+      valid_mac "${2:-}" || die "adresse MAC invalide."
+      wol_send "$2" "${3:-}" || die "envoi impossible."
+      vert "Paquet de reveil envoye a $2." ;;
+    *) die "usage : nas-debian reveil liste | regler NOM MAC [ADRESSE] [ATTENTE] [APRES] [SSH] | retirer NOM | tester NOM | envoyer MAC [ADRESSE]" ;;
+  esac
 }
 
 # =========================== Sauvegardes temps reel ==================
@@ -2489,6 +2745,7 @@ rt_flush() {
     esac
   done
   RT_PEND=(); RT_MOD=(); RT_FIRST=0
+  dest_wake "$R_DEST" >/dev/null || true      # destination en veille (reveil configure)
   local -a common=(--log-file "$log" --log-level INFO --retries 3)
   [ -n "$R_BW" ] && common+=(--bwlimit "$R_BW")
   local n o f fail=0
@@ -2560,7 +2817,19 @@ rt_catchup() {  # rt_catchup <nom> [initial]
   [ "${2:-}" = initial ] && min=()
   [ -f "$STATE_DIR/rt-$R_NAME.autorise" ] && min=()
   [ -n "$R_BW" ] && common+=(--bwlimit "$R_BW")
+  # destination en veille (reveil configure) : on ne la reveille que s'il y a du nouveau
+  # (les suppressions sont repercutees au fil de l'eau, ce qui la reveille aussi)
+  local mk="$STATE_DIR/rt-$R_NAME.rattrapage" wa=""
+  if reveil_get "$(base_remote "$R_DEST")"; then
+    wa="${W_ADDR:-$(dest_host "$(base_remote "$R_DEST")")}"
+    if [ "${2:-}" != initial ] && [ -f "$mk" ] && [ -n "$wa" ] && ! wol_up "$wa" \
+       && [ -z "$(find "${R_SRCS[@]}" -newer "$mk" -type f -print -quit 2>/dev/null)" ]; then
+      rm -f "$tmp"; return 0
+    fi
+  fi
+  touch "$mk"
   rt_log "rattrapage$( [ "${2:-}" = initial ] && echo " (envoi complet)") : debut"
+  dest_wake "$R_DEST" >/dev/null || true
   for src in "${R_SRCS[@]}"; do
     src="${src%/}"
     [ -d "$src" ] || { rt_log "ERROR : dossier introuvable : $src"; rc=1; continue; }
@@ -2947,7 +3216,8 @@ job_del() {
   grep -v "^$1|" "$JOBS" > "$tmp"; cat "$tmp" > "$JOBS"; rm -f "$tmp"
   rm -rf "$STATE_DIR/$1.status" "$STATE_DIR/$1.lastok" "$STATE_DIR/alertes/job-$1" "$STATE_DIR/alertes/retard-$1" \
         "$STATE_DIR/$1.bilan.json" "$STATE_DIR/$1.run.log" "$STATE_DIR/$1.running" "$STATE_DIR/$1.maxage" \
-        "$STATE_DIR/$1.d" "$STATE_DIR/$1.dest" "$STATE_DIR/$1.run.all" "$STATE_DIR/alertes/versions-$1" "$STATE_DIR/$1.entretien.json"
+        "$STATE_DIR/$1.d" "$STATE_DIR/$1.dest" "$STATE_DIR/$1.run.all" "$STATE_DIR/alertes/versions-$1" "$STATE_DIR/$1.entretien.json" \
+        "$STATE_DIR/$1.lastdebut" "$STATE_DIR/$1.test.json" "$STATE_DIR/$1.test.log" "$STATE_DIR/$1.test.res" "$STATE_DIR/alertes/test-$1"
 }
 
 # Destinations de la sauvegarde chargee -> JD_R (remotes), JD_E (oui / non)
@@ -3041,6 +3311,13 @@ gen_cron() {
       read -r vd vt < "$CONF_DIR/verification"
       [[ "$vd" =~ ^[1-7]+$ && "$vt" =~ ^[0-9]{2}:[0-9]{2}$ ]] && \
         echo "$((10#${vt##*:})) $((10#${vt%%:*})) * * $(echo "$vd" | sed 's/./&,/g; s/,$//; s/7/0/') root $SELF verifier-tout >/dev/null 2>&1"
+    fi
+    # test de restauration a blanc
+    if [ -f "$TEST_CONF" ]; then
+      local td tt
+      read -r td tt _ < "$TEST_CONF"
+      [[ "$td" =~ ^[1-7]+$ && "$tt" =~ ^[0-9]{2}:[0-9]{2}$ ]] && \
+        echo "$((10#${tt##*:})) $((10#${tt%%:*})) * * $(echo "$td" | sed 's/./&,/g; s/,$//; s/7/0/') root $SELF test-restauration tout >/dev/null 2>&1"
     fi
     # sauvegardes versionnees : nettoyage et controle des depots chaque dimanche
     if grep -qE '^[^#|][^|]*\|[^|]*\|[^|]*\|versions\|' "$JOBS" 2>/dev/null; then
@@ -3554,6 +3831,8 @@ run_job() {
     RD_RAM=0
     if ! remote_exists "$r"; then
       echo "$(date '+%Y/%m/%d %H:%M:%S') ERROR : destination « $r » introuvable (retiree de rclone ?)" >> "$runlog"; rcd=1
+    elif ! msg=$(dest_wake "$r"); then
+      echo "$(date '+%Y/%m/%d %H:%M:%S') ERROR : destination « $r » : $msg" >> "$runlog"; rcd=1
     elif ! msg=$(dest_ready "$r"); then
       echo "$(date '+%Y/%m/%d %H:%M:%S') ERROR : destination « $r » : $msg" >> "$runlog"; rcd=1
     elif [ "$J_MODE" = versions ]; then
@@ -3566,6 +3845,8 @@ run_job() {
     [ "$rcd" -ne 0 ] && rc=$rcd
   done
   [ "$stopped" = 1 ] && [ "$rc" -eq 0 ] && rc=143
+  # machines reveillees pour cette sauvegarde : remises en veille si demande
+  for ((i = 0; i < n; i++)); do dest_rest "${JD_R[i]}"; done
 
   rm -f "$runf" "${STATE_DIR:?}/${J_NAME:?}.dest"; kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
   mv -f "$allf" "$runlog"
@@ -3581,6 +3862,7 @@ run_job() {
   elif [ "$rc" -eq 0 ]; then
     echo "$(date '+%Y-%m-%d %H:%M') OK" > "$STATE_DIR/$J_NAME.status"
     date +%s > "$STATE_DIR/$J_NAME.lastok"
+    echo "$t0" > "$STATE_DIR/$J_NAME.lastdebut"     # tout ce qui est plus ancien est sur les destinations
     logl "$J_NAME : OK${resume:+ - $resume}"; vert "OK : $J_NAME${resume:+ - $resume}"
     local quand; quand=$(duree_txt $(( $(date +%s) - t0 )))
     if [ "$resume" = "aucun changement" ]; then
@@ -3972,6 +4254,7 @@ api_restore() {  # api_restore <nom> <dossier> [element] [corbeille] [destinatio
   [ -n "$target" ] || die "dossier de restauration manquant."
   safe_rel "${3:-}"; rel="$REL"
   job_dest_at "${5:-0}"
+  local msg; msg=$(dest_wake "$DI_R") || die "$msg"
   if [ "${4:-}" = corbeille ]; then dest=$(trash_path "$DI_R" "$DI_E" "$J_NAME"); else dest=$(dest_path "$DI_R" "$DI_E" "$J_SUB"); fi
   [ -n "$rel" ] && dest="$dest/$rel"
   exec 9>/run/nas-backup-restauration.lock
@@ -3989,17 +4272,20 @@ api_restore() {  # api_restore <nom> <dossier> [element] [corbeille] [destinatio
     rcl restauration copy "$dest" "$target" "${EXCLUDES[@]}" --stats 10s --log-file "$rlog" --log-level INFO; rc=$?
   fi
   restore_done "$rc" "$target" "$rel"
+  dest_rest "$DI_R"
   return $rc
 }
 
 restore_done() {  # restore_done <code> <cible> <element>
   local st="$STATE_DIR/restauration.status" rlog="$STATE_DIR/restauration.log"
+  local quand=""
+  [ -n "${RESTAU_DATE:-}" ] && quand=" (état au $(date -d "@$RESTAU_DATE" '+%d/%m/%Y %H:%M'))"
   if [ "$1" -eq 0 ]; then
-    printf 'ETAT=ok\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nFIN=%s\n' "$J_NAME" "$2" "$3" "$(date +%s)" > "$st"
-    logl "$J_NAME : restauration terminee ($2)"
-    notify info "restore-$J_NAME" "Restauration « $J_NAME » terminée" "Fichiers restaurés dans $2"
+    printf 'ETAT=ok\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nFIN=%s\nDATE=%s\n' "$J_NAME" "$2" "$3" "$(date +%s)" "${RESTAU_DATE:-}" > "$st"
+    logl "$J_NAME : restauration terminee ($2)$quand"
+    notify info "restore-$J_NAME" "Restauration « $J_NAME » terminée" "Fichiers restaurés dans $2$quand"
   else
-    printf 'ETAT=echec\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nFIN=%s\nCODE=%s\n' "$J_NAME" "$2" "$3" "$(date +%s)" "$1" > "$st"
+    printf 'ETAT=echec\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nFIN=%s\nCODE=%s\nDATE=%s\n' "$J_NAME" "$2" "$3" "$(date +%s)" "$1" "${RESTAU_DATE:-}" > "$st"
     logl "$J_NAME : restauration en ECHEC (code $1)"
     notify critique "restore-$J_NAME" "Restauration « $J_NAME » en échec" "Code $1. Détails : $rlog"
   fi
@@ -4011,6 +4297,7 @@ api_ls() {  # api_ls <nom> [chemin] [corbeille] [destination]
   local rel dest
   safe_rel "${2:-}"; rel="$REL"
   job_dest_at "${4:-0}"
+  local msg; msg=$(dest_wake "$DI_R") || die "$msg"
   if [ "${3:-}" = corbeille ]; then dest=$(trash_path "$DI_R" "$DI_E" "$J_NAME"); else dest=$(dest_path "$DI_R" "$DI_E" "$J_SUB"); fi
   [ -n "$rel" ] && dest="$dest/$rel"
   rclone lsjson "$dest" --max-depth 1 --no-mimetype "${EXCLUDES[@]}" 2>&1
@@ -4032,6 +4319,9 @@ api_verify() {
   local c_ok=0 c_diff=0 c_miss=0 c_extra=0 c_err=0 f k
   for ((i = 0; i < n; i++)); do
     r="${JD_R[i]}"; e="${JD_E[i]}"; lab=""; [ "$n" -gt 1 ] && lab="[$r] "
+    if ! etat_d=$(dest_wake "$r"); then
+      echo "${lab}$etat_d" >> "$out.d/erreurs"; c_err=$((c_err + 1)); dstat="${dstat:+$dstat;}$r:echec"; continue
+    fi
     if [ "$J_MODE" = versions ]; then
       etat_d=ok
       if ! need_restic >> "$out.log"; then etat_d=echec
@@ -4066,6 +4356,7 @@ api_verify() {
     c_err=$((c_err + $(cnt "$out.d/$i.erreurs")))
     dstat="${dstat:+$dstat;}$r:$etat_d"
   done
+  for ((i = 0; i < n; i++)); do dest_rest "${JD_R[i]}"; done
   local etat=ok
   [[ ";$dstat" == *":ecarts"* ]] && etat=ecarts
   [[ ";$dstat" == *":echec"* ]] && etat=echec
@@ -4096,6 +4387,486 @@ verify_all() {
   for n in $(job_names); do ( api_verify "$n" ) || true; done
 }
 
+# =========================== Test de restauration a blanc ============
+# Quelques fichiers pris au hasard dans la source (modifies avant la derniere sauvegarde
+# reussie) sont restaures depuis chaque destination dans un dossier temporaire, compares
+# octet par octet aux originaux, puis effaces. Alerte critique en cas d'ecart.
+# Resultat : $STATE_DIR/<nom>.test.json ; historique : tests-restauration.jsonl
+TEST_CONF="$CONF_DIR/test-restauration"      # test automatique : « JOURS HH:MM NB »
+TEST_HIST="$STATE_DIR/tests-restauration.jsonl"
+
+test_nb_defaut() {
+  local j h n=""
+  [ -f "$TEST_CONF" ] && read -r j h n < "$TEST_CONF"
+  if [[ "$n" =~ ^[0-9]+$ ]]; then echo "$n"; else echo 5; fi
+}
+
+# Debut de la derniere sauvegarde reussie : tout fichier modifie avant est sur les destinations
+test_last_ok() {
+  local t
+  t=$(cat "$STATE_DIR/$J_NAME.lastdebut" 2>/dev/null)
+  [[ "$t" =~ ^[0-9]+$ ]] && { echo "$t"; return; }
+  t=$(cat "$STATE_DIR/$J_NAME.lastok" 2>/dev/null)
+  if [[ "$t" =~ ^[0-9]+$ ]]; then echo $((t - 86400)); else echo 0; fi   # anciennes installations : marge d'un jour
+}
+
+# Fichiers tires au hasard dans la source : modifies avant <date>, 64 Mo au plus chacun,
+# 256 Mo en tout -> chemins relatifs, un par ligne
+test_pick() {  # test_pick <source> <date> <nb>
+  python3 - "$1" "$2" "$3" <<'PYPICK'
+import os, random, stat, sys, time
+src, avant, nb = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+MAXF, MAXT, K, fin = 64 << 20, 256 << 20, 4000, time.time() + 900
+res, vus = [], 0
+for root, dirs, files in os.walk(src):
+    dirs[:] = [x for x in dirs if x not in ("@eaDir", "#recycle") and not x.startswith(".Trash-")]
+    for f in files:
+        if "\n" in f:
+            continue
+        p = os.path.join(root, f)
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_size == 0 or st.st_size > MAXF or st.st_mtime >= avant:
+            continue
+        vus += 1
+        if len(res) < K:
+            res.append((p, st.st_size))
+        else:
+            j = random.randrange(vus)
+            if j < K:
+                res[j] = (p, st.st_size)
+    if time.time() > fin:      # tres gros dossier : echantillon de ce qui a ete parcouru
+        break
+random.shuffle(res)
+tot, out = 0, []
+for p, sz in res:
+    if len(out) >= nb:
+        break
+    if tot + sz <= MAXT:
+        out.append(os.path.relpath(p, src))
+        tot += sz
+print("\n".join(out))
+PYPICK
+}
+
+# Derniere version d'une sauvegarde versionnee sur la destination preparee (RST) -> « id date dossier »
+test_last_snap() {
+  restic "${RST[@]}" snapshots --json --tag "job:$J_NAME" 2>/dev/null < /dev/null | python3 -c '
+import json, sys
+from datetime import datetime
+def ts(s):
+    try:
+        base, frac = (s.split(".", 1) + [""])[:2]
+        tz = frac.lstrip("0123456789") if frac else s[19:]
+        return int(datetime.fromisoformat(base[:19] + (tz or "+00:00").replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 0
+try:
+    v = json.load(sys.stdin) or []
+except ValueError:
+    v = []
+if v:
+    x = max(v, key=lambda x: ts(x.get("time", "")))
+    print(x.get("id", ""), ts(x.get("time", "")), (x.get("paths") or [""])[0])'
+}
+
+test_restore() {  # test_restore <nom> [nb]
+  job_get "$1" || die "sauvegarde '$1' introuvable."
+  local nb="${2:-}" out="$STATE_DIR/$J_NAME.test" tmp i n r e avant=0 rel res rc t0 det sz msg snap sd root
+  [[ "$nb" =~ ^[0-9]+$ ]] && [ "$nb" -ge 1 ] && [ "$nb" -le 50 ] || nb=$(test_nb_defaut)
+  exec 6>"/run/nas-backup-test-$J_NAME.lock"
+  flock -n 6 || die "un test de restauration de '$J_NAME' est deja en cours."
+  t0=$(date +%s)
+  : > "$out.log"; : > "$out.res"
+  # sauvegarde en cours : attendre qu'elle se termine (2 h au plus) sans la bloquer
+  for ((i = 0; i < 240; i++)); do
+    flock -n "/run/nas-backup-$J_NAME.lock" true 2>/dev/null && break
+    [ $i -eq 0 ] && echo "Sauvegarde « $J_NAME » en cours : le test attend sa fin." | tee -a "$out.log"
+    sleep 30
+  done
+  job_dests; n=${#JD_R[@]}
+  perf_load "$J_PERF"
+  tmp=$(mktemp -d /var/tmp/nas-test-restauration.XXXXXX) || die "dossier temporaire impossible."
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+  local -a DERR=() DSNAP=() DROOT=()
+  for ((i = 0; i < n; i++)); do
+    r="${JD_R[i]}"; DERR[i]=""; DSNAP[i]=""; DROOT[i]=""
+    if ! remote_exists "$r"; then DERR[i]="destination introuvable"; continue; fi
+    if ! msg=$(dest_wake "$r"); then DERR[i]="$msg"; continue; fi
+    if ! msg=$(dest_ready "$r"); then DERR[i]="$msg"; continue; fi
+    if [ "$J_MODE" = versions ]; then
+      need_restic >/dev/null || { DERR[i]="restic n'est pas installe"; continue; }
+      restic_prep "$r"
+      snap=""; sd=0; root=""
+      read -r snap sd root < <(test_last_snap)
+      [ -n "${snap:-}" ] || continue        # pas encore de version ici (voir plus bas)
+      DSNAP[i]="$snap"; DROOT[i]="$root"
+      { [ "$avant" -eq 0 ] || [ "$sd" -lt "$avant" ]; } && avant=$sd
+    else
+      sd=$(test_last_ok)
+      [ "$sd" -gt 0 ] && avant=$sd
+    fi
+  done
+  # versions : une destination sans version alors que les autres en ont = probleme
+  if [ "$J_MODE" = versions ] && [ "$avant" -gt 0 ]; then
+    for ((i = 0; i < n; i++)); do
+      [ -z "${DERR[i]}" ] && [ -z "${DSNAP[i]}" ] && DERR[i]="aucune version sur cette destination"
+    done
+  fi
+  if [ ! -d "$J_SRC" ]; then
+    msg="dossier source introuvable : $J_SRC"
+  elif [ "$avant" -gt 0 ]; then
+    test_pick "$J_SRC" "$avant" "$nb" > "$tmp/liste" 2>>"$out.log"
+    [ -s "$tmp/liste" ] || msg="aucun fichier assez ancien a tester (tout a change depuis la derniere sauvegarde ?)"
+  else
+    msg="aucune sauvegarde reussie pour le moment"
+  fi
+  for ((i = 0; i < n; i++)); do
+    r="${JD_R[i]}"; e="${JD_E[i]}"
+    if [ -n "${DERR[i]}" ]; then
+      printf '%s\037%s\037%s\037%s\037%s\n' "$r" erreur 0 "" "${DERR[i]}" >> "$out.res"; continue
+    fi
+    [ -s "$tmp/liste" ] || continue
+    [ "$J_MODE" = versions ] && [ -z "${DSNAP[i]}" ] && continue
+    [ "$J_MODE" = versions ] && restic_prep "$r"
+    while IFS= read -r rel; do
+      sz=$(stat -c %s "$J_SRC/$rel" 2>/dev/null || echo 0); det=""
+      if [ "$J_MODE" = versions ]; then
+        restic "${RST[@]}" dump "${DSNAP[i]}" "${DROOT[i]}/$rel" > "$tmp/f" 2> "$tmp/err" < /dev/null; rc=$?
+      else
+        timeout 1800 rclone cat "$(dest_path "$r" "$e" "$J_SUB")/$rel" ${J_BW:+--bwlimit "$J_BW"} > "$tmp/f" 2> "$tmp/err" < /dev/null; rc=$?
+      fi
+      if [ $rc -ne 0 ]; then
+        if grep -qiE 'not found|no such file|does not exist|doesn.t exist' "$tmp/err"; then res=absent; else res=erreur; fi
+        det=$(grep -v '^\s*$' "$tmp/err" | tail -n 1 | sed -E 's/^[0-9\/ :]+//; s/^(ERROR|Fatal) *: *//' | cut -c1-200)
+      elif cmp -s "$tmp/f" "$J_SRC/$rel"; then
+        res=identique
+      elif [ "$(stat -c %Y "$J_SRC/$rel" 2>/dev/null || echo 0)" -ge "$avant" ]; then
+        res=identique; det="modifie pendant le test"
+      else
+        res=different; det="$(stat -c %s "$tmp/f") octets restaures pour $sz"
+      fi
+      printf '%s\037%s\037%s\037%s\037%s\n' "$r" "$res" "$sz" "$rel" "$det" >> "$out.res"
+      cat "$tmp/err" >> "$out.log"
+      rm -f "$tmp/f" "$tmp/err"
+    done < "$tmp/liste"
+  done
+  for ((i = 0; i < n; i++)); do dest_rest "${JD_R[i]}"; done
+  local etat resume
+  python3 - "$out.res" "$out.json" "$TEST_HIST" "$J_NAME" "$t0" "${msg:-}" > "$tmp/resume" <<'PYTEST'
+import json, sys, time
+res, out, hist, nom, t0, msg = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), sys.argv[6]
+fichiers, dests = [], {}
+for l in open(res, errors="ignore"):
+    p = l.rstrip("\n").split("\x1f")
+    if len(p) < 5:
+        continue
+    d, r, sz, chemin, det = p[:5]
+    dests.setdefault(d, set()).add(r)
+    if chemin:
+        fichiers.append({"destination": d, "chemin": chemin, "taille": int(sz or 0), "resultat": r, "detail": det})
+    elif det:
+        msg = msg or "%s : %s" % (d, det)
+        fichiers.append({"destination": d, "chemin": "", "taille": 0, "resultat": "erreur", "detail": det})
+ok = sum(1 for f in fichiers if f["resultat"] == "identique")
+ec = sum(1 for f in fichiers if f["resultat"] in ("different", "absent"))
+er = sum(1 for f in fichiers if f["resultat"] == "erreur")
+nbf = len({f["chemin"] for f in fichiers if f["chemin"]})
+if ec:
+    etat = "ecarts"
+elif er:
+    etat = "echec"
+elif ok:
+    etat = "ok"
+else:
+    etat = "vide"
+def de(s):
+    return "ecarts" if s & {"different", "absent"} else "echec" if "erreur" in s else "ok"
+d = {"debut": t0, "fin": int(time.time()), "etat": etat, "nb": nbf, "identiques": ok, "ecarts": ec, "erreurs": er,
+     "destinations": ";".join("%s:%s" % (k, de(v)) for k, v in dests.items()), "message": msg, "fichiers": fichiers[:200]}
+json.dump(d, open(out, "w"), ensure_ascii=False)
+h = {k: d[k] for k in ("debut", "fin", "etat", "nb", "identiques", "ecarts", "erreurs", "destinations")}
+h["nom"] = nom
+with open(hist, "a") as f:
+    f.write(json.dumps(h, ensure_ascii=False) + "\n")
+pl = lambda n: "s" if n > 1 else ""
+if etat == "ok":
+    txt = "%d fichier%s restauré%s et identique%s aux originaux" % (nbf, pl(nbf), pl(nbf), pl(nbf))
+    if len(dests) > 1:
+        txt += " (%d destinations)" % len(dests)
+elif etat == "ecarts":
+    k = [f for f in fichiers if f["resultat"] in ("different", "absent")]
+    txt = "%d écart%s : %s" % (ec, pl(ec), " ; ".join("%s%s (%s)" % ("[%s] " % f["destination"] if len(dests) > 1 else "", f["chemin"], "absent de la sauvegarde" if f["resultat"] == "absent" else "contenu différent") for f in k[:3]))
+elif etat == "echec":
+    k = [f for f in fichiers if f["resultat"] == "erreur"]
+    txt = "restauration impossible : " + " ; ".join("%s (%s)" % (f["destination"], f["detail"]) for f in k[:2])
+else:
+    txt = msg or "rien à tester"
+print(etat)
+print(txt[:400])
+PYTEST
+  { IFS= read -r etat; IFS= read -r resume; } < "$tmp/resume"
+  if [ "$(wc -l < "$TEST_HIST" 2>/dev/null || echo 0)" -gt 2000 ]; then tail -n 1500 "$TEST_HIST" > "$TEST_HIST.tmp" && mv -f "$TEST_HIST.tmp" "$TEST_HIST"; fi
+  logl "$J_NAME : test de restauration $etat ($resume)"
+  case "$etat" in
+    ok)     notify ok "test-$J_NAME" "Test de restauration « $J_NAME »" "Réussi : $resume."; vert "Test de restauration de '$J_NAME' : OK ($resume)" ;;
+    ecarts) notify critique "test-$J_NAME" "Test de restauration « $J_NAME » : écarts" "$resume. Lance une vérification d'intégrité depuis NAS Manager."; rouge "Test de restauration de '$J_NAME' : ECARTS ($resume)" ;;
+    echec)  notify critique "test-$J_NAME" "Test de restauration « $J_NAME » impossible" "$resume."; rouge "Test de restauration de '$J_NAME' : ECHEC ($resume)" ;;
+    *)      jaune "Test de restauration de '$J_NAME' : rien a tester ($resume)" ;;
+  esac
+  [ "$etat" = ok ] || [ "$etat" = vide ]
+}
+
+test_all() {
+  local n nb
+  nb=$(test_nb_defaut)
+  for n in $(job_names); do ( test_restore "$n" "$nb" ) || true; done
+}
+
+test_main() {
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  case "${1:-}" in
+    tout) need_rclone; test_all ;;
+    planifier)   # planifier <JOURS|non> [HH:MM] [NB]
+      if [ "${2:-}" = non ]; then rm -f "$TEST_CONF"; gen_cron; vert "Test de restauration automatique desactive."; return; fi
+      [[ "${2:-}" =~ ^[1-7]+$ ]] || die "jours invalides (1 = lundi ... 7 = dimanche)."
+      [[ "${3:-}" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "heure invalide (HH:MM)."
+      [[ -z "${4:-}" || ( "${4:-}" =~ ^[0-9]+$ && "$4" -ge 1 && "$4" -le 50 ) ]] || die "nombre de fichiers invalide (1 a 50)."
+      echo "$2 $3 ${4:-5}" > "$TEST_CONF"; gen_cron
+      vert "Test de restauration automatique : jours $2 a $3, ${4:-5} fichiers par sauvegarde." ;;
+    "") die "usage : nas-debian test-restauration <NOM> [NB] | tout | planifier <JOURS|non> [HH:MM] [NB]" ;;
+    *) need_rclone; test_restore "$1" "${2:-}" ;;
+  esac
+}
+
+# =========================== Retour a une date =======================
+# Sauvegarde miroir avec corbeille : l'etat de la destination a une date D se reconstruit
+# avec la corbeille datee. Le dossier de corbeille AAAA-MM-JJ_HHMM contient les fichiers
+# remplaces ou supprimes par l'execution commencee a cette heure-la, tels qu'ils etaient juste
+# avant. Pour chaque fichier, le premier dossier de corbeille posterieur a D qui le contient
+# donne sa version a la date D (s'il existait deja : modifie avant D) ; sinon c'est la version
+# actuelle, si elle date d'avant D. Precision : l'etat aux heures des sauvegardes. Limite : la
+# duree de la corbeille (les dossiers plus anciens sont effaces).
+# Sauvegarde versionnee : la derniere version enregistree avant D.
+
+date_ts() {  # date_ts <secondes | AAAA-MM-JJ HH:MM> -> secondes
+  if [[ "$1" =~ ^[0-9]{9,11}$ ]]; then echo "$1"; else date -d "$1" +%s 2>/dev/null; fi
+}
+
+# Dossiers de corbeille (date + nom) de la sauvegarde chargee, destination DI_*
+date_trash_dirs() {
+  local t ts
+  rclone lsf --dirs-only "$(trash_path "$DI_R" "$DI_E" "$J_NAME")" 2>/dev/null < /dev/null | while IFS= read -r t; do
+    t="${t%/}"
+    [[ "$t" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4} ]] || continue
+    ts=$(date -d "${t:0:10} ${t:11:2}:${t:13:2}" +%s 2>/dev/null) || continue
+    echo "$ts $t"
+  done | sort -n
+}
+
+# Dates auxquelles on peut revenir (JSON) : methode, date la plus ancienne, points de restauration
+date_plage() {  # date_plage <nom> [destination]
+  job_get "$1" || die "sauvegarde '$1' introuvable."
+  job_dest_at "${2:-0}"
+  local now; now=$(date +%s)
+  if [ "$J_MODE" = versions ]; then
+    local v; v=$(versions_list "$1" "${2:-0}") || exit 1
+    python3 -c '
+import json, sys
+v = json.loads(sys.argv[1]) or []
+d = sorted(x["date"] for x in v if x.get("date"))
+print(json.dumps({"methode": "versions", "min": d[0] if d else None, "max": int(sys.argv[2]), "points": d}))' "$v" "$now"
+  elif [ "$J_MODE" = sync ] && [ "${J_RET:-0}" -gt 0 ]; then
+    local msg; msg=$(dest_wake "$DI_R") || die "$msg"
+    date_trash_dirs | python3 -c '
+import json, sys
+now, ret, debut = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3] or 0)
+pts = [int(l.split()[0]) for l in sys.stdin if l.strip()]
+mn = now - ret * 86400 + 3600
+if debut and debut > mn:
+    mn = debut
+print(json.dumps({"methode": "corbeille", "min": mn, "max": now, "points": pts, "jours": ret}))' "$now" "$J_RET" "$(date_first_run)"
+  else
+    echo '{"methode":"aucune","min":null,"max":null,"points":[]}'
+  fi
+}
+
+# Premiere sauvegarde reussie connue (historique), 0 si inconnue
+date_first_run() {
+  python3 - "$STATE_DIR/historique.jsonl" "$J_NAME" <<'PYFR' 2>/dev/null || echo 0
+import json, sys
+best = 0
+for l in open(sys.argv[1], errors="ignore"):
+    try:
+        d = json.loads(l)
+    except ValueError:
+        continue
+    if d.get("nom") == sys.argv[2] and d.get("etat") == "OK" and d.get("debut"):
+        best = d["debut"] if not best else min(best, d["debut"])
+print(best)
+PYFR
+}
+
+# Plan d'une restauration a une date (miroir + corbeille) : listes de fichiers par origine
+#   <w>/liste-actuel (destination actuelle) et <w>/liste-<dossier de corbeille>
+# -> resume JSON sur la sortie
+date_plan() {  # date_plan <dossier de travail> <date> <element>
+  local w="$1" d="$2" rel="$3" dest trash ts t
+  dest=$(dest_path "$DI_R" "$DI_E" "$J_SUB"); trash=$(trash_path "$DI_R" "$DI_E" "$J_NAME")
+  if ! rclone lsjson -R --files-only --no-mimetype "${EXCLUDES[@]}" "$dest${rel:+/$rel}" > "$w/actuel.json" 2> "$w/err" < /dev/null; then
+    grep -qi 'directory not found' "$w/err" || { tail -n 2 "$w/err" >&2; return 1; }
+    echo '[]' > "$w/actuel.json"
+  fi
+  : > "$w/corbeilles"
+  while read -r ts t; do
+    [ "$ts" -gt "$d" ] || continue
+    rclone lsjson -R --files-only --no-mimetype "$trash/$t${rel:+/$rel}" > "$w/c-$t.json" 2>/dev/null < /dev/null || echo '[]' > "$w/c-$t.json"
+    echo "$ts $t" >> "$w/corbeilles"
+  done < <(date_trash_dirs)
+  python3 - "$w" "$d" <<'PYPLAN'
+import json, os, sys
+from datetime import datetime
+w, d = sys.argv[1], int(sys.argv[2])
+def ts(s):
+    try:
+        base, frac = (s.split(".", 1) + [""])[:2]
+        tz = frac.lstrip("0123456789") if frac else s[19:]
+        return int(datetime.fromisoformat(base[:19] + (tz or "+00:00").replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 0
+def load(p):
+    try:
+        return json.load(open(p)) or []
+    except (OSError, ValueError):
+        return []
+corb = sorted((int(l.split()[0]), l.split()[1]) for l in open(os.path.join(w, "corbeilles")) if l.strip())
+plan, absent = {}, set()
+for t, nom in corb:                      # du plus proche de D au plus recent
+    for f in load(os.path.join(w, "c-%s.json" % nom)):
+        p = f.get("Path", "")
+        if not p or "\n" in p or p in plan or p in absent:
+            continue
+        if ts(f.get("ModTime", "")) <= d:
+            plan[p] = (nom, f.get("Size", 0))
+        else:
+            absent.add(p)                # cree apres D, puis remplace ou supprime
+for f in load(os.path.join(w, "actuel.json")):
+    p = f.get("Path", "")
+    if not p or "\n" in p or p in plan or p in absent:
+        continue
+    if ts(f.get("ModTime", "")) <= d:
+        plan[p] = ("", f.get("Size", 0))
+listes = {}
+for p, (src, _) in plan.items():
+    listes.setdefault(src or "actuel", []).append(p)
+for src, ps in listes.items():
+    with open(os.path.join(w, "liste-" + src), "w") as fo:
+        fo.write("".join(x + "\n" for x in sorted(ps)))
+nc = sum(1 for s, _ in plan.values() if s)
+print(json.dumps({"methode": "corbeille", "date": d, "fichiers": len(plan), "octets": sum(max(0, s) for _, s in plan.values()),
+                  "depuis_corbeille": nc, "dossiers_corbeille": len([k for k in listes if k != "actuel"])}))
+PYPLAN
+}
+
+# Version la plus recente enregistree avant <date> -> « id date » (vide si aucune)
+date_snap() {  # date_snap <nom> <destination> <date>
+  local v; v=$(versions_list "$1" "$2") || return 1
+  python3 -c '
+import json, sys
+d = int(sys.argv[2])
+v = [x for x in (json.loads(sys.argv[1]) or []) if x.get("date") and x["date"] <= d]
+if v:
+    x = max(v, key=lambda x: x["date"])
+    print(x["id"], x["date"])' "$v" "$3"
+}
+
+date_check_args() {  # date_check_args <nom> <destination> <date> [element]  -> D, REL
+  job_get "$1" || die "sauvegarde '$1' introuvable."
+  job_dest_at "${2:-0}"
+  D=$(date_ts "${3:-}") && [ -n "$D" ] || die "date invalide : ${3:-} (AAAA-MM-JJ HH:MM)"
+  [ "$D" -le "$(date +%s)" ] || die "la date est dans le futur."
+  safe_rel "${4:-}"
+  if [ "$J_MODE" != versions ] && { [ "$J_MODE" != sync ] || [ "${J_RET:-0}" -le 0 ]; }; then
+    die "retour a une date impossible pour « $J_NAME » : il faut une sauvegarde miroir avec corbeille, ou versionnee."
+  fi
+}
+
+# Apercu (JSON) : nombre de fichiers et volume qui seraient restaures
+date_apercu() {  # date_apercu <nom> <destination> <date> [element]
+  date_check_args "$@"
+  if [ "$J_MODE" = versions ]; then
+    local id sd
+    read -r id sd < <(date_snap "$1" "${2:-0}" "$D")
+    [ -n "${id:-}" ] || die "aucune version enregistree avant cette date."
+    printf '{"methode":"versions","date":%s,"version":"%s","date_version":%s}\n' "$D" "$id" "$sd"
+    return
+  fi
+  local msg; msg=$(dest_wake "$DI_R") || die "$msg"
+  local w; w=$(mktemp -d)
+  date_plan "$w" "$D" "$REL"; local rc=$?
+  rm -rf "$w"
+  return $rc
+}
+
+# Restauration de l'etat a une date (en arriere-plan depuis NAS Manager)
+date_restore() {  # date_restore <nom> <destination> <date> <dossier cible> [element]
+  date_check_args "$1" "$2" "$3" "${5:-}"
+  local target="${4%/}" st="$STATE_DIR/restauration.status" rlog="$STATE_DIR/restauration.log" rc=0 w f src tgt msg
+  [ -n "$target" ] || die "dossier de restauration manquant."
+  if [ "$J_MODE" = versions ]; then
+    local id sd
+    read -r id sd < <(date_snap "$1" "${2:-0}" "$D")
+    [ -n "${id:-}" ] || die "aucune version enregistree avant cette date."
+    RESTAU_DATE="$D" versions_restore "$1" "${2:-0}" "$id" "$target" "$REL"
+    return $?
+  fi
+  exec 9>/run/nas-backup-restauration.lock
+  flock -n 9 || die "une restauration est deja en cours."
+  mkdir -p "$target" || die "impossible de creer $target"
+  : > "$rlog"
+  RESTAU_DATE="$D"
+  printf 'ETAT=en_cours\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nDEBUT=%s\nDATE=%s\n' "$J_NAME" "$target" "$REL" "$(date +%s)" "$D" > "$st"
+  logl "$J_NAME : restauration de l'etat au $(date -d "@$D" '+%Y-%m-%d %H:%M') ($DI_R) vers $target"
+  if ! msg=$(dest_wake "$DI_R"); then
+    echo "$(date '+%Y/%m/%d %H:%M:%S') ERROR : $msg" >> "$rlog"; restore_done 1 "$target" "$REL"; return 1
+  fi
+  perf_load "$J_PERF"
+  w=$(mktemp -d)
+  if ! date_plan "$w" "$D" "$REL" > "$w/resume.json" 2>> "$rlog"; then
+    rm -rf "$w"; restore_done 1 "$target" "$REL"; return 1
+  fi
+  tgt="$target"; [ -n "$REL" ] && tgt="$target/${REL##*/}"
+  for f in "$w"/liste-*; do
+    [ -s "$f" ] || continue
+    if [ "${f##*/liste-}" = actuel ]; then
+      src="$(dest_path "$DI_R" "$DI_E" "$J_SUB")"
+    else
+      src="$(trash_path "$DI_R" "$DI_E" "$J_NAME")/${f##*/liste-}"
+    fi
+    echo "$(date '+%Y/%m/%d %H:%M:%S') NOTICE: $(cnt "$f") fichier(s) depuis ${f##*/liste-}" >> "$rlog"
+    rcl restauration copy "$src${REL:+/$REL}" "$tgt" --files-from-raw "$f" --no-traverse --stats 10s --log-file "$rlog" --log-level INFO < /dev/null || rc=1
+  done
+  [ -s "$w/resume.json" ] && cp -f "$w/resume.json" "$STATE_DIR/restauration.date.json"
+  rm -rf "$w"
+  dest_rest "$DI_R"
+  restore_done "$rc" "$target" "$REL"
+  return $rc
+}
+
+date_main() {
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  need_rclone
+  case "${1:-}" in
+    plage)     [ -n "${2:-}" ] || die "usage : date plage <NOM> [DESTINATION]"; date_plage "$2" "${3:-0}" ;;
+    apercu)    [ -n "${4:-}" ] || die "usage : date apercu <NOM> <DESTINATION> <DATE> [ELEMENT]"; date_apercu "$2" "$3" "$4" "${5:-}" ;;
+    restaurer) [ -n "${5:-}" ] || die "usage : date restaurer <NOM> <DESTINATION> <DATE> <DOSSIER> [ELEMENT]"; date_restore "$2" "$3" "$4" "$5" "${6:-}" ;;
+    *) die "usage : nas-debian date plage | apercu | restaurer" ;;
+  esac
+}
+
 # =========================== Versions (restic) =======================
 # Sauvegarde versionnee chargee + destination n° <i> -> RST pret ; meurt si le depot est absent
 versions_open() {  # versions_open <nom> <destination>
@@ -4103,6 +4874,7 @@ versions_open() {  # versions_open <nom> <destination>
   [ "$J_MODE" = versions ] || die "« $J_NAME » n'est pas une sauvegarde versionnee."
   job_dest_at "${2:-0}"
   need_restic >/dev/null || die "restic n'est pas installe (NAS Manager > Installation > Outils)."
+  local msg; msg=$(dest_wake "$DI_R") || die "$msg"
   restic_prep "$DI_R"
 }
 
@@ -4181,7 +4953,7 @@ versions_restore() {  # versions_restore <nom> <destination> <version> <dossier 
   mkdir -p "$target" || die "impossible de creer $target"
   perf_load "$J_PERF"
   : > "$rlog"
-  printf 'ETAT=en_cours\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nDEBUT=%s\nVERSION=%s\n' "$J_NAME" "$target" "$REL" "$(date +%s)" "$snap" > "$st"
+  printf 'ETAT=en_cours\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nDEBUT=%s\nVERSION=%s\nDATE=%s\n' "$J_NAME" "$target" "$REL" "$(date +%s)" "$snap" "${RESTAU_DATE:-}" > "$st"
   logl "$J_NAME : restauration de la version $snap ($DI_R) vers $target"
   if [ -n "$REL" ]; then
     parent="${REL%/*}"; [ "$parent" = "$REL" ] && parent=""
@@ -4191,6 +4963,7 @@ versions_restore() {  # versions_restore <nom> <destination> <version> <dossier 
     gorun restauration restic "${RST[@]}" restore "$snap:$root" --target "$target" --json >> "$rlog" 2>&1 < /dev/null; rc=$?
   fi
   restore_done "$rc" "$target" "$REL"
+  dest_rest "$DI_R"
   return $rc
 }
 
@@ -4261,7 +5034,8 @@ secours_files() {
   c=$(rclone_conf_file)
   [ -n "$c" ] && [ -f "$c" ] && echo "rclone|$c"
   for f in "$PASSFILE" "$CAM_PASS" "$JOBS" "$RT_CONF" "$AGENT_CONF" "$NOTIFY_CONF" "$CONF_DIR/verification" \
-           "$RESTIC_PASS" "$CONF_DIR/canaux.conf" "$CONF_DIR/rapport.conf" /root/.config/mosquitto_pub; do
+           "$RESTIC_PASS" "$CONF_DIR/canaux.conf" "$CONF_DIR/rapport.conf" /root/.config/mosquitto_pub \
+           "$REVEIL_CONF" "$TEST_CONF" "$REVEIL_KEY" "$REVEIL_KEY.pub"; do
     [ -f "$f" ] && echo "fichier|$f"
   done
   return 0
@@ -4602,6 +5376,9 @@ agent_main() {
     disques)   shift; disques_main "$@" ;;
     rapport)   shift; rapport_main "$@" ;;
     versions)  shift; need_rclone; versions_main "$@" ;;
+    test-restauration) shift; nb_init; test_main "$@" ;;
+    date)      shift; nb_init; date_main "$@" ;;
+    reveil)    shift; reveil_main "$@" ;;
     secours)   shift; secours_main "$@" ;;
     mots-de-passe) [ "$(id -u)" -eq 0 ] || die "lance ce script en root."; show_passwords ;;
     *)         backup_main "$@" ;;

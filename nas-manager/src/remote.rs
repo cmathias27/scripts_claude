@@ -238,6 +238,11 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
     en = rd(f"{S}/{name}.entretien.json")
     if en:
         j["entretien"] = jload(en)
+    tj = rd(f"{S}/{name}.test.json")
+    if tj:
+        j["test"] = jload(tj)
+    tl = f"/run/nas-backup-test-{name}.lock"
+    j["test_en_cours"] = os.path.exists(tl) and rc(f"flock -n {tl} true") == 1
     ver = src_vars(f"{S}/{name}.verif.status", ["ETAT", "FIN", "IDENTIQUES", "DIFFERENTS", "MANQUANTS", "EN_TROP", "ERREURS", "DESTINATIONS", "TYPE"])
     if ver:
         etat = ver["ETAT"]
@@ -297,6 +302,7 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
     jobs.append(j)
 out["sauvegardes"] = jobs
 out["verif_auto"] = rd("/etc/nas-backup/verification")
+out["test_auto"] = rd("/etc/nas-backup/test-restauration")
 
 # ---------------- Destinations, kit de secours ----------------
 if ag and int(ag.get("api") or 0) >= 7:
@@ -310,12 +316,14 @@ if ag and int(ag.get("api") or 0) >= 7:
             d["etat"] = de[d["nom"]]
     out["destinations"] = dl
     out["secours"] = jload(sh(AG + " secours etat", 15))
+if ag and int(ag.get("api") or 0) >= 9:
+    out["reveil"] = jload(sh(AG + " reveil liste", 15))
 
 # ---------------- Restauration ----------------
-r = src_vars(S + "/restauration.status", ["ETAT", "NOM", "CIBLE", "DEBUT", "FIN", "CODE", "ELEMENT", "VERSION"])
+r = src_vars(S + "/restauration.status", ["ETAT", "NOM", "CIBLE", "DEBUT", "FIN", "CODE", "ELEMENT", "VERSION", "DATE"])
 if r:
     rr = {"etat": r["ETAT"], "nom": r["NOM"], "cible": r["CIBLE"], "debut": r["DEBUT"], "fin": r["FIN"], "code": r["CODE"],
-          "element": r["ELEMENT"], "version": r["VERSION"]}
+          "element": r["ELEMENT"], "version": r["VERSION"], "date": r["DATE"]}
     if r["ETAT"] == "en_cours":
         if rc("flock -n /run/nas-backup-restauration.lock true") != 1:
             rr["etat"] = "interrompue"
@@ -898,6 +906,88 @@ pub fn nb_verify_plan(days: &str, time: &str) -> String {
     } else {
         format!("{NB_BIN} verif-plan {} {} 2>&1\n", sq(days), sq(time))
     }
+}
+
+// ---------------- Test de restauration a blanc (nas-debian 2.4+) ----------------
+pub fn test_run(name: &str, nb: u32) -> String {
+    background(
+        &format!("{NB_BIN} test-restauration {} {}", sq(name), nb.clamp(1, 50)),
+        &format!("Test de restauration de « {name} » lancé : le résultat s'affichera sur sa carte."),
+    )
+}
+
+pub fn test_all() -> String {
+    background(&format!("{NB_BIN} test-restauration tout"), "Test de restauration de toutes les sauvegardes lancé (l'une après l'autre).")
+}
+
+/// Test automatique : jours (« 7 » = dimanche), heure, nombre de fichiers ; jours vides = desactive
+pub fn test_plan(days: &str, time: &str, nb: u32) -> String {
+    if days.is_empty() {
+        format!("{NB_BIN} test-restauration planifier non 2>&1\n")
+    } else {
+        format!("{NB_BIN} test-restauration planifier {} {} {} 2>&1\n", sq(days), sq(time), nb.clamp(1, 50))
+    }
+}
+
+// ---------------- Retour a une date (nas-debian 2.4+) ----------------
+/// Dates possibles (JSON : methode, min, max, points)
+pub fn date_range(name: &str, dest: usize) -> String {
+    format!("{NB_BIN} date plage {} {dest}\n", sq(name))
+}
+
+/// Apercu d'une restauration a une date (JSON)
+pub fn date_preview(name: &str, dest: usize, ts: i64, item: &str) -> String {
+    format!("{NB_BIN} date apercu {} {dest} {ts} {}\n", sq(name), sq(item))
+}
+
+pub fn date_restore(name: &str, dest: usize, ts: i64, target: &str, item: &str) -> String {
+    let what = if item.is_empty() { format!("« {name} »") } else { format!("« {item} »") };
+    background(
+        &format!("{NB_BIN} date restaurer {} {dest} {ts} {} {}", sq(name), sq(target), sq(item)),
+        &format!("Restauration de {what} telle qu'au {} lancée vers {target}.", crate::fmt::date_full(ts)),
+    )
+}
+
+// ---------------- Reveil des machines (Wake-on-LAN) ----------------
+pub fn reveil_set(name: &str, mac: &str, addr: &str, wait: u32, after: &str, ssh: &str) -> String {
+    let dash = |s: &str| if s.trim().is_empty() { "-".to_string() } else { s.trim().to_string() };
+    format!(
+        "{NB_BIN} reveil regler {} {} {} {wait} {} {} 2>&1\n",
+        sq(name),
+        sq(mac.trim()),
+        sq(&dash(addr)),
+        word(after),
+        sq(&dash(ssh))
+    )
+}
+
+pub fn reveil_remove(name: &str) -> String {
+    format!("{NB_BIN} reveil retirer {} 2>&1\n", sq(name))
+}
+
+pub fn reveil_test(name: &str) -> String {
+    format!("{NB_BIN} reveil tester {} 2>&1\n", sq(name))
+}
+
+/// Synology : reveil de l'OMV avant les copies (MAC vide = desactive)
+pub fn syno_omv_wake(mac: &str, after: &str) -> String {
+    format!(
+        "{SYNO_BIN} reglages omv-reveil {} {} 2>&1\n",
+        sq(if mac.trim().is_empty() { "-" } else { mac.trim() }),
+        word(after)
+    )
+}
+
+/// Adresse MAC de l'interface reseau principale de la machine (+ « wol=... » si ethtool la connait)
+pub fn detect_mac() -> String {
+    r#"dev=$(ip route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}')
+[ -n "$dev" ] || dev=$(awk 'NR>1 && $2=="00000000"{print $1; exit}' /proc/net/route 2>/dev/null)
+[ -n "$dev" ] || { echo "interface reseau introuvable"; exit 1; }
+cat "/sys/class/net/$dev/address"
+command -v ethtool >/dev/null 2>&1 && ethtool "$dev" 2>/dev/null | awk -F': ' '/^[[:space:]]*Wake-on:/{print "wol=" $2}'
+exit 0
+"#
+    .into()
 }
 
 pub fn omv_list_backup_sources() -> String {
@@ -1511,6 +1601,56 @@ mod live {
         assert_eq!(run(false, &format!("rm -f /tmp/faux-nas/smart-sdb-en-attente; {}", disks_check(true))).code, 0);
         let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
         assert!(sy.alertes.is_empty(), "{:?}", sy.alertes);
+    }
+
+    /// Etape 5 : test de restauration, retour a une date, reveil (configuration et collecte ;
+    /// le moteur est teste avec les vrais rclone et restic, voir tests/restauration.sh)
+    #[test]
+    fn fiabilite_live() {
+        if !on() {
+            return;
+        }
+        assert_eq!(run(true, &install_file(DEBIAN_BIN, NAS_DEBIAN_SH)).code, 0);
+        let o = run(true, &(test_plan("6", "06:15", 4) + "cat /etc/cron.d/nas-backup\n"));
+        assert!(o.stdout.contains("15 6 * * 6 root /usr/local/bin/nas-debian test-restauration tout"), "{}", o.text());
+        assert_ne!(run(true, &test_plan("9", "06:15", 4)).code, 0, "jours invalides refuses");
+        assert_ne!(run(true, &test_plan("6", "25:00", 4)).code, 0, "heure invalide refusee");
+        // resultat d'un test et reveil d'une destination : lus par la collecte
+        run(true, r#"printf '%s' '{"debut":1,"fin":2,"etat":"ecarts","nb":3,"identiques":5,"ecarts":1,"erreurs":0,"destinations":"gdrive:ecarts","message":"","fichiers":[{"destination":"gdrive","chemin":"a.jpg","taille":12,"resultat":"different","detail":"x"}]}' > /var/lib/nas-backup/Photos.test.json"#);
+        let o = run(true, &reveil_set("usb", "00:11:22:aa:bb:cc", "127.0.0.1", 60, "rien", ""));
+        assert_eq!(o.code, 0, "{}", o.text());
+        assert_ne!(run(true, &reveil_set("usb", "00:11", "", 60, "rien", "")).code, 0, "MAC invalide refusee");
+        assert_ne!(run(true, &reveil_set("usb", "00:11:22:aa:bb:cc", "127.0.0.1", 60, "veille", "")).code, 0, "compte SSH requis");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        assert_eq!(st.test_auto, "6 06:15 4");
+        let p = st.sauvegardes.iter().find(|j| j.nom == "Photos").expect("Photos");
+        let t = p.test.as_ref().expect("test");
+        assert!(t.etat == "ecarts" && t.fichiers.len() == 1 && !p.test_en_cours, "{t:?}");
+        let rv = st.reveil.expect("reveil");
+        assert_eq!(rv.destinations.get("usb").map(|d| (d.mac.as_str(), d.attente)), Some(("00:11:22:AA:BB:CC", 60)));
+        // retour a une date : plage et refus (le faux rclone ne permet pas plus)
+        let o = run(true, &date_range("Photos", 0));
+        let g: crate::restore::DateRange = serde_json::from_str(o.stdout.lines().last().unwrap_or("")).expect("plage");
+        assert_eq!(g.methode, "corbeille");
+        let o = run(true, &date_range("Documents", 0));
+        assert!(o.stdout.contains("\"aucune\""), "{}", o.text());
+        assert_ne!(run(true, &date_preview("Documents", 0, 1_700_000_000, "")).code, 0, "copie : pas de retour a une date");
+        assert_ne!(run(true, &date_preview("Photos", 0, 1_700_000_000, "../x")).code, 0, "chemin interdit");
+        // adresse MAC de la machine
+        let o = run(true, &detect_mac());
+        assert!(crate::wol::valid_mac(o.stdout.lines().next().unwrap_or("")), "{}", o.text());
+        // nettoyage
+        assert_eq!(run(true, &(test_plan("", "", 5) + &reveil_remove("usb") + "rm -f /var/lib/nas-backup/Photos.test.json\n")).code, 0);
+        // Synology : reveil de l'OMV avant les copies (reglages remis en etat a la fin)
+        assert_eq!(run(false, &install_file(SYNO_BIN, NAS_SYNOLOGY_SH)).code, 0);
+        run(false, "rm -f /tmp/syno-config.sauve; [ -f /root/.nas-synology/config ] && cp -p /root/.nas-synology/config /tmp/syno-config.sauve; true");
+        let o = run(false, &(syno_omv_wake("00:11:22:33:44:55", "veille") + &format!("{SYNO_BIN} reglages voir\n")));
+        assert!(o.stdout.contains("\"omv_mac\":\"00:11:22:33:44:55\"") && o.stdout.contains("\"omv_apres\":\"veille\""), "{}", o.text());
+        assert_ne!(run(false, &syno_omv_wake("zz", "rien")).code, 0);
+        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        assert_eq!(sy.perf.map(|p| p.omv_apres), Some("veille".to_string()));
+        assert_eq!(run(false, &syno_omv_wake("", "rien")).code, 0);
+        run(false, "if [ -f /tmp/syno-config.sauve ]; then mv -f /tmp/syno-config.sauve /root/.nas-synology/config; else rm -f /root/.nas-synology/config; fi");
     }
 
     #[test]

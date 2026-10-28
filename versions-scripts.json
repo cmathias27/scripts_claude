@@ -1,22 +1,21 @@
 {
   "nas-debian": {
-    "version": "2.3.0",
+    "version": "2.4.0",
     "fichier": "nas-debian.sh",
-    "sha256": "46caa1fe952f3c2782e6972b7c33ace3bb8364bb6ba4551fb5ade8c9050df65f",
+    "sha256": "d2f77d22d00ce951fb12ff8c4f126c94b0b98caf3d9dc14ca35c5a9a750db623",
     "nouveautes": [
-      "Notifications sans Home Assistant : ntfy, Telegram, Discord ou e-mail, combinables, avec un niveau par canal (alertes seulement ou tout)",
-      "Santé des disques (SMART) et du RAID vérifiée chaque heure : alerte dès les premiers signes d'usure, avant la panne",
-      "Rapport de la semaine ou du mois : sauvegardes, espace, disques, alertes",
-      "Une alerte dont l'envoi a échoué est renvoyée à la vérification suivante ; les envois en échec sont notés",
-      "Réglages des alertes (rappel, seuil d'espace, retard) modifiables depuis NAS Manager"
+      "Test de restauration à blanc : quelques fichiers au hasard restaurés depuis chaque destination, comparés aux originaux puis effacés, à la demande ou planifié ; alerte en cas d'écart",
+      "Retour à une date précise : un dossier remis tel qu'il était à la date choisie, grâce à la corbeille datée (miroir) ou aux versions",
+      "Réveil des destinations (Wake-on-LAN) avant les sauvegardes, vérifications, tests et restaurations, puis remise en veille ou arrêt au choix",
+      "Une destination en veille avec réveil configuré ne déclenche plus d'alerte « injoignable »"
     ]
   },
   "nas-synology": {
-    "version": "2.2.0",
+    "version": "2.3.0",
     "fichier": "nas-synology.sh",
-    "sha256": "4d2591514f14e19dec8f219d21d8b2cc22af5c92b9d701923788e97c6b794ea0",
+    "sha256": "b9e92b927ff5f894f767f8e7536c7bc07cfa895945d64d20b6d9d13a1bf703b2",
     "nouveautes": [
-      "Santé des disques (SMART) et du RAID du Synology, affichée dans NAS Manager, avec alertes (disque en danger, RAID dégradé)"
+      "Réveil de l'OMV (Wake-on-LAN) avant les copies, puis remise en veille ou arrêt au choix"
     ]
   }
 }

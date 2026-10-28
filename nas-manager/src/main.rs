@@ -14,6 +14,7 @@ mod install;
 mod config;
 mod dests;
 mod extras;
+mod fiabilite;
 mod fmt;
 mod log;
 mod model;
@@ -30,6 +31,7 @@ mod ssh;
 mod theme;
 mod tray;
 mod update;
+mod wol;
 
 use eframe::egui;
 

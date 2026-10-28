@@ -253,6 +253,8 @@ pub struct App {
     pub dests: crate::dests::DestUi,
     /// page Alertes : canal en cours d'ajout, rapport, seuils
     pub notifs: crate::notifs::NotifUi,
+    /// test de restauration, reveil des machines (etape 5)
+    pub fiab: crate::fiabilite::FiabUi,
 }
 
 impl App {
@@ -320,6 +322,7 @@ impl App {
             rt_form: None,
             dests: Default::default(),
             notifs: Default::default(),
+            fiab: Default::default(),
         };
         crate::i18n::set_language(&app.settings.language);
         if !app.settings.wizard_done {
@@ -1210,6 +1213,7 @@ impl App {
         crate::realtime::form_window(self, ctx);
         crate::dests::form_window(self, ctx);
         crate::notifs::form_window(self, ctx);
+        crate::fiabilite::reveil_window(self, ctx);
         crate::pages::restore_window(self, ctx);
         crate::pages::passwords_window(self, ctx);
         crate::extras::fingerprint_window(self, ctx);

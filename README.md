@@ -82,6 +82,9 @@ Commandes principales (toutes sans question, utilisées par NAS Manager) :
 | `nas-debian destinations liste \| etat [NOM] \| creer NOM TYPE \| jeton NOM TYPE \| supprimer NOM` | [destinations](#destinations-nas-debian-destinations) des sauvegardes (remotes rclone) |
 | `nas-debian versions liste \| ls \| restaurer \| entretien` | [sauvegardes versionnées](#sauvegardes-versionnées-restic) (restic) |
 | `nas-debian secours etat \| sauvegarder [force] \| telecharger \| restaurer FICHIER [appliquer] \| mots-de-passe` | [kit de secours](#kit-de-secours-nas-debian-secours) |
+| `nas-debian test-restauration NOM [NB] \| tout \| planifier <JOURS\|non> [HH:MM] [NB]` | [test de restauration à blanc](#test-de-restauration-à-blanc-nas-debian-test-restauration) |
+| `nas-debian date plage \| apercu \| restaurer NOM DEST DATE [DOSSIER] [ELEMENT]` | [retour à une date précise](#retour-à-une-date-précise-nas-debian-date) |
+| `nas-debian reveil liste \| regler NOM MAC [ADRESSE] [ATTENTE] [APRES] [SSH] \| retirer \| tester \| envoyer` | [réveil des destinations](#réveil-des-machines-wake-on-lan-nas-debian-reveil) (Wake-on-LAN) |
 | `nas-debian mots-de-passe` | tous les mots de passe à noter hors du NAS (chiffrement, versions, kit) |
 | `nas-debian run \| save \| restore \| …` | toutes les commandes de `nas-backup` (voir plus bas) |
 
@@ -134,6 +137,52 @@ avec déduplication et chiffrement. Le mot de passe des dépôts est dans `/etc/
   de tout, à la date choisie).
 - restic est installé par `outils installer` (version officielle de GitHub, celle des paquets
   si GitHub est injoignable) ; `outils restic-maj` le met à jour.
+
+## Test de restauration à blanc (`nas-debian test-restauration`)
+
+Quelques fichiers pris au hasard dans la source d'une sauvegarde (modifiés avant le début de la dernière
+sauvegarde réussie, 64 Mo au plus chacun, 256 Mo en tout) sont relus depuis **chaque destination**
+(`rclone cat`, déchiffrés si besoin ; `restic dump` de la dernière version pour les sauvegardes
+versionnées) dans un dossier temporaire de `/var/tmp`, comparés octet par octet aux originaux (`cmp`),
+puis effacés. Une sauvegarde en cours est attendue (2 h au plus) sans être bloquée.
+
+- Résultat : `/var/lib/nas-backup/<nom>.test.json` (état `ok`, `ecarts`, `echec` ou `vide`, fichier par
+  fichier : `identique`, `different`, `absent`, `erreur`) ; historique dans `tests-restauration.jsonl`.
+- Alerte critique `test-<nom>` en cas d'écart ou de destination illisible, levée au test réussi suivant.
+- `test-restauration planifier 6 06:15 5` : chaque samedi à 6 h 15, 5 fichiers par sauvegarde
+  (`/etc/nas-backup/test-restauration`, ligne `test-restauration tout` dans le cron).
+
+## Retour à une date précise (`nas-debian date`)
+
+Remet un dossier (ou toute la sauvegarde) tel qu'il était à une date, dans un dossier de restauration.
+
+- **Miroir avec corbeille** : le dossier de corbeille `AAAA-MM-JJ_HHMM` contient les fichiers remplacés
+  ou supprimés par l'exécution commencée à cette heure-là, tels qu'ils étaient juste avant. Pour chaque
+  fichier, le premier dossier de corbeille postérieur à la date le donne (s'il existait déjà à cette
+  date : modifié avant elle) ; sinon c'est la version actuelle, si elle date d'avant. Les fichiers sont
+  copiés depuis la destination et depuis chaque dossier de corbeille utile (`--files-from-raw`), dates
+  de modification conservées. Limite : la durée de la corbeille.
+- **Versionnée** : la dernière version enregistrée avant la date.
+- `date plage NOM [DEST]` (JSON : méthode, date la plus ancienne, points), `date apercu NOM DEST DATE
+  [ELEMENT]` (nombre de fichiers, volume, part reprise de la corbeille), `date restaurer NOM DEST DATE
+  DOSSIER [ELEMENT]`. DATE : secondes depuis 1970 ou `AAAA-MM-JJ HH:MM`.
+
+## Réveil des machines (Wake-on-LAN, `nas-debian reveil`)
+
+Pour une destination qui est une autre machine (autre NAS en SFTP ou SMB, serveur WebDAV, disque
+réseau monté) : `/etc/nas-backup/reveil.conf`, une ligne `NOM|MAC|ADRESSE|ATTENTE_S|APRES|SSH`.
+
+- Avant une sauvegarde, une vérification, un test, une restauration, le parcours de la destination
+  ou un envoi temps réel : si la machine ne répond pas (connexion TCP sur les ports courants), paquet
+  magique (UDP 9 et 7, diffusion générale et de chaque réseau), puis attente (180 s par défaut).
+- Après usage, si c'est la sauvegarde qui l'a réveillée : `APRES` = `rien` (elle se rendort d'elle-même),
+  `veille` ou `arret` (commande envoyée en SSH à `SSH` avec la clé `/root/.ssh/id_nas_reveil`, à
+  autoriser sur la machine).
+- La vérification horaire ne réveille pas une destination en veille et ne lève pas d'alerte (état
+  « en veille » dans `destinations.json`) ; `destinations etat NOM` (bouton « Tester ») la réveille.
+- Le rattrapage du temps réel ne réveille la destination que si des fichiers ont changé.
+- `nas-synology reglages omv-reveil <MAC|-> [rien|veille|arret]` : réveil de l'OMV avant les copies du
+  Synology, remise en veille (ou arrêt) après la dernière copie de la file.
 
 ## Kit de secours (`nas-debian secours`)
 
