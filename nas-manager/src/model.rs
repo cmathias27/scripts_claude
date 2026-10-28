@@ -409,6 +409,10 @@ pub struct OmvStatus {
     /// destinations configurees (script 2.2+)
     pub destinations: Vec<Destination>,
     pub secours: Option<Secours>,
+    /// canaux de notification, seuils, rapport (script 2.3+)
+    pub notif: Option<NotifConf>,
+    /// sante des disques et du RAID (script 2.3+)
+    pub sante_disques: Option<DiskHealth>,
 }
 
 impl OmvStatus {
@@ -551,6 +555,10 @@ pub struct SynoStatus {
     pub anciens: Vec<String>,
     pub migration_requise: bool,
     pub perf: Option<Perf>,
+    /// sante des disques et du RAID (nas-synology 2.2+)
+    pub sante_disques: Option<DiskHealth>,
+    /// alertes en cours (disques, RAID)
+    pub alertes: Vec<Alert>,
 }
 
 #[derive(Clone, Debug)]
@@ -600,4 +608,115 @@ pub struct SpacePoint {
 pub struct History {
     pub executions: Vec<Run>,
     pub espace: Vec<SpacePoint>,
+}
+
+// ---------------- Sante des disques (SMART, RAID) ----------------
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct SmartDisk {
+    pub dev: String,
+    pub modele: String,
+    pub serie: String,
+    pub taille: Option<u64>,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub smart_ok: Option<bool>,
+    pub temp: Option<i64>,
+    pub heures: Option<i64>,
+    pub realloues: Option<i64>,
+    pub en_attente: Option<i64>,
+    pub irreparables: Option<i64>,
+    pub crc: Option<i64>,
+    pub usure: Option<i64>,
+    pub veille: bool,
+    /// ok, attention ou critique
+    pub etat: String,
+    pub raisons: Vec<String>,
+    pub tag: String,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct RaidArray {
+    pub nom: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// ok, degrade, reconstruction ou arrete
+    pub etat: String,
+    pub disques: Vec<String>,
+    pub en_panne: Vec<String>,
+    pub avancement: Option<f64>,
+    pub operation: Option<String>,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct DiskHealth {
+    pub verifie: i64,
+    pub machine: String,
+    /// smartctl present
+    pub smart: bool,
+    pub disques: Vec<SmartDisk>,
+    pub raid: Vec<RaidArray>,
+}
+
+impl DiskHealth {
+    /// (critiques, a surveiller) : disques et grappes RAID
+    pub fn problems(&self) -> (usize, usize) {
+        let crit = self.disques.iter().filter(|d| d.etat == "critique").count()
+            + self.raid.iter().filter(|r| r.etat != "ok").count();
+        let att = self.disques.iter().filter(|d| d.etat == "attention").count();
+        (crit, att)
+    }
+}
+
+// ---------------- Notifications ----------------
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Canal {
+    pub cible: String,
+    /// tout ou critique
+    pub niveau: String,
+    pub jeton: bool,
+    pub serveur: String,
+    pub port: String,
+    pub securite: String,
+    pub utilisateur: String,
+    pub destinataire: String,
+    pub expediteur: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct RapportConf {
+    /// hebdo, mensuel ou non
+    pub frequence: String,
+    /// 1 = lundi ... 7 = dimanche
+    pub jour: u32,
+    pub heure: String,
+    pub canaux: Vec<String>,
+}
+
+impl Default for RapportConf {
+    fn default() -> Self {
+        Self { frequence: "non".into(), jour: 1, heure: "08:30".into(), canaux: vec![] }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct NotifConf {
+    pub canaux: std::collections::BTreeMap<String, Canal>,
+    pub rappel_h: u32,
+    pub quota_pct: u32,
+    pub retard_h: u32,
+    /// derniers envois en echec
+    pub erreurs: Vec<String>,
+    pub rapport: RapportConf,
+}
+
+impl Default for NotifConf {
+    fn default() -> Self {
+        Self { canaux: Default::default(), rappel_h: 12, quota_pct: 90, retard_h: 50, erreurs: vec![], rapport: RapportConf::default() }
+    }
 }

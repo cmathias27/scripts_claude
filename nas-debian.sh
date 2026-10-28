@@ -23,6 +23,11 @@
 #    racines | dossiers             disques de donnees | sous-dossiers proposes comme sources
 #    migrer simulation | appliquer  reprise d'une installation avec les anciens scripts
 #    alertes configurer <ip HA> <webhook> [o|n : alerte critique de test]
+#    alertes voir | canal <ha|ntfy|telegram|discord|email> [tout|critique] | niveau <canal> <niveau>
+#            | retirer <canal> | tester [canal] | telegram | seuils <rappel h> <espace %> <retard h>
+#                                   canaux de notification (parametres cle=valeur sur l'entree standard)
+#    disques verifier | etat        sante des disques (SMART) et du RAID
+#    rapport voir | envoyer [hebdo|mensuel] | planifier <hebdo|mensuel|non> [jour] [HH:MM] [canaux]
 #    suivi configurer <serveur MQTT>   (utilisateur et mot de passe sur l'entree standard)
 #    notify <critique|info|succes|ok> <tag> <titre> <message>
 #    check                          verification (comme nas-check)
@@ -39,8 +44,8 @@
 # =====================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="2.2.0"
-API_VERSION=7
+SCRIPT_VERSION="2.3.0"
+API_VERSION=8
 
 # --------------------------- Parametres ------------------------------
 GDRIVE="gdrive"                  # remote Google Drive deja configure
@@ -225,41 +230,189 @@ gorun() {
 oom_in() { grep -qiE 'out of memory|cannot allocate memory|fatal error: runtime' "$1" 2>/dev/null; }
 
 # =========================== Notifications (nas-notify) ==============
-#   critique : alerte prioritaire (rappel toutes les REPEAT_HOURS si non resolue)
-#   info     : notification discrete
+# Canaux, au choix et combinables : Home Assistant (notify.conf : HA_URL, WEBHOOK),
+# ntfy, Telegram, Discord, e-mail (canaux.conf). Home Assistant n'est plus obligatoire.
+#   critique : alerte prioritaire (rappel toutes les REPEAT_HOURS si non resolue) -> tous les canaux
 #   succes   : notification discrete, ou "retabli" si une alerte etait en cours
 #   ok       : silencieux, sauf "retabli" si une alerte etait en cours
+#   info     : notification discrete (canaux reglés sur « tout »)
+# L'alerte en cours est toujours notee (alertes/<tag>), meme sans canal : NAS Manager l'affiche.
+CANAUX_CONF="$CONF_DIR/canaux.conf"
+RAPPORT_CONF="$CONF_DIR/rapport.conf"
+CANAUX=(ha ntfy telegram discord email)
+
+# conf_set_file <fichier> <CLE> <valeur> : reglage d'un fichier « source » (les autres sont gardes)
+conf_set_file() {
+  mkdir -p "$(dirname "$1")"; touch "$1"; chmod 600 "$1"
+  grep -v "^$2=" "$1" > "$1.new"
+  [ -n "$3" ] && printf '%s=%q\n' "$2" "$3" >> "$1.new"
+  mv -f "$1.new" "$1"; chmod 600 "$1"
+}
+
+# Canaux configures (ha ntfy telegram discord email), un par ligne
+canaux_actifs() {
+  (
+    HA_URL="" WEBHOOK="" NTFY_URL="" TELEGRAM_TOKEN="" TELEGRAM_CHAT="" DISCORD_URL="" MAIL_TO="" SMTP_HOST=""
+    # shellcheck disable=SC1090
+    [ -f "$NOTIFY_CONF" ] && . "$NOTIFY_CONF"
+    # shellcheck disable=SC1090
+    [ -f "$CANAUX_CONF" ] && . "$CANAUX_CONF"
+    [ -n "$HA_URL" ] && [ -n "$WEBHOOK" ] && echo ha
+    [ -n "$NTFY_URL" ] && echo ntfy
+    [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_CHAT" ] && echo telegram
+    [ -n "$DISCORD_URL" ] && echo discord
+    [ -n "$MAIL_TO" ] && [ -n "$SMTP_HOST" ] && echo email
+  )
+  return 0
+}
+
+# notif_send <critique|retabli|info|rapport> <titre> <message> [canal]
+#   envoie vers les canaux (ou le seul canal indique) ; une ligne « canal|ok » ou « canal|erreur »
+#   par canal sur la sortie ; code 0 si au moins un envoi a reussi
+notif_send() {
+  [ -f "$NOTIFY_CONF" ] || [ -f "$CANAUX_CONF" ] || return 1
+  (
+    # shellcheck disable=SC1090
+    [ -f "$NOTIFY_CONF" ] && . "$NOTIFY_CONF"
+    # shellcheck disable=SC1090
+    [ -f "$CANAUX_CONF" ] && . "$CANAUX_CONF"
+    # shellcheck disable=SC1090
+    [ -f "$RAPPORT_CONF" ] && . "$RAPPORT_CONF"
+    export HA_URL WEBHOOK NTFY_URL NTFY_TOKEN NTFY_NIVEAU TELEGRAM_TOKEN TELEGRAM_CHAT TELEGRAM_NIVEAU \
+      DISCORD_URL DISCORD_NIVEAU MAIL_TO MAIL_FROM SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_SECU MAIL_NIVEAU \
+      HA_NIVEAU RAPPORT_CANAUX
+    python3 - "$1" "$2" "$3" "${4:-}" "$(hostname -s 2>/dev/null)" "$STATE_DIR/notifications.log" <<'PYN'
+import json, os, smtplib, ssl, sys, time, urllib.request
+from email.message import EmailMessage
+level, title, msg, only, host, logf = sys.argv[1:7]
+E = lambda k: os.environ.get(k, "") or ""
+TG_API = os.environ.get("NAS_TELEGRAM_API", "https://api.telegram.org")
+ctx = ssl.create_default_context()
+insecure = ssl.create_default_context(); insecure.check_hostname = False; insecure.verify_mode = ssl.CERT_NONE
+
+def post(url, data, headers=None, verify=True):
+    h = {"Content-Type": "application/json", "User-Agent": "nas-debian"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=json.dumps(data).encode() if not isinstance(data, bytes) else data, headers=h, method="POST")
+    with urllib.request.urlopen(req, timeout=20, context=ctx if verify else insecure) as r:
+        return r.status
+
+icon = {"critique": "🚨 ", "retabli": "", "info": "", "rapport": "📋 "}.get(level, "")
+
+def ha():
+    kind = "critique" if level == "critique" else "info"
+    post("%s/api/webhook/%s-%s" % (E("HA_URL"), E("WEBHOOK"), kind), {"title": title, "message": msg, "tag": os.environ.get("NAS_TAG", "")}, verify=False)
+
+def ntfy():
+    base, _, topic = E("NTFY_URL").rstrip("/").rpartition("/")
+    prio = {"critique": 5, "retabli": 3, "info": 3, "rapport": 2}.get(level, 3)
+    tags = {"critique": ["rotating_light"], "retabli": ["white_check_mark"], "rapport": ["clipboard"]}.get(level, [])
+    hd = {"Authorization": "Bearer " + E("NTFY_TOKEN")} if E("NTFY_TOKEN") else {}
+    post(base, {"topic": topic, "title": title, "message": msg[:3900], "priority": prio, "tags": tags}, hd)
+
+def telegram():
+    post("%s/bot%s/sendMessage" % (TG_API, E("TELEGRAM_TOKEN")),
+         {"chat_id": E("TELEGRAM_CHAT"), "text": ("%s%s\n%s" % (icon, title, msg))[:4000], "disable_notification": level not in ("critique",)})
+
+def discord():
+    post(E("DISCORD_URL"), {"content": ("%s**%s**\n%s" % (icon, title, msg))[:1990]})
+
+def email():
+    m = EmailMessage()
+    m["Subject"] = "[NAS %s] %s%s" % (host, icon, title)
+    m["From"] = E("MAIL_FROM") or E("SMTP_USER") or E("MAIL_TO")
+    m["To"] = E("MAIL_TO")
+    m.set_content(msg + "\n\n-- \nnas-debian (%s)\n" % host)
+    port = int(E("SMTP_PORT") or (465 if E("SMTP_SECU") == "ssl" else 587 if E("SMTP_SECU") != "aucune" else 25))
+    if E("SMTP_SECU") == "ssl":
+        s = smtplib.SMTP_SSL(E("SMTP_HOST"), port, timeout=30, context=ctx)
+    else:
+        s = smtplib.SMTP(E("SMTP_HOST"), port, timeout=30)
+        if E("SMTP_SECU") != "aucune":
+            s.starttls(context=ctx)
+    with s:
+        if E("SMTP_USER"):
+            s.login(E("SMTP_USER"), E("SMTP_PASS"))
+        s.send_message(m)
+
+SEND = {"ha": ha, "ntfy": ntfy, "telegram": telegram, "discord": discord, "email": email}
+conf = {"ha": E("HA_URL") and E("WEBHOOK"), "ntfy": E("NTFY_URL"), "telegram": E("TELEGRAM_TOKEN") and E("TELEGRAM_CHAT"),
+        "discord": E("DISCORD_URL"), "email": E("MAIL_TO") and E("SMTP_HOST")}
+lvl = {"ha": E("HA_NIVEAU") or "tout", "ntfy": E("NTFY_NIVEAU") or "tout", "telegram": E("TELEGRAM_NIVEAU") or "tout",
+       "discord": E("DISCORD_NIVEAU") or "tout", "email": E("MAIL_NIVEAU") or "critique"}
+rapport = E("RAPPORT_CANAUX").split()
+ok = 0
+for c, fn in SEND.items():
+    if only and c != only:
+        continue
+    if not conf[c]:
+        if only:
+            print("%s|non configure" % c)
+        continue
+    if not only:
+        if level == "info" and lvl[c] != "tout":
+            continue
+        if level == "rapport" and rapport and c not in rapport:
+            continue
+    try:
+        fn()
+        ok += 1
+        print("%s|ok" % c)
+    except Exception as e:
+        err = str(getattr(e, "reason", "") or e)[:200] or type(e).__name__
+        print("%s|%s" % (c, err))
+        try:
+            with open(logf, "a") as f:
+                f.write("%s %s %s : %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), c, title, err))
+        except OSError:
+            pass
+sys.exit(0 if ok else 1)
+PYN
+  )
+}
+
 notify_cmd() {
-  [ -f "$NOTIFY_CONF" ] || return 0
-  local HA_URL="" WEBHOOK="" REPEAT_HOURS=12
+  local REPEAT_HOURS=12
   # shellcheck disable=SC1090
-  . "$NOTIFY_CONF"
+  [ -f "$NOTIFY_CONF" ] && . "$NOTIFY_CONF"
   local level="${1:-info}" tag="${2:-nas}" title="${3:-NAS}" msg="${4:-}" f
   tag=$(printf '%s' "$tag" | tr -c 'A-Za-z0-9_-' '_')
   f="$STATE_DIR/alertes/$tag"
   mkdir -p "$STATE_DIR/alertes"
-  _send() {  # _send <critique|info> <titre> <message>
-    local json
-    json=$(python3 -c 'import json,sys;print(json.dumps({"title":sys.argv[1],"message":sys.argv[2],"tag":sys.argv[3]}))' "$2" "$3" "$tag")
-    curl -sk -m 15 -o /dev/null -f -X POST -H 'Content-Type: application/json' -d "$json" "$HA_URL/api/webhook/${WEBHOOK}-$1"
-  }
+  export NAS_TAG="$tag"
   case "$level" in
     critique)
-      if [ -f "$f" ] && [ $(( $(date +%s) - $(stat -c %Y "$f") )) -lt $(( ${REPEAT_HOURS:-12} * 3600 )) ]; then return 0; fi
-      _send critique "$title" "$msg" && touch "$f" ;;
+      # deja signalee (et bien envoyee) depuis moins de REPEAT_HOURS : pas de rappel
+      if [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" != echec ] && [ $(( $(date +%s) - $(stat -c %Y "$f") )) -lt $(( ${REPEAT_HOURS:-12} * 3600 )) ]; then return 0; fi
+      # (echec : l'heure de debut de l'alerte est gardee, l'envoi est retente a chaque verification)
+      if notif_send critique "$title" "$msg" >/dev/null; then : > "$f"; elif [ ! -f "$f" ]; then echo echec > "$f"; fi ;;
     succes)
-      if [ -f "$f" ]; then rm -f "$f"; _send info "✅ Rétabli : $title" "$msg"
-      else _send info "$title" "$msg"; fi ;;
+      if [ -f "$f" ]; then rm -f "$f"; notif_send retabli "✅ Rétabli : $title" "$msg" >/dev/null
+      else notif_send info "$title" "$msg" >/dev/null; fi ;;
     ok)
       [ -f "$f" ] || return 0
-      rm -f "$f"; _send info "✅ Rétabli : $title" "$msg" ;;
+      rm -f "$f"; notif_send retabli "✅ Rétabli : $title" "$msg" >/dev/null ;;
     info)
-      _send info "$title" "$msg" ;;
-    *) echo "Usage : nas-notify <critique|info|succes|ok> <tag> <titre> <message>"; return 1 ;;
+      notif_send info "$title" "$msg" >/dev/null ;;
+    rapport)
+      notif_send rapport "$title" "$msg" >/dev/null ;;
+    evenement)
+      # evenement ponctuel important (ex. secteurs realloues en hausse) : tous les canaux, sans suivi
+      notif_send critique "$title" "$msg" >/dev/null ;;
+    *) echo "Usage : nas-notify <critique|info|succes|ok|rapport|evenement> <tag> <titre> <message>"; return 1 ;;
   esac
+  return 0
 }
 
-# Configuration des alertes : adresse de Home Assistant et webhook
+# Planification de la verification horaire (nas-check) : toujours en place (etat des
+# destinations et des disques pour NAS Manager, alertes)
+check_cron() {
+  [ -f /etc/cron.d/nas-check ] && grep -q "$BIN_DIR/nas-check" /etc/cron.d/nas-check && return 0
+  echo "7 * * * * root $BIN_DIR/nas-check >/dev/null 2>&1" > /etc/cron.d/nas-check
+  chmod 644 /etc/cron.d/nas-check
+}
+
+# Configuration des alertes Home Assistant : adresse de Home Assistant et webhook
 alertes_configurer() {  # alertes_configurer <ip HA> <webhook> [o|n]
   local ip="${1:-}" wh="${2:-}" crit="${3:-n}" url="" code u
   [ -n "$ip" ] && [ -n "$wh" ] || die "usage : nas-debian alertes configurer <ip HA> <webhook> [o|n]"
@@ -273,26 +426,199 @@ alertes_configurer() {  # alertes_configurer <ip HA> <webhook> [o|n]
   [ -n "$url" ] || die "Home Assistant injoignable sur $ip (ports 8123 et 80 testes)."
   vert "OK : Home Assistant repond sur $url"
   mkdir -p "$CONF_DIR" "$STATE_DIR/alertes"
-  local rep=12 quota=90 late=50
-  if [ -f "$NOTIFY_CONF" ]; then
-    rep=$(grep -m1 '^REPEAT_HOURS=' "$NOTIFY_CONF" | cut -d= -f2); rep="${rep:-12}"
-    quota=$(grep -m1 '^QUOTA_ALERT=' "$NOTIFY_CONF" | cut -d= -f2); quota="${quota:-90}"
-    late=$(grep -m1 '^LATE_HOURS=' "$NOTIFY_CONF" | cut -d= -f2); late="${late:-50}"
-  fi
-  printf 'HA_URL="%s"\nWEBHOOK="%s"\nREPEAT_HOURS=%s\nQUOTA_ALERT=%s\nLATE_HOURS=%s\n' "$url" "$wh" "$rep" "$quota" "$late" > "$NOTIFY_CONF"
-  chmod 600 "$NOTIFY_CONF"
-  echo "7 * * * * root $BIN_DIR/nas-check >/dev/null 2>&1" > /etc/cron.d/nas-check
-  chmod 644 /etc/cron.d/nas-check
+  conf_set_file "$NOTIFY_CONF" HA_URL "$url"
+  conf_set_file "$NOTIFY_CONF" WEBHOOK "$wh"
+  grep -q '^REPEAT_HOURS=' "$NOTIFY_CONF" || conf_set_file "$NOTIFY_CONF" REPEAT_HOURS 12
+  grep -q '^QUOTA_ALERT=' "$NOTIFY_CONF" || conf_set_file "$NOTIFY_CONF" QUOTA_ALERT 90
+  grep -q '^LATE_HOURS=' "$NOTIFY_CONF" || conf_set_file "$NOTIFY_CONF" LATE_HOURS 50
+  check_cron
   vert "OK : verification toutes les heures (nas-check)"
-  if notify_cmd info test "NAS" "Les alertes de sauvegarde sont actives ✅"; then
+  if notif_send info "NAS" "Les alertes de sauvegarde sont actives ✅" ha >/dev/null; then
     vert "Notification discrete envoyee : verifie ton telephone."
   else
     rouge "Echec de l'envoi vers Home Assistant ($url)."
   fi
   if [[ "$crit" =~ ^[oOyY]$ ]]; then
-    notify_cmd critique test-critique "Test d'alerte" "Ceci est un test, tout va bien." && vert "Alerte critique envoyee."
-    rm -f "$STATE_DIR/alertes/test-critique"
+    notif_send critique "Test d'alerte" "Ceci est un test, tout va bien." ha >/dev/null && vert "Alerte critique envoyee."
   fi
+}
+
+# Description d'un canal (sans secret) pour l'application
+alertes_voir() {
+  (
+    HA_URL="" WEBHOOK="" NTFY_URL="" NTFY_TOKEN="" TELEGRAM_TOKEN="" TELEGRAM_CHAT="" DISCORD_URL="" MAIL_TO="" SMTP_HOST="" \
+    SMTP_PORT="" SMTP_USER="" SMTP_SECU="" MAIL_FROM="" REPEAT_HOURS=12 QUOTA_ALERT=90 LATE_HOURS=50 \
+    HA_NIVEAU="" NTFY_NIVEAU="" TELEGRAM_NIVEAU="" DISCORD_NIVEAU="" MAIL_NIVEAU="" FREQ=non JOUR=1 HEURE=08:30 RAPPORT_CANAUX=""
+    # shellcheck disable=SC1090
+    [ -f "$NOTIFY_CONF" ] && . "$NOTIFY_CONF"
+    # shellcheck disable=SC1090
+    [ -f "$CANAUX_CONF" ] && . "$CANAUX_CONF"
+    # shellcheck disable=SC1090
+    [ -f "$RAPPORT_CONF" ] && . "$RAPPORT_CONF"
+    export HA_URL WEBHOOK NTFY_URL NTFY_TOKEN TELEGRAM_TOKEN TELEGRAM_CHAT DISCORD_URL MAIL_TO SMTP_HOST SMTP_PORT SMTP_USER SMTP_SECU \
+      MAIL_FROM REPEAT_HOURS QUOTA_ALERT LATE_HOURS HA_NIVEAU NTFY_NIVEAU TELEGRAM_NIVEAU DISCORD_NIVEAU MAIL_NIVEAU FREQ JOUR HEURE RAPPORT_CANAUX
+    python3 - "$STATE_DIR/notifications.log" <<'PYV'
+import json, os, re
+E = lambda k: os.environ.get(k, "") or ""
+def cache(u):
+    return re.sub(r"//[^/@]*@", "//", u)
+c = {}
+if E("HA_URL") and E("WEBHOOK"):
+    c["ha"] = {"cible": E("HA_URL"), "niveau": E("HA_NIVEAU") or "tout"}
+if E("NTFY_URL"):
+    c["ntfy"] = {"cible": cache(E("NTFY_URL")), "niveau": E("NTFY_NIVEAU") or "tout", "jeton": bool(E("NTFY_TOKEN"))}
+if E("TELEGRAM_TOKEN") and E("TELEGRAM_CHAT"):
+    c["telegram"] = {"cible": "conversation " + E("TELEGRAM_CHAT"), "niveau": E("TELEGRAM_NIVEAU") or "tout"}
+if E("DISCORD_URL"):
+    c["discord"] = {"cible": E("DISCORD_URL").split("/api/webhooks/")[0] + "/api/webhooks/…", "niveau": E("DISCORD_NIVEAU") or "tout"}
+if E("MAIL_TO") and E("SMTP_HOST"):
+    c["email"] = {"cible": "%s (via %s:%s)" % (E("MAIL_TO"), E("SMTP_HOST"), E("SMTP_PORT") or "?"), "niveau": E("MAIL_NIVEAU") or "critique",
+                  "serveur": E("SMTP_HOST"), "port": E("SMTP_PORT"), "securite": E("SMTP_SECU") or "starttls", "utilisateur": E("SMTP_USER"),
+                  "destinataire": E("MAIL_TO"), "expediteur": E("MAIL_FROM")}
+last = []
+try:
+    last = [l.rstrip("\n") for l in open(__import__("sys").argv[1], errors="ignore").readlines()[-5:]]
+except OSError:
+    pass
+print(json.dumps({"canaux": c, "rappel_h": int(E("REPEAT_HOURS") or 12), "quota_pct": int(E("QUOTA_ALERT") or 90),
+                  "retard_h": int(E("LATE_HOURS") or 50), "erreurs": last,
+                  "rapport": {"frequence": E("FREQ") or "non", "jour": int(E("JOUR") or 1), "heure": E("HEURE") or "08:30",
+                              "canaux": E("RAPPORT_CANAUX").split()}}, ensure_ascii=False))
+PYV
+  )
+}
+
+# alertes canal <ha|ntfy|telegram|discord|email> <tout|critique>   parametres cle=valeur sur l'entree standard
+alertes_canal() {
+  local c="${1:-}" niv="${2:-}" line k v
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  [[ " ${CANAUX[*]} " == *" $c "* ]] || die "canal inconnu : $c (ha, ntfy, telegram, discord, email)."
+  [[ -z "$niv" || "$niv" =~ ^(tout|critique)$ ]] || die "niveau invalide (tout ou critique)."
+  local -A P=()
+  if [ ! -t 0 ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      k="${line%%=*}"; v="${line#*=}"
+      [[ "$k" =~ ^[a-z_]+$ && "$line" == *=* ]] || die "parametre invalide : $k"
+      P[$k]="$v"
+    done
+  fi
+  mkdir -p "$CONF_DIR" "$STATE_DIR/alertes"
+  local -a keys=()
+  case "$c" in
+    ha)
+      [ -n "${P[ip]:-}" ] && [ -n "${P[webhook]:-}" ] || die "adresse de Home Assistant et webhook necessaires."
+      alertes_configurer "${P[ip]}" "${P[webhook]}" n
+      [ -n "$niv" ] && conf_set_file "$CANAUX_CONF" HA_NIVEAU "$niv"
+      return 0 ;;
+    ntfy)
+      [[ "${P[url]:-}" =~ ^https?://[^/]+/[A-Za-z0-9_-]{1,64}$ ]] || die "adresse ntfy invalide (ex. https://ntfy.sh/mon-sujet)."
+      conf_set_file "$CANAUX_CONF" NTFY_URL "${P[url]}"
+      [ -n "${P[jeton]+x}" ] && conf_set_file "$CANAUX_CONF" NTFY_TOKEN "${P[jeton]}"
+      keys=(NTFY_NIVEAU) ;;
+    telegram)
+      [[ "${P[jeton]:-}" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || die "jeton du bot Telegram invalide (ex. 123456:ABC-def...)."
+      [[ "${P[conversation]:-}" =~ ^-?[0-9]+$ ]] || die "identifiant de conversation Telegram invalide (un nombre)."
+      conf_set_file "$CANAUX_CONF" TELEGRAM_TOKEN "${P[jeton]}"
+      conf_set_file "$CANAUX_CONF" TELEGRAM_CHAT "${P[conversation]}"
+      keys=(TELEGRAM_NIVEAU) ;;
+    discord)
+      [[ "${P[url]:-}" =~ ^https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+$ || "${P[url]:-}" =~ ^https?://127\.0\.0\.1 ]] \
+        || die "adresse de webhook Discord invalide (https://discord.com/api/webhooks/...)."
+      conf_set_file "$CANAUX_CONF" DISCORD_URL "${P[url]}"
+      keys=(DISCORD_NIVEAU) ;;
+    email)
+      [[ "${P[destinataire]:-}" =~ ^[^@\ ]+@[^@\ ]+$ ]] || die "adresse e-mail du destinataire invalide."
+      [[ "${P[serveur]:-}" =~ ^[A-Za-z0-9.-]+$ ]] || die "serveur SMTP invalide."
+      [[ -z "${P[port]:-}" || "${P[port]}" =~ ^[0-9]{1,5}$ ]] || die "port SMTP invalide."
+      [[ "${P[securite]:-starttls}" =~ ^(starttls|ssl|aucune)$ ]] || die "securite invalide (starttls, ssl ou aucune)."
+      conf_set_file "$CANAUX_CONF" MAIL_TO "${P[destinataire]}"
+      conf_set_file "$CANAUX_CONF" SMTP_HOST "${P[serveur]}"
+      conf_set_file "$CANAUX_CONF" SMTP_PORT "${P[port]:-}"
+      conf_set_file "$CANAUX_CONF" SMTP_SECU "${P[securite]:-starttls}"
+      conf_set_file "$CANAUX_CONF" SMTP_USER "${P[utilisateur]:-}"
+      [ -n "${P[mot_de_passe]+x}" ] && conf_set_file "$CANAUX_CONF" SMTP_PASS "${P[mot_de_passe]}"
+      conf_set_file "$CANAUX_CONF" MAIL_FROM "${P[expediteur]:-}"
+      keys=(MAIL_NIVEAU) ;;
+  esac
+  [ -n "$niv" ] && conf_set_file "$CANAUX_CONF" "${keys[0]}" "$niv"
+  check_cron
+  logl "canal de notification $c configure"
+  echo "== Test du canal =="
+  local r; r=$(notif_send info "NAS" "Les notifications « $c » fonctionnent ✅" "$c")
+  if [[ "$r" == *"|ok"* ]]; then
+    vert "Canal « $c » configure : message de test envoye."
+  else
+    rouge "Canal « $c » enregistre, mais le test a echoue : ${r#*|}"
+    return 1
+  fi
+}
+
+alertes_canal_supprimer() {
+  local c="${1:-}" k
+  [[ " ${CANAUX[*]} " == *" $c "* ]] || die "canal inconnu : $c"
+  case "$c" in
+    ha)       for k in HA_URL WEBHOOK; do conf_set_file "$NOTIFY_CONF" "$k" ""; done; conf_set_file "$CANAUX_CONF" HA_NIVEAU "" ;;
+    ntfy)     for k in NTFY_URL NTFY_TOKEN NTFY_NIVEAU; do conf_set_file "$CANAUX_CONF" "$k" ""; done ;;
+    telegram) for k in TELEGRAM_TOKEN TELEGRAM_CHAT TELEGRAM_NIVEAU; do conf_set_file "$CANAUX_CONF" "$k" ""; done ;;
+    discord)  for k in DISCORD_URL DISCORD_NIVEAU; do conf_set_file "$CANAUX_CONF" "$k" ""; done ;;
+    email)    for k in MAIL_TO MAIL_FROM SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_SECU MAIL_NIVEAU; do conf_set_file "$CANAUX_CONF" "$k" ""; done ;;
+  esac
+  logl "canal de notification $c retire"
+  vert "Canal « $c » retire."
+}
+
+# Telegram : conversations ayant ecrit au bot (pour trouver l'identifiant)
+telegram_chats() {  # jeton du bot sur l'entree standard
+  local tok; IFS= read -r tok || true
+  [[ "$tok" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || die "jeton du bot Telegram invalide."
+  python3 - "$tok" <<'PYT'
+import json, os, sys, urllib.request
+api = os.environ.get("NAS_TELEGRAM_API", "https://api.telegram.org")
+try:
+    with urllib.request.urlopen("%s/bot%s/getUpdates" % (api, sys.argv[1]), timeout=20) as r:
+        d = json.load(r)
+except Exception as e:
+    print("ERREUR : Telegram refuse le jeton ou est injoignable (%s)" % e); sys.exit(1)
+vus = {}
+for u in d.get("result", []):
+    m = u.get("message") or u.get("channel_post") or u.get("my_chat_member") or {}
+    c = m.get("chat") or {}
+    if "id" in c:
+        vus[c["id"]] = c.get("title") or " ".join(x for x in (c.get("first_name"), c.get("last_name")) if x) or c.get("username", "")
+if not vus:
+    print("Aucune conversation : envoie d'abord un message a ton bot dans Telegram, puis recommence."); sys.exit(1)
+for k, v in vus.items():
+    print("%s|%s" % (k, v))
+PYT
+}
+
+alertes_seuils() {  # alertes_seuils <rappel h> <espace %> <retard h>
+  [[ "${1:-}" =~ ^[0-9]+$ && "$1" -ge 1 && "$1" -le 168 ]] || die "rappel invalide (1 a 168 heures)."
+  [[ "${2:-}" =~ ^[0-9]+$ && "$2" -ge 50 && "$2" -le 100 ]] || die "seuil d'espace invalide (50 a 100 %)."
+  [[ "${3:-}" =~ ^[0-9]+$ && "$3" -ge 6 ]] || die "retard invalide (6 heures au moins)."
+  conf_set_file "$NOTIFY_CONF" REPEAT_HOURS "$1"; conf_set_file "$NOTIFY_CONF" QUOTA_ALERT "$2"; conf_set_file "$NOTIFY_CONF" LATE_HOURS "$3"
+  vert "Reglages des alertes enregistres."
+}
+
+alertes_main() {
+  case "${1:-}" in
+    configurer) alertes_configurer "${2:-}" "${3:-}" "${4:-n}" ;;
+    voir)       alertes_voir ;;
+    canal)      alertes_canal "${2:-}" "${3:-}" ;;
+    retirer)    alertes_canal_supprimer "${2:-}" ;;
+    tester)     notif_send info "NAS" "Test depuis NAS Manager ✅" "${2:-}"; local rc=$?; [ $rc -eq 0 ] || echo "Aucun envoi n'a reussi."; return $rc ;;
+    telegram)   telegram_chats ;;
+    niveau)     # niveau <canal> <tout|critique>
+      [[ " ${CANAUX[*]} " == *" ${2:-} "* ]] || die "canal inconnu : ${2:-}"
+      [[ "${3:-}" =~ ^(tout|critique)$ ]] || die "niveau invalide (tout ou critique)."
+      canaux_actifs | grep -qx "$2" || die "canal « $2 » non configure."
+      local kn; kn="$(echo "$2" | tr '[:lower:]' '[:upper:]')_NIVEAU"; [ "$2" = email ] && kn=MAIL_NIVEAU
+      conf_set_file "$CANAUX_CONF" "$kn" "$3"
+      vert "Canal « $2 » : $( [ "$3" = tout ] && echo "toutes les notifications" || echo "alertes seulement")." ;;
+    seuils)     alertes_seuils "${2:-}" "${3:-}" "${4:-}" ;;
+    *) die "usage : nas-debian alertes configurer | voir | canal <canal> [niveau] | niveau <canal> <tout|critique> | retirer <canal> | tester [canal] | telegram | seuils" ;;
+  esac
 }
 
 # =========================== Verification (nas-check) ================
@@ -382,8 +708,12 @@ except Exception: print("")' "$DEST_JSON" "$d" | cut -c1-200) Disque débranché
     done < "$JOBS"
   fi
 
-  # 4. Entretien : nouvelle version de rclone (une fois par jour)
+  # 4. Entretien : nouvelle version de rclone et de restic (une fois par jour)
   outils_rclone_derniere >/dev/null 2>&1
+  outils_restic_derniere >/dev/null 2>&1
+
+  # 4 bis. Sante des disques (SMART, RAID) : alerte avant la panne
+  disques_verifier
 
   # 5. Etat pour le tableau de bord Home Assistant
   python3 -c '
@@ -394,7 +724,566 @@ num=lambda x:(float(x) if x else None)
 json.dump({"gdrive":gd=="true","quota_pct":int(num(pct)) if pct else None,"used_go":num(u),"total_go":num(t),
            "gdrive_configure":conf=="1","checked":datetime.now().astimezone().isoformat(timespec="seconds")},open(out,"w"))
 ' "$GD" "$pct" "$used_go" "$total_go" "$STATE_DIR/health.json" "$(remote_exists "$GDRIVE" && echo 1 || echo 0)"
+  espace_releve
   ha_status
+  return 0
+}
+
+# =========================== Sante des disques =======================
+# Sante des disques (SMART) et des grappes RAID (mdadm, ZFS) -> JSON + lignes d'alerte :
+#   ALERTE|tag|titre|message   probleme durable (disque critique, RAID degrade)
+#   OK|tag|titre|message       plus de probleme pour ce tag
+#   EVENEMENT|titre|message    evenement ponctuel (secteurs realloues en hausse, nouvelle anomalie...)
+# Les disques en veille ne sont pas reveilles (smartctl -n standby) : leurs dernieres valeurs sont gardees.
+disk_health_py() {  # disk_health_py <fichier json> <smartctl> <nom de la machine>
+  python3 - "$1" "$2" "$3" <<'PYDISK'
+import glob, json, os, re, subprocess, sys, time
+out_path, smart, host = sys.argv[1], sys.argv[2], sys.argv[3]
+MDSTAT = os.environ.get("NAS_MDSTAT", "/proc/mdstat")
+try:
+    prev = json.load(open(out_path))
+except (OSError, ValueError):
+    prev = {}
+prevd = {(d.get("serie") or d.get("dev")): d for d in prev.get("disques", [])}
+lines = []
+
+def run(args, t=90):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=t)
+        return p.returncode, p.stdout + p.stderr
+    except Exception:
+        return -1, ""
+
+def scan():
+    devs = []
+    if smart:
+        _, o = run([smart, "--scan"])
+        for l in o.splitlines():
+            m = re.match(r"^(/dev/\S+)\s+-d\s+(\S+)", l)
+            if m and m.group(1) not in [d[0] for d in devs]:
+                devs.append((m.group(1), m.group(2)))
+    if not devs:
+        for p in sorted(glob.glob("/dev/sd[a-z]") + glob.glob("/dev/sata[0-9]*") + glob.glob("/dev/nvme[0-9]n1")):
+            if re.match(r"^/dev/(sd[a-z]|sata\d+|nvme\d+n1)$", p):
+                devs.append((p, ""))
+    return devs
+
+def num(x):
+    try:
+        return int(str(x).replace(",", "").split()[0])
+    except (ValueError, IndexError, TypeError):
+        return None
+
+def from_json(j):
+    d = {"modele": j.get("model_name") or j.get("model_family") or "", "serie": j.get("serial_number", ""),
+         "taille": (j.get("user_capacity") or {}).get("bytes") or j.get("nvme_total_capacity")}
+    proto = (j.get("device") or {}).get("protocol", "")
+    d["type"] = "nvme" if proto == "NVMe" else ("ssd" if j.get("rotation_rate") == 0 else "hdd")
+    st = j.get("smart_status") or {}
+    d["smart_ok"] = st.get("passed")
+    d["temp"] = (j.get("temperature") or {}).get("current")
+    d["heures"] = (j.get("power_on_time") or {}).get("hours")
+    tab = (j.get("ata_smart_attributes") or {}).get("table", [])
+    raw = {a.get("id"): (a.get("raw") or {}).get("value") for a in tab}
+    norm = {a.get("id"): a.get("value") for a in tab}
+    d.update(realloues=raw.get(5), en_attente=raw.get(197), irreparables=raw.get(198), crc=raw.get(199), non_corriges=raw.get(187))
+    nv = j.get("nvme_smart_health_information_log")
+    if nv:
+        d.update(usure=nv.get("percentage_used"), alerte_nvme=nv.get("critical_warning"), erreurs_media=nv.get("media_errors"),
+                 reserve=nv.get("available_spare"), reserve_seuil=nv.get("available_spare_threshold"))
+        if d["temp"] is None:
+            d["temp"] = nv.get("temperature")
+        if d["heures"] is None:
+            d["heures"] = nv.get("power_on_hours")
+    elif d["type"] == "ssd":
+        for i in (177, 231, 233, 202):        # usure des SSD SATA (selon les marques)
+            if norm.get(i) is not None and 0 < norm[i] <= 100:
+                d["usure"] = 100 - norm[i]
+                break
+    return d
+
+def from_text(t):
+    g = lambda rx: (lambda m: m.group(1).strip() if m else None)(re.search(rx, t, re.M))
+    d = {"modele": g(r"^(?:Device Model|Model Number|Product):\s*(.+)$") or "", "serie": g(r"^Serial [Nn]umber:\s*(.+)$") or ""}
+    cap = g(r"^(?:User Capacity|Total NVM Capacity|Namespace 1 Size/Capacity):\s*([\d,.\s]+) bytes")
+    d["taille"] = num(re.sub(r"[^\d]", "", cap)) if cap else None
+    h = g(r"SMART overall-health self-assessment test result:\s*(\S+)") or g(r"SMART Health Status:\s*(\S+)")
+    d["smart_ok"] = None if h is None else h.upper() in ("PASSED", "OK")
+    rot = g(r"^Rotation Rate:\s*(.+)$")
+    nvme = bool(re.search(r"^(NVMe Version|PCI Vendor/Subsystem ID)", t, re.M))
+    d["type"] = "nvme" if nvme else ("ssd" if rot and "Solid State" in rot else "hdd")
+    attrs = {}
+    for m in re.finditer(r"^\s*(\d{1,3})\s+\S+\s+0x[0-9a-fA-F]+\s+(\d+)\s+\d+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\d+)", t, re.M):
+        attrs[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
+    raw = lambda i: attrs[i][1] if i in attrs else None
+    d.update(realloues=raw(5), en_attente=raw(197), irreparables=raw(198), crc=raw(199), non_corriges=raw(187))
+    tmp = num(g(r"^(?:Temperature|Current Drive Temperature):\s*(\d+)")) or raw(194) or raw(190)
+    d["temp"] = tmp if tmp is not None and tmp < 120 else None
+    d["heures"] = raw(9) if raw(9) is not None else num(g(r"^Power On Hours:\s*([\d,]+)"))
+    if nvme:
+        d.update(usure=num(g(r"^Percentage Used:\s*(\d+)%")), alerte_nvme=(lambda v: int(v, 16) if v else None)(g(r"^Critical Warning:\s*(0x[0-9a-fA-F]+)")),
+                 erreurs_media=num(g(r"^Media and Data Integrity Errors:\s*([\d,]+)")), reserve=num(g(r"^Available Spare:\s*(\d+)%")),
+                 reserve_seuil=num(g(r"^Available Spare Threshold:\s*(\d+)%")))
+    elif d["type"] == "ssd":
+        for i in (177, 231, 233, 202):
+            if i in attrs and 0 < attrs[i][0] <= 100:
+                d["usure"] = 100 - attrs[i][0]
+                break
+    return d
+
+def read_disk(dev, typ):
+    base = [smart] + (["-d", typ] if typ else [])
+    rc, o = run(base + ["-a", "-j", "-n", "standby", dev])
+    j = None
+    if o.lstrip().startswith("{"):
+        try:
+            j = json.loads(o)
+        except ValueError:
+            j = None
+    if j is not None:
+        msgs = " ".join(m.get("string", "") for m in (j.get("smartctl") or {}).get("messages", []))
+        if "STANDBY" in msgs.upper() or "SLEEP" in msgs.upper():
+            return "veille"
+        if not j.get("serial_number") and not j.get("model_name") and rc & 2:
+            return None
+        return from_json(j)
+    rc, o = run(base + ["-a", "-n", "standby", dev])
+    if re.search(r"STANDBY|SLEEP", o) and "SMART" not in o[200:]:
+        return "veille"
+    if "Serial" not in o and "Model" not in o:
+        return None
+    return from_text(o)
+
+def evaluate(d, p):
+    crit, att, ev = [], [], []
+    if d.get("smart_ok") is False:
+        crit.append("test SMART en échec : le disque annonce sa panne, remplace-le")
+    if d.get("en_attente"):
+        crit.append("%d secteur(s) instable(s) en attente de réallocation" % d["en_attente"])
+    if d.get("irreparables"):
+        crit.append("%d secteur(s) illisible(s)" % d["irreparables"])
+    r, pr = d.get("realloues") or 0, (p or {}).get("realloues") or 0
+    if r:
+        att.append("%d secteur(s) réalloué(s)" % r)
+        if p and r > pr:
+            ev.append("secteurs réalloués en hausse : %d (avant : %d). Signe d'usure : vérifie les sauvegardes et prévois le remplacement." % (r, pr))
+    if d.get("non_corriges"):
+        att.append("%d erreur(s) non corrigée(s)" % d["non_corriges"])
+    c, pc = d.get("crc") or 0, (p or {}).get("crc") or 0
+    if p and c > pc:
+        ev.append("erreurs de transmission en hausse (%d) : câble SATA ou connecteur à vérifier." % c)
+    if d.get("alerte_nvme"):
+        crit.append("le SSD signale un problème (avertissement critique %d)" % d["alerte_nvme"])
+    if d.get("reserve") is not None and d.get("reserve_seuil") is not None and d["reserve"] <= d["reserve_seuil"]:
+        crit.append("réserve du SSD épuisée (%d %%)" % d["reserve"])
+    u = d.get("usure")
+    if u is not None and u >= 100:
+        crit.append("SSD usé (%d %%)" % u)
+    elif u is not None and u >= 80:
+        att.append("SSD usé à %d %%" % u)
+    if d.get("erreurs_media"):
+        att.append("%d erreur(s) d'intégrité des données" % d["erreurs_media"])
+    t = d.get("temp")
+    hot = (60, 50) if d.get("type") == "hdd" else (75, 65)
+    if t is not None and t >= hot[0]:
+        crit.append("température élevée : %d °C (ventilation ?)" % t)
+    elif t is not None and t >= hot[1]:
+        att.append("température : %d °C" % t)
+    d["etat"] = "critique" if crit else ("attention" if att else "ok")
+    d["raisons"] = crit + att
+    return ev
+
+def nom(d):
+    return "%s (%s%s)" % (d["dev"], d.get("modele") or "disque", ", n° " + d["serie"] if d.get("serie") else "")
+
+disques = []
+present = bool(smart)
+for dev, typ in (scan() if present else []):
+    r = read_disk(dev, typ)
+    if r is None:
+        continue
+    key_prev = None
+    if r == "veille":
+        p = next((x for x in prevd.values() if x.get("dev") == dev), None)
+        if not p:
+            disques.append({"dev": dev, "veille": True, "etat": "inconnu", "raisons": []})
+            continue
+        d = dict(p); d["veille"] = True
+        disques.append(d)
+        continue
+    d = r; d["dev"] = dev; d["veille"] = False
+    p = prevd.get(d.get("serie") or dev)
+    for e in evaluate(d, p):
+        lines.append("EVENEMENT|Disque %s : à surveiller|%s" % (d["dev"], e))
+    tag = "disque-" + re.sub(r"[^A-Za-z0-9_-]", "_", d.get("serie") or dev.split("/")[-1])[:40]
+    d["tag"] = tag
+    if d["etat"] == "critique":
+        lines.append("ALERTE|%s|Disque %s en danger|%s : %s. Vérifie les sauvegardes et prévois de remplacer le disque." % (tag, d["dev"], nom(d), " ; ".join(d["raisons"])))
+    else:
+        lines.append("OK|%s|Disque %s|Le disque %s ne signale plus de problème grave." % (tag, d["dev"], nom(d)))
+        norm = lambda v: {re.sub(r"\d+", "#", x) for x in v}
+        if d["etat"] == "attention" and norm(d["raisons"]) - norm((p or {}).get("raisons", [])) and not any(l.startswith("EVENEMENT|Disque %s " % d["dev"]) for l in lines):
+            lines.append("EVENEMENT|Disque %s : à surveiller|%s : %s." % (d["dev"], nom(d), " ; ".join(d["raisons"])))
+    disques.append(d)
+
+# grappes RAID logicielles (mdadm)
+raid = []
+try:
+    t = open(MDSTAT).read()
+except OSError:
+    t = ""
+for b in re.split(r"\n(?=md\d+\s*:)", t):
+    m = re.match(r"(md\d+)\s*:\s*(\S+)\s+(?:\((?:auto-)?read-only\)\s+)?(raid\d+|linear)?\s*([^\n]*)", b)
+    if not m:
+        continue
+    name, active, level, rest = m.groups()
+    members = re.findall(r"(\w+)\[\d+\](\([FS]\))?", rest)
+    st = re.search(r"\[(\d+)/(\d+)\]\s*\[([U_]+)\]", b)
+    etat, pct = "ok", None
+    if active not in ("active", "active-idle"):
+        etat = "arrete"
+    if (st and (int(st.group(2)) < int(st.group(1)) or "_" in st.group(3))) or any(f == "(F)" for _, f in members):
+        etat = "degrade"
+    pr = re.search(r"(recovery|resync|reshape|check)\s*=\s*([\d.]+)%", b)
+    if pr:
+        pct = float(pr.group(2))
+        if pr.group(1) in ("recovery", "reshape"):
+            etat = "reconstruction" if etat != "arrete" else etat
+    raid.append({"nom": name, "type": level or "", "etat": etat, "disques": [x for x, _ in members],
+                 "en_panne": [x for x, f in members if f == "(F)"], "avancement": pct, "operation": pr.group(1) if pr else None})
+# pools ZFS
+if subprocess.run(["sh", "-c", "command -v zpool >/dev/null"]).returncode == 0:
+    _, o = run(["zpool", "list", "-H", "-o", "name,health"])
+    for l in o.splitlines():
+        p = l.split("\t")
+        if len(p) == 2:
+            raid.append({"nom": p[0], "type": "zfs", "etat": "ok" if p[1] == "ONLINE" else "degrade", "disques": [], "en_panne": [],
+                         "avancement": None, "operation": None})
+prevr = {x["nom"]: x for x in prev.get("raid", [])}
+for a in raid:
+    tag = "raid-" + a["nom"]
+    if a["etat"] in ("degrade", "reconstruction", "arrete"):
+        extra = " (reconstruction : %.0f %%)" % a["avancement"] if a.get("avancement") is not None and a["etat"] == "reconstruction" else ""
+        lines.append("ALERTE|%s|RAID %s dégradé|La grappe %s (%s) fonctionne sans redondance%s%s. Un disque de plus en panne = données perdues : remplace le disque en défaut au plus vite." % (
+            tag, a["nom"], a["nom"], a["type"], extra, (" ; disque(s) en panne : " + ", ".join(a["en_panne"])) if a["en_panne"] else ""))
+    else:
+        lines.append("OK|%s|RAID %s|La grappe %s est de nouveau complète." % (tag, a["nom"], a["nom"]))
+    pa = prevr.get(a["nom"])
+    if a["etat"] == "reconstruction" and (not pa or pa.get("etat") != "reconstruction"):
+        lines.append("EVENEMENT|RAID %s : reconstruction en cours|La grappe %s se reconstruit (%.0f %%). Évite d'arrêter le NAS d'ici la fin." % (a["nom"], a["nom"], a.get("avancement") or 0))
+
+for gone in set(prevr) - {a["nom"] for a in raid}:   # grappe supprimee : son alerte est levee
+    lines.append("OK|raid-%s|RAID %s|La grappe %s n'existe plus." % (gone, gone, gone))
+res = {"verifie": int(time.time()), "machine": host, "smart": present, "disques": disques, "raid": raid}
+tmp = out_path + ".new"
+json.dump(res, open(tmp, "w"), ensure_ascii=False)
+os.replace(tmp, out_path)
+print("\n".join(lines))
+PYDISK
+}
+
+DISQUES_JSON="$STATE_DIR/disques.json"
+
+smartctl_bin() { command -v smartctl 2>/dev/null || { [ -x /usr/sbin/smartctl ] && echo /usr/sbin/smartctl; } || true; }
+
+# Verification de la sante des disques et du RAID, alertes (appelee par nas-check chaque heure)
+disques_verifier() {
+  mkdir -p "$STATE_DIR"
+  exec 4>"/run/nas-disques.lock"
+  flock -w 120 4 || return 0
+  local kind a b c
+  while IFS='|' read -r kind a b c; do
+    case "$kind" in
+      ALERTE)    notify critique "$a" "$b" "$c" ;;
+      OK)        notify ok "$a" "$b" "$c" ;;
+      EVENEMENT) notify evenement disques "$a" "$b" ;;
+    esac
+  done < <(disk_health_py "$DISQUES_JSON" "$(smartctl_bin)" "$(hostname -s 2>/dev/null)")
+  exec 4>&-
+  return 0
+}
+
+disques_main() {
+  case "${1:-etat}" in
+    verifier) [ "$(id -u)" -eq 0 ] || die "lance ce script en root."; disques_verifier; cat "$DISQUES_JSON" ;;
+    etat)     cat "$DISQUES_JSON" 2>/dev/null || echo '{}' ;;
+    *) die "usage : nas-debian disques verifier | etat" ;;
+  esac
+}
+
+# =========================== Rapport periodique ======================
+# Resume de la semaine ou du mois (sauvegardes, temps reel, destinations, espace, disques,
+# alertes, kit de secours), envoye par les canaux de notification.
+# /etc/nas-backup/rapport.conf : FREQ (hebdo, mensuel, non), JOUR (1 = lundi), HEURE, RAPPORT_CANAUX
+rapport_texte() {  # rapport_texte <hebdo|mensuel> -> titre (1re ligne) puis le rapport
+  python3 - "${1:-hebdo}" "$(hostname -s 2>/dev/null)" "$STATE_DIR" "$JOBS" "$RT_CONF" <<'PYR'
+import json, os, re, sys, time
+period, host, S, JOBS, RT = sys.argv[1:6]
+days = 30 if period == "mensuel" else 7
+now = time.time()
+t0 = now - days * 86400
+
+def hs(b):
+    b = float(b or 0)
+    for u in ("o", "Ko", "Mo", "Go", "To"):
+        if b < 1024 or u == "To":
+            return ("%d %s" % (b, u)) if u == "o" else ("%.1f %s" % (b, u)).replace(".", ",")
+        b /= 1024
+
+def ago(ts):
+    d = max(0, now - ts)
+    if d < 3600:
+        return "il y a %d min" % (d // 60)
+    if d < 86400:
+        return "il y a %d h" % (d // 3600)
+    return "il y a %d j" % (d // 86400)
+
+def jsonl(p):
+    out = []
+    try:
+        for l in open(p, errors="ignore"):
+            try:
+                out.append(json.loads(l))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    return out
+
+def rd(p):
+    try:
+        return json.load(open(p))
+    except Exception:
+        return None
+
+def lines(p):
+    try:
+        return [l.rstrip("\n") for l in open(p) if l.strip() and not l.startswith("#")]
+    except OSError:
+        return []
+
+L, pb = [], [0]
+def bad(n=1):
+    pb[0] += n
+
+# ---- sauvegardes programmees
+jobs = [l.split("|") for l in lines(JOBS) if len(l.split("|")) >= 7]
+runs = [r for r in jsonl(S + "/historique.jsonl") if (r.get("fin") or 0) >= t0]
+if jobs:
+    ok = sum(1 for r in runs if r.get("etat") == "OK")
+    ko = sum(1 for r in runs if r.get("etat") == "ECHEC")
+    L.append("SAUVEGARDES PROGRAMMÉES : %d exécution(s), %d réussie(s), %d en échec, %s envoyés"
+             % (len(runs), ok, ko, hs(sum(r.get("volume_octets", 0) or 0 for r in runs))))
+    for p in jobs:
+        n, sched = p[0], p[5]
+        rr = [r for r in runs if r.get("nom") == n]
+        if not rr:
+            if sched != "manuel":
+                bad()
+                L.append("  ⚠ %s : aucune exécution sur la période" % n)
+            else:
+                L.append("  · %s : manuelle, pas lancée" % n)
+            continue
+        k = sum(1 for r in rr if r.get("etat") == "ECHEC")
+        last = max(rr, key=lambda r: r.get("fin", 0))
+        ver = (", %s version(s)" % last["versions"]) if last.get("versions") is not None else ""
+        if k:
+            bad()
+            err = (" — " + last["erreur"][:140]) if last.get("erreur") and last.get("etat") != "OK" else ""
+            L.append("  ✗ %s : %d échec(s) sur %d, dernière : %s%s" % (n, k, len(rr), "OK" if last.get("etat") == "OK" else "ÉCHEC", err))
+        else:
+            L.append("  ✓ %s : %d/%d OK, %s envoyés%s, dernière %s"
+                     % (n, len(rr), len(rr), hs(sum(r.get("volume_octets", 0) or 0 for r in rr)), ver, ago(last.get("fin", now))))
+
+# ---- temps reel
+rts = [l.split("|")[0] for l in lines(RT)]
+if rts:
+    L.append("")
+    L.append("TEMPS RÉEL :")
+    for n in rts:
+        env = vol = ech = 0
+        oldest = now
+        for f in ("%s/rt-%s.transferts.log.1" % (S, n), "%s/rt-%s.transferts.log" % (S, n)):
+            try:
+                for l in open(f, errors="ignore"):
+                    q = l.strip().split("|")
+                    if len(q) < 4 or not q[0].isdigit():
+                        continue
+                    ts = int(q[0])
+                    oldest = min(oldest, ts)
+                    if ts < t0:
+                        continue
+                    nb = int(q[4]) if len(q) > 4 and q[4].isdigit() else 1
+                    if q[3] != "ok":
+                        ech += 1
+                    elif q[1] == "envoi":
+                        env += nb
+                        vol += int(q[2]) if q[2].isdigit() else 0
+            except OSError:
+                pass
+        pause = os.path.exists("%s/rt-%s.pause" % (S, n))
+        if pause or ech:
+            bad()
+        part = (" (journaux depuis le %s)" % time.strftime("%d/%m", time.localtime(oldest))) if oldest > t0 + 86400 else ""
+        L.append("  %s %s : %d envoi(s), %s%s%s%s" % ("✗" if pause or ech else "✓", n, env, hs(vol),
+                                                  (", %d échec(s)" % ech) if ech else "", part, " — EN PAUSE" if pause else ""))
+
+# ---- destinations
+de = rd(S + "/destinations.json") or {}
+if de:
+    L.append("")
+    L.append("DESTINATIONS :")
+    for n, e in sorted(de.items()):
+        if not e.get("ok"):
+            bad()
+            L.append("  ✗ %s : injoignable (%s)" % (n, (e.get("erreur") or "?")[:120]))
+            continue
+        t, u = e.get("total"), e.get("utilise")
+        L.append("  ✓ %s : joignable%s" % (n, (", %d %% utilisé (%s sur %s)" % (u * 100 // t, hs(u), hs(t))) if t and u is not None else ""))
+
+# ---- evolution de l'espace
+pts = [p for p in jsonl(S + "/espace.jsonl") if p.get("t", 0) >= t0]
+esp = []
+if len(pts) >= 2:
+    a, b = pts[0], pts[-1]
+    span = max(1, (b["t"] - a["t"]) / 86400)
+    if a.get("drive_go") is not None and b.get("drive_go") is not None:
+        dg = b["drive_go"] - a["drive_go"]
+        t = ("  Google Drive : %+.1f Go sur la période" % dg).replace(".", ",")
+        if dg > 0 and b.get("drive_total_go"):
+            rest = (b["drive_total_go"] - b["drive_go"]) / (dg / span)
+            if rest < 3650:
+                t += ", plein dans environ %d jours au rythme actuel" % rest
+        esp.append(t)
+    for d in b.get("disques", []):
+        da = next((x for x in a.get("disques", []) if x.get("p") == d.get("p")), None)
+        if d.get("s"):
+            nm = re.sub(r"^/srv/dev-disk-by-(uuid|label)-([^/]{0,8})[^/]*", r"disque \2…", d["p"])
+            pct = d["u"] * 100 // d["s"]
+            if pct >= 90:
+                bad()
+            esp.append(("  %s : %d %% utilisé%s" % (nm, pct, (" (%+.1f Go)" % ((d["u"] - da["u"]) / 1e9)) if da else "")).replace(".", ","))
+if esp:
+    L.append("")
+    L.append("ESPACE :")
+    L.extend(esp)
+
+# ---- disques
+dk = rd(S + "/disques.json") or {}
+if dk.get("disques") or dk.get("raid"):
+    L.append("")
+    L.append("DISQUES :")
+    ds = dk.get("disques", [])
+    pbs = [d for d in ds if d.get("etat") in ("critique", "attention")]
+    temps = [d["temp"] for d in ds if d.get("temp") is not None]
+    if not pbs:
+        L.append("  ✓ %d disque(s) en bon état%s" % (len(ds), (", %d à %d °C" % (min(temps), max(temps))) if temps else ""))
+    for d in pbs:
+        bad(1 if d["etat"] == "critique" else 0)
+        L.append("  %s %s (%s) : %s" % ("✗" if d["etat"] == "critique" else "⚠", d.get("dev"), d.get("modele", ""), " ; ".join(d.get("raisons", []))))
+    for a in dk.get("raid", []):
+        if a["etat"] != "ok":
+            bad()
+        st = {"ok": "complet", "degrade": "DÉGRADÉ", "arrete": "ARRÊTÉ",
+              "reconstruction": "reconstruction %.0f %%" % (a.get("avancement") or 0)}.get(a["etat"], a["etat"])
+        L.append("  %s RAID %s (%s) : %s" % ("✓" if a["etat"] == "ok" else "✗", a["nom"], a.get("type", ""), st))
+elif dk and not dk.get("smart"):
+    L.append("")
+    L.append("DISQUES : smartmontools absent (NAS Manager > Installation > Outils)")
+
+# ---- alertes en cours
+al = sorted(os.listdir(S + "/alertes")) if os.path.isdir(S + "/alertes") else []
+if al:
+    L.append("")
+    L.append("ALERTES EN COURS (%d) : %s" % (len(al), ", ".join(al)))
+
+# ---- kit de secours
+ks = rd(S + "/secours/secours.json") or {}
+try:
+    cree = int(open(S + "/secours/cree").read().strip())
+except (OSError, ValueError):
+    cree = 0
+L.append("")
+if cree:
+    okd = [n for n, e in ks.get("destinations", {}).items() if e.get("ok")]
+    kod = [n for n, e in ks.get("destinations", {}).items() if not e.get("ok")]
+    if kod:
+        bad()
+    L.append("KIT DE SECOURS : à jour du %s, envoyé vers %s%s" % (time.strftime("%d/%m/%Y", time.localtime(cree)), ", ".join(okd) or "aucune destination",
+                                                             (" — échec vers " + ", ".join(kod)) if kod else ""))
+elif jobs or rts:
+    L.append("KIT DE SECOURS : pas encore créé")
+
+head = "Tout va bien." if pb[0] == 0 else "%d point(s) à vérifier." % pb[0]
+print(("Rapport de la semaine" if days == 7 else "Rapport du mois") + " — NAS " + host)
+print("Du %s au %s : %s" % (time.strftime("%d/%m", time.localtime(t0)), time.strftime("%d/%m/%Y", time.localtime(now)), head))
+print("")
+print("\n".join(L))
+PYR
+}
+
+rapport_main() {
+  case "${1:-voir}" in
+    voir)    rapport_texte "${2:-hebdo}" ;;
+    envoyer)
+      local t title
+      t=$(rapport_texte "${2:-hebdo}") || die "rapport impossible."
+      title=$(echo "$t" | head -n 1)
+      printf '%s\n' "$t" > "$STATE_DIR/rapport.txt"
+      if [ -z "$(canaux_actifs)" ]; then die "aucun canal de notification : configure-en un (NAS Manager, page Alertes)."; fi
+      local r; r=$(notif_send rapport "$title" "$(echo "$t" | tail -n +2)")
+      logl "rapport ${2:-hebdo} envoye ($(echo "$r" | tr '\n' ' '))"
+      if [[ "$r" == *"|ok"* ]]; then vert "Rapport envoye : $(echo "$r" | grep '|ok' | cut -d'|' -f1 | paste -sd, -)"; else rouge "Envoi du rapport en echec : $r"; return 1; fi ;;
+    planifier)  # planifier <hebdo|mensuel|non> [jour 1-7] [HH:MM] [canaux...]
+      [[ "${2:-}" =~ ^(hebdo|mensuel|non)$ ]] || die "frequence invalide (hebdo, mensuel ou non)."
+      [[ -z "${3:-}" || "$3" =~ ^[1-7]$ ]] || die "jour invalide (1 = lundi ... 7 = dimanche)."
+      [[ -z "${4:-}" || "$4" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "heure invalide (HH:MM)."
+      local c; for c in "${@:5}"; do [[ " ${CANAUX[*]} " == *" $c "* ]] || die "canal inconnu : $c"; done
+      conf_set_file "$RAPPORT_CONF" FREQ "$2"
+      conf_set_file "$RAPPORT_CONF" JOUR "${3:-1}"
+      conf_set_file "$RAPPORT_CONF" HEURE "${4:-08:30}"
+      conf_set_file "$RAPPORT_CONF" RAPPORT_CANAUX "${*:5}"
+      gen_cron
+      if [ "$2" = non ]; then vert "Rapport periodique desactive."; else vert "Rapport $2 planifie (${4:-08:30})."; fi ;;
+    *) die "usage : nas-debian rapport voir | envoyer [hebdo|mensuel] | planifier <hebdo|mensuel|non> [jour] [HH:MM] [canaux...]" ;;
+  esac
+}
+
+# Releve de l'espace (Drive, disques) pour le rapport et l'historique : un point toutes les 6 h
+espace_releve() {
+  python3 - "$STATE_DIR" "$(data_roots | paste -sd'|' -)" <<'PYE' 2>/dev/null
+import json, os, subprocess, sys, time
+S, roots = sys.argv[1], [r for r in sys.argv[2].split("|") if r]
+E = S + "/espace.jsonl"
+last = 0
+try:
+    with open(E, "rb") as f:
+        f.seek(0, 2); f.seek(max(0, f.tell() - 4000))
+        ls = f.read().decode(errors="ignore").splitlines()
+        last = json.loads(ls[-1]).get("t", 0) if ls else 0
+except (OSError, ValueError, IndexError):
+    pass
+if time.time() - last < 6 * 3600:
+    sys.exit(0)
+try:
+    h = json.load(open(S + "/health.json"))
+except Exception:
+    h = {}
+dk, vus = [], set()
+if roots:
+    o = subprocess.run(["df", "-B1", "--output=target,size,used"] + roots, capture_output=True, text=True).stdout.splitlines()[1:]
+    for l in o:
+        p = l.rsplit(None, 2)
+        if len(p) == 3 and p[0] not in vus:
+            vus.add(p[0]); dk.append({"p": p[0], "u": int(p[2]), "s": int(p[1])})
+with open(E, "a") as f:
+    f.write(json.dumps({"t": int(time.time()), "drive_go": h.get("used_go"), "drive_total_go": h.get("total_go"), "disques": dk}) + "\n")
+with open(E) as f:
+    al = f.readlines()
+if len(al) > 1500:
+    with open(E, "w") as f:
+        f.writelines(al[-1500:])
+PYE
   return 0
 }
 
@@ -946,10 +1835,11 @@ outils_etat() {
   local last; last=$(cat "$STATE_DIR/rclone-derniere" 2>/dev/null)
   local watches; watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
   local b; b() { command -v "$1" >/dev/null && echo true || echo false; }
-  printf '{"machine":"%s","arch":"%s","ram_total_mo":%s,"ram_dispo_mo":%s,"python3":%s,"rclone":"%s","rclone_source":"%s","rclone_derniere":"%s","curl":%s,"unzip":%s,"inotifywait":%s,"mosquitto_pub":%s,"openssl":%s,"flock":%s,"logrotate":%s,"inotify_max":%s,"restic":"%s","restic_derniere":"%s","bzip2":%s}\n' \
+  local sm=false; { command -v smartctl >/dev/null || [ -x /usr/sbin/smartctl ]; } && sm=true
+  printf '{"machine":"%s","arch":"%s","ram_total_mo":%s,"ram_dispo_mo":%s,"python3":%s,"rclone":"%s","rclone_source":"%s","rclone_derniere":"%s","curl":%s,"unzip":%s,"inotifywait":%s,"mosquitto_pub":%s,"openssl":%s,"flock":%s,"logrotate":%s,"inotify_max":%s,"restic":"%s","restic_derniere":"%s","bzip2":%s,"smartctl":%s}\n' \
     "$MACHINE" "$(uname -m)" "$(ram_total_mo)" "$(ram_dispo_mo)" "$(b python3)" "$rc" "$(rclone_source)" "$last" \
     "$(b curl)" "$(b unzip)" "$(b inotifywait)" "$(b mosquitto_pub)" "$(b openssl)" "$(b flock)" "$( [ -x /usr/sbin/logrotate ] && echo true || echo false)" "$watches" \
-    "$(restic_version)" "$(cat "$STATE_DIR/restic-derniere" 2>/dev/null)" "$(b bunzip2)"
+    "$(restic_version)" "$(cat "$STATE_DIR/restic-derniere" 2>/dev/null)" "$(b bunzip2)" "$sm"
 }
 
 # Installe tout ce qui manque. Options : suivi (client MQTT pour Home Assistant)
@@ -962,6 +1852,7 @@ outils_installer() {
   outils_requis flock   || pk+=(util-linux)
   outils_requis inotifywait || pk+=(inotify-tools)
   outils_requis bunzip2 || pk+=(bzip2)
+  outils_requis smartctl || [ -x /usr/sbin/smartctl ] || pk+=(smartmontools)
   [ -x /usr/sbin/logrotate ] || pk+=(logrotate)
   [ -d /etc/ssl/certs ] || pk+=(ca-certificates)
   if [[ " $* " == *" suivi "* ]] || [ -f /root/.config/mosquitto_pub ]; then outils_requis mosquitto_pub || pk+=(mosquitto-clients); fi
@@ -1909,6 +2800,8 @@ install_base() {
   for n in "${LEGACY_NAMES[@]}"; do
     if [ ! -e "$BIN_DIR/$n" ] || [ -L "$BIN_DIR/$n" ]; then ln -sfn nas-debian "$BIN_DIR/$n"; fi
   done
+  # verification horaire (destinations, disques, alertes) : avec le script (pas seulement avec Home Assistant)
+  [ -L "$BIN_DIR/nas-check" ] && check_cron
   echo "Installation de base prete ($MACHINE)."
 }
 
@@ -1967,7 +2860,7 @@ migrer() {  # migrer <simulation|appliquer>
     todo=1; echo "- planification des sauvegardes : regeneree pour nas-debian"
   fi
   [ -f "$JOBS" ] && echo "- sauvegardes programmees conservees : $(grep -cvE '^#|^$' "$JOBS") (reglages et historique inchanges)"
-  [ -f "$NOTIFY_CONF" ] && echo "- alertes Home Assistant conservees ($(grep -m1 '^HA_URL=' "$NOTIFY_CONF" | cut -d'"' -f2))"
+  [ -f "$NOTIFY_CONF" ] && echo "- alertes Home Assistant conservees ($(sed -n 's/^HA_URL=//p' "$NOTIFY_CONF" | head -n 1 | tr -d "\"'"))"
   [ -f /root/.config/mosquitto_pub ] && echo "- connexion MQTT conservee"
   if [ -f "$BIN_DIR/cam-sync.sh" ]; then
     todo=1; cam_legacy_read
@@ -2152,6 +3045,16 @@ gen_cron() {
     # sauvegardes versionnees : nettoyage et controle des depots chaque dimanche
     if grep -qE '^[^#|][^|]*\|[^|]*\|[^|]*\|versions\|' "$JOBS" 2>/dev/null; then
       echo "15 5 * * 0 root $SELF versions entretien >/dev/null 2>&1"
+    fi
+    # rapport periodique
+    if [ -f "$RAPPORT_CONF" ]; then
+      local FREQ=non JOUR=1 HEURE=08:30
+      # shellcheck disable=SC1090
+      . "$RAPPORT_CONF"
+      case "$FREQ" in
+        hebdo)   echo "$((10#${HEURE##*:})) $((10#${HEURE%%:*})) * * $((JOUR % 7)) root $SELF rapport envoyer hebdo >/dev/null 2>&1" ;;
+        mensuel) echo "$((10#${HEURE##*:})) $((10#${HEURE%%:*})) 1 * * root $SELF rapport envoyer mensuel >/dev/null 2>&1" ;;
+      esac
     fi
     # kit de secours : chaque jour (envoye seulement s'il a change, ou chaque semaine)
     if [ -n "$(job_names)" ] || [ -n "$(rt_names)" ]; then
@@ -3689,13 +4592,15 @@ agent_main() {
     racines)   data_roots ;;
     dossiers)  data_dirs ;;
     migrer)    migrer "${2:-simulation}" ;;
-    alertes)   [ "${2:-}" = configurer ] || die "usage : nas-debian alertes configurer <ip HA> <webhook> [o|n]"; alertes_configurer "${3:-}" "${4:-}" "${5:-n}" ;;
+    alertes)   shift; [ "$(id -u)" -eq 0 ] || die "lance ce script en root."; alertes_main "$@" ;;
     suivi)     [ "${2:-}" = configurer ] || die "usage : nas-debian suivi configurer <serveur MQTT>"; suivi_configurer "${3:-}" ;;
     notify)    shift; notify_cmd "$@" ;;
     check)     check_cmd ;;
     ha-status) ha_status_cmd ;;
     temps-reel) shift; temps_reel_main "$@" ;;
     destinations) shift; destinations_main "$@" ;;
+    disques)   shift; disques_main "$@" ;;
+    rapport)   shift; rapport_main "$@" ;;
     versions)  shift; need_rclone; versions_main "$@" ;;
     secours)   shift; secours_main "$@" ;;
     mots-de-passe) [ "$(id -u)" -eq 0 ] || die "lance ce script en root."; show_passwords ;;

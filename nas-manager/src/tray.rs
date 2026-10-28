@@ -60,6 +60,9 @@ pub fn summary(app: &App) -> (Level, String) {
         lines.push(tf("{0} sauvegarde(s), {1} OK", &[&n, &(n - ko)]));
     }
     if let Some(s) = &app.syno.status {
+        if !s.alertes.is_empty() {
+            problems.push(tf("Synology : {0} alerte(s)", &[&(s.alertes.len())]));
+        }
         if s.copie.en_cours {
             busy.push(tf("copie {0}", &[&(s.copie.avancement.as_ref().map(|p| format!("{} %", p.pct)).unwrap_or_default())]));
         }
@@ -210,6 +213,11 @@ pub fn diff_syno(prev: &SynoStatus, new: &SynoStatus) -> Vec<(String, String)> {
             if ko == 0 { tr("✅ Migration oCIS terminée").into() } else { tr("⚠ Migration oCIS terminée avec des erreurs").into() },
             tf("{0} réussie(s), {1} en échec", &[&ok, &ko]),
         ));
+    }
+    for a in &new.alertes {
+        if !prev.alertes.iter().any(|p| p.tag == a.tag) {
+            ev.push((tr("🔔 Synology : nouvelle alerte").into(), crate::pages::alert_label(&a.tag)));
+        }
     }
     ev
 }

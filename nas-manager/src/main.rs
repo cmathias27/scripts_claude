@@ -17,6 +17,7 @@ mod extras;
 mod fmt;
 mod log;
 mod model;
+mod notifs;
 mod pages;
 mod ram;
 mod realtime;

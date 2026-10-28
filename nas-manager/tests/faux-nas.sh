@@ -136,6 +136,28 @@ type = alias
 remote = /srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Sauvegardes
 EOF
 
+# ---------------- faux smartctl : 3 disques (sda sain, sdb avec secteurs realloues, nvme0 sain)
+#   /tmp/faux-nas/smart-sdb-en-attente : nombre de secteurs instables de sdb (alerte critique)
+cat > /usr/local/bin/smartctl <<'EOF'
+#!/bin/bash
+dev="${*: -1}"
+case " $* " in
+  *" --scan "*) printf '/dev/sda -d sat # /dev/sda [SAT], ATA device\n/dev/sdb -d sat # /dev/sdb [SAT], ATA device\n/dev/nvme0 -d nvme # /dev/nvme0, NVMe device\n'; exit 0 ;;
+esac
+attente=$(cat /tmp/faux-nas/smart-sdb-en-attente 2>/dev/null || echo 0)
+attr() { printf '{"id":%s,"value":%s,"raw":{"value":%s}}' "$1" "$2" "$3"; }
+case "$dev" in
+  /dev/sda) printf '{"device":{"protocol":"ATA"},"model_name":"WDC WD40EFRX-68N32N0","serial_number":"WD-SAIN0001","user_capacity":{"bytes":4000787030016},"rotation_rate":5400,"smart_status":{"passed":true},"temperature":{"current":34},"power_on_time":{"hours":21034},"ata_smart_attributes":{"table":[%s,%s,%s,%s]}}\n' \
+    "$(attr 5 200 0)" "$(attr 197 200 0)" "$(attr 198 200 0)" "$(attr 199 200 0)" ;;
+  /dev/sdb) printf '{"device":{"protocol":"ATA"},"model_name":"ST4000VN008-2DR166","serial_number":"ZDH0USE2","user_capacity":{"bytes":4000787030016},"rotation_rate":5900,"smart_status":{"passed":true},"temperature":{"current":38},"power_on_time":{"hours":35120},"ata_smart_attributes":{"table":[%s,%s,%s,%s]}}\n' \
+    "$(attr 5 100 8)" "$(attr 197 100 "$attente")" "$(attr 198 100 0)" "$(attr 199 200 0)" ;;
+  /dev/nvme0) printf '{"device":{"protocol":"NVMe"},"model_name":"Samsung SSD 970 EVO Plus 500GB","serial_number":"S4EVNX0N1234","nvme_total_capacity":500107862016,"smart_status":{"passed":true},"temperature":{"current":41},"power_on_time":{"hours":8800},"nvme_smart_health_information_log":{"critical_warning":0,"temperature":41,"available_spare":100,"available_spare_threshold":10,"percentage_used":3,"power_on_hours":8800,"media_errors":0}}\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod 755 /usr/local/bin/smartctl
+rm -f /tmp/faux-nas/smart-sdb-en-attente /root/.nas-synology/disques.json
+
 # ---------------- OMV simule
 # (liens laisses par un test precedent : supprimes avant d'ecrire les anciens scripts)
 rm -f /usr/local/bin/nas-notify /usr/local/bin/nas-check /usr/local/bin/nas-backup /usr/local/bin/nas-ha-status

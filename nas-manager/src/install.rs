@@ -29,8 +29,8 @@ gdok=0; [ $gd = 1 ] && timeout 25 rclone lsd gdrive: --max-depth 1 >/dev/null 2>
 cam=0; [ -f /usr/local/bin/cam-sync.sh ] && cam=1
 camact=$(systemctl is-active cam-sync 2>/dev/null)
 camsrc=$(grep -m1 '^SRC=' /usr/local/bin/cam-sync.sh 2>/dev/null | cut -d'"' -f2)
-al=0; [ -f /etc/nas-backup/notify.conf ] && al=1
-haurl=$(grep -m1 '^HA_URL=' /etc/nas-backup/notify.conf 2>/dev/null | cut -d'"' -f2)
+al=0; grep -qs '^\(HA_URL\|NTFY_URL\|TELEGRAM_TOKEN\|DISCORD_URL\|MAIL_TO\)=.' /etc/nas-backup/notify.conf /etc/nas-backup/canaux.conf && al=1
+haurl=$(sed -n 's/^HA_URL=//p' /etc/nas-backup/notify.conf 2>/dev/null | head -n 1 | tr -d "\"'")
 ha=0; [ -f /etc/cron.d/nas-ha-status ] && ha=1
 mq=0; [ -f /root/.config/mosquitto_pub ] && mq=1
 mqh=$(sed -n 's/^-h //p' /root/.config/mosquitto_pub 2>/dev/null | head -n 1)
@@ -79,6 +79,8 @@ pub struct Tools {
     pub restic: Option<String>,
     pub restic_derniere: String,
     pub bzip2: Option<bool>,
+    /// smartmontools (sante des disques, script 2.3+)
+    pub smartctl: Option<bool>,
 }
 
 impl Tools {
@@ -279,6 +281,9 @@ fn tools_rows(ui: &mut egui::Ui, t: &Tools, linux: bool, mqtt: bool) -> bool {
         if let Some(rv) = &t.restic {
             r(ui, !rv.is_empty(), "restic", &if rv.is_empty() { tr("sauvegardes versionnées").to_string() } else { tf("{0} · sauvegardes versionnées", &[rv]) });
         }
+        if let Some(sm) = t.smartctl {
+            r(ui, sm, "smartmontools", tr("santé des disques (SMART)"));
+        }
         if mqtt {
             r(ui, t.mosquitto_pub, "mosquitto-clients", tr("tableau de bord Home Assistant"));
         }
@@ -433,7 +438,14 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(8.0);
 
     // ---- 5. alertes
-    crate::pages::card_pub(ui, tr("5. Alertes Home Assistant (notifications sur le téléphone)"), |ui| {
+    crate::pages::card_pub(ui, tr("5. Alertes (notifications sur le téléphone)"), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(tr("ntfy, Telegram, Discord, e-mail : page Alertes & santé."));
+            if ui.add_enabled(agent, egui::Button::new(tr("\u{E1E0} Choisir les canaux de notification"))).clicked() {
+                app.page = crate::app::Page::Alerts;
+            }
+        });
+        ui.label(RichText::new(tr("Ou Home Assistant :")).small().weak());
         row(ui, k(st.alertes == 1), tr("Alertes (nas-check / nas-notify)"), &if st.ha_url.is_empty() { String::new() } else { st.ha_url.clone() });
         egui::Grid::new("alertgrid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
             ui.label(tr("Adresse de Home Assistant"));

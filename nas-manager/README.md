@@ -8,7 +8,7 @@ Application Windows en Rust pour **suivre et gérer toutes les synchros du NAS s
 | Sauvegardes programmées | `nas-debian` (OMV / Debian) | miroir, copie ou versionnée (restic), vers une ou plusieurs destinations ; suivre l'avancement en direct, lancer, arrêter, ajouter, modifier, supprimer, restaurer (fichier, dossier ou version datée) |
 | Caméras | `cam-sync` (OMV) | état du service, dernière vidéo envoyée, erreurs, démarrer / arrêter / redémarrer, lancer un rattrapage |
 | Destinations | `nas-debian destinations`, `secours` | clouds, disques USB, autres NAS (connexion par le navigateur ou formulaire, test d'envoi), règle 3-2-1, kit de secours (copie sur le PC) |
-| Alertes | `nas-debian` (`nas-check`, `nas-notify`) | connexion et quota Google Drive, alertes en cours (acquitter), vérifier maintenant, notification de test, afficher les mots de passe de chiffrement |
+| Alertes & santé | `nas-debian alertes`, `disques`, `rapport` ; `nas-synology disques` | canaux de notification (ntfy, Telegram, Discord, e-mail, Home Assistant) avec test, alertes en cours des deux machines (acquitter), santé des disques (SMART, RAID), rapport hebdomadaire / mensuel, réglages des alertes, Google Drive, mots de passe de chiffrement |
 | Copie → OMV | `nas-synology copie` | suivre / arrêter la copie, en lancer une nouvelle avec navigateur de dossiers des deux NAS, historique, réparer les droits |
 | Migration oCIS | `nas-synology migration` | connexion oCIS, file d'attente (ajouter / retirer / lancer), suivi en direct, arrêt, résultats, historique |
 | Historique | `nas-debian` (OMV / Debian) | exécutions, taux de réussite, volumes, évolution de l'espace |

@@ -1,24 +1,22 @@
 {
   "nas-debian": {
-    "version": "2.2.0",
+    "version": "2.3.0",
     "fichier": "nas-debian.sh",
-    "sha256": "39fe560aeca711d41733f9dd47857e3d3e97e68fce9ebea4451a8e896c648fe7",
+    "sha256": "46caa1fe952f3c2782e6972b7c33ace3bb8364bb6ba4551fb5ade8c9050df65f",
     "nouveautes": [
-      "Destinations : OneDrive, Dropbox, pCloud, Box, disque USB, autre NAS (SFTP, SMB), WebDAV, Backblaze B2, S3, en plus de Google Drive",
-      "Sauvegardes programmées vers plusieurs destinations, chiffrement au choix pour chacune (règle 3-2-1)",
-      "Sauvegardes versionnées (restic) : versions datées, déduplication, rotation, restauration à une date choisie",
-      "Kit de secours : ce qui permet de tout reconstruire, chiffré, envoyé chaque jour vers les destinations",
-      "Vérification horaire de toutes les destinations (connexion, espace) avec alertes"
+      "Notifications sans Home Assistant : ntfy, Telegram, Discord ou e-mail, combinables, avec un niveau par canal (alertes seulement ou tout)",
+      "Santé des disques (SMART) et du RAID vérifiée chaque heure : alerte dès les premiers signes d'usure, avant la panne",
+      "Rapport de la semaine ou du mois : sauvegardes, espace, disques, alertes",
+      "Une alerte dont l'envoi a échoué est renvoyée à la vérification suivante ; les envois en échec sont notés",
+      "Réglages des alertes (rappel, seuil d'espace, retard) modifiables depuis NAS Manager"
     ]
   },
   "nas-synology": {
-    "version": "2.1.1",
+    "version": "2.2.0",
     "fichier": "nas-synology.sh",
-    "sha256": "1180b109f6229798506db6af75c4a5250ca1d1da96df2cc1825253cc50bc6841",
+    "sha256": "4d2591514f14e19dec8f219d21d8b2cc22af5c92b9d701923788e97c6b794ea0",
     "nouveautes": [
-      "Copie vers l'OMV : démarrage immédiat, sans attendre que rsync ait listé toute la source et toute la destination (fini la longue « Préparation de la liste des fichiers »)",
-      "Avancement calculé sur la taille mesurée de la source, fichiers déjà présents sur l'OMV compris : une reprise ne repart plus de 0 % et va jusqu'à 100 %",
-      "Mesure de la source plus rapide : miniatures @eaDir, corbeille et instantanés #snapshot ne sont plus parcourus (ni comptés dans la taille)"
+      "Santé des disques (SMART) et du RAID du Synology, affichée dans NAS Manager, avec alertes (disque en danger, RAID dégradé)"
     ]
   }
 }

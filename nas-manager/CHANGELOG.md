@@ -1,5 +1,32 @@
 # Journal des modifications
 
+## 1.4.0
+
+Étape 4 de la feuille de route : être prévenu et surveiller (scripts nas-debian 2.3.0 et nas-synology 2.2.0).
+
+### Notifications sans Home Assistant
+- Page Alertes & santé, **« Ajouter un canal »** : **ntfy** (application gratuite, sans compte : un nom de sujet secret est proposé), **Telegram** (bouton « Trouver » pour l'identifiant de conversation), **Discord** (webhook du salon), **e-mail** (Gmail, Outlook, Free, Orange, OVH ou autre serveur) et **Home Assistant**, combinables.
+- Pour chaque canal : **alertes seulement** ou **alertes et messages discrets** ; « Tester », « Modifier », « Retirer ». Un message de test part à l'enregistrement.
+- Une alerte dont l'envoi a échoué est renvoyée à la vérification suivante ; les derniers envois en échec sont affichés. Sans aucun canal, les alertes restent visibles dans l'application.
+- Réglages des alertes modifiables : rappel d'une alerte non résolue, seuil « destination presque pleine », délai avant « sauvegarde en retard ».
+- La vérification horaire est toujours installée (état des destinations et des disques), même sans Home Assistant.
+
+### Santé des disques
+- Lecture **SMART** de chaque disque toutes les heures, sur l'OMV/Debian et le Synology : modèle, taille, température, âge, usure des SSD, secteurs réalloués, instables ou illisibles.
+- **Alerte avant la panne** : disque « à surveiller » dès les premiers secteurs réalloués (et quand ils augmentent), « en danger » dès des secteurs instables, un test SMART en échec ou un SSD usé ; erreurs de câble signalées.
+- **RAID** (mdadm, ZFS) : alerte si une grappe est dégradée, avancement de la reconstruction.
+- Les disques en veille ne sont pas réveillés (dernières valeurs gardées).
+- Résumé sur le tableau de bord ; alertes du Synology dans la page Alertes, l'icône de notification et les notifications Windows.
+- smartmontools installé avec les outils (page Installation).
+
+### Rapport de la semaine ou du mois
+- Résumé envoyé sur les canaux choisis : sauvegardes réussies ou en échec, volumes, temps réel, espace des destinations et des disques, santé des disques, alertes de la période.
+- Jour et heure au choix, « Aperçu » et « Envoyer maintenant ».
+
+### Aussi
+- Aide : section « Être prévenu : notifications, disques, rapport ».
+- Correction : adresse de Home Assistant affichée correctement dans la page Installation après un nouvel enregistrement.
+
 ## 1.3.0
 
 Étape 3 de la feuille de route : destinations et sécurité des données (script nas-debian 2.2.0).

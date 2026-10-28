@@ -448,7 +448,7 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
         .as_ref()
         .map(|s| s.sauvegardes.iter().filter(|j| !j.en_cours && j.dernier_etat.as_deref() == Some("ECHEC")).count())
         .unwrap_or(0);
-    let alerts = omv.as_ref().map(|s| s.alertes.len()).unwrap_or(0);
+    let alerts = omv.as_ref().map(|s| s.alertes.len()).unwrap_or(0) + syno.as_ref().map(|s| s.alertes.len()).unwrap_or(0);
     let rt_badge = omv.as_ref().and_then(crate::realtime::nav_badge);
     let dest_badge = omv.as_ref().and_then(crate::dests::nav_badge);
     let copy_run = syno.as_ref().map(|s| s.copie.en_cours).unwrap_or(false);
@@ -638,6 +638,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                     });
                     dot_label(ui, col, RichText::new(format!("{}{}{st}", crate::dests::short_label(&d.nom, &dests), space.unwrap_or_default())).small());
                 }
+                crate::notifs::dash_line(ui, omv.as_ref().and_then(|s| s.sante_disques.as_ref()), syno.as_ref().and_then(|s| s.sante_disques.as_ref()));
                 if let Some(s) = &omv {
                     if !s.alertes.is_empty() {
                         ui.colored_label(ERR, tf("\u{E0CE} {0} alerte(s) en cours", &[&(s.alertes.len())]));
@@ -673,6 +674,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
                         }
                     }
                 }
+                crate::notifs::dash_line(ui, omv.as_ref().and_then(|s| s.sante_disques.as_ref()), syno.as_ref().and_then(|s| s.sante_disques.as_ref()));
                 if let Some(s) = &omv {
                     if !s.alertes.is_empty() {
                         ui.colored_label(ERR, tf("\u{E0CE} {0} alerte(s) en cours", &[&(s.alertes.len())]));
@@ -1742,16 +1744,67 @@ pub fn cameras_legacy(app: &mut App, ui: &mut egui::Ui, s: &OmvStatus) {
 // =====================================================================
 
 pub fn alerts(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, tr("Alertes & santé"), tr("Vérifications horaires (nas-check) et notifications Home Assistant"));
+    page_title(ui, tr("Alertes & santé"), tr("Vérifications horaires, notifications sur le téléphone, santé des disques et rapport"));
+    let syno = if app.host_cfg(HostId::Syno).is_set() && app.host_error(HostId::Syno).is_none() { app.syno.status.clone() } else { None };
+    let syno_api = syno.as_ref().and_then(|s| s.agent.as_ref()).map(|a| a.api).unwrap_or(0);
     if !host_banner(app, ui, HostId::Omv) {
+        // sans OMV : sante des disques du Synology seulement
+        if let Some(sy) = &syno {
+            if syno_api >= 4 {
+                ui.add_space(6.0);
+                let now = sy.maintenant.max(fmt::now());
+                crate::notifs::disks_card(app, ui, None, false, sy.sante_disques.as_ref(), true, now);
+            }
+        }
         return;
     }
     let s = app.omv.status.clone().unwrap();
     let now = s.maintenant.max(fmt::now());
+    let api8 = s.nb_installe && s.nb_api >= 8;
     if !s.alertes_installees {
-        banner(ui, WARN, tr("Les alertes ne sont pas encore configurées (page Installation, carte « Alertes Home Assistant »)."));
+        if api8 {
+            banner(ui, WARN, tr("Aucun canal de notification : ajoute-en un (ntfy, Telegram, Discord, e-mail ou Home Assistant) pour être prévenu sur ton téléphone."));
+        } else {
+            banner(ui, WARN, tr("Les alertes ne sont pas encore configurées (page Installation, carte « Alertes Home Assistant »)."));
+        }
         ui.add_space(6.0);
     }
+
+    // ---- alertes en cours (OMV et Synology)
+    let syno_alerts = syno.as_ref().map(|s| s.alertes.clone()).unwrap_or_default();
+    let total = s.alertes.len() + syno_alerts.len();
+    card(ui, &tf("\u{E0CE} Alertes en cours ({0})", &[&total]), |ui| {
+        if total == 0 {
+            dot_label(ui, OK, tr("Aucune alerte en cours."));
+        }
+        for (h, a) in s.alertes.iter().map(|a| (HostId::Omv, a)).chain(syno_alerts.iter().map(|a| (HostId::Syno, a))) {
+            ui.horizontal(|ui| {
+                dot(ui, ERR);
+                if h == HostId::Syno {
+                    ui.label(RichText::new("Synology").small().weak());
+                }
+                ui.label(RichText::new(alert_label(&a.tag)).strong());
+                ui.label(RichText::new(tf("depuis {0}", &[&(fmt::ago(a.depuis, now).replace("il y a ", ""))])).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button(tr("Acquitter"))
+                        .on_hover_text(tr("Retire l'alerte. Si le problème persiste, elle reviendra à la prochaine vérification."))
+                        .clicked()
+                    {
+                        let script = if h == HostId::Syno { remote::ack_alert_syno(&a.tag) } else { remote::ack_alert(&a.tag) };
+                        app.action_toast(h, tr("Acquittement"), script, 20);
+                    }
+                });
+            });
+        }
+        let rh = s.notif.as_ref().map(|n| n.rappel_h).unwrap_or(12);
+        ui.label(RichText::new(tf("Une alerte non résolue est rappelée toutes les {0} h.", &[&rh])).small().weak());
+    });
+    ui.add_space(8.0);
+
+    // ---- canaux | Google Drive et actions
+    crate::notifs::channels_card(app, ui, s.notif.as_ref(), api8);
+    ui.add_space(8.0);
     ui.columns(2, |cols| {
         card(&mut cols[0], tr("\u{E1AA} Google Drive"), |ui| match &s.sante {
             Some(h) if h.gdrive_configure == Some(false) => {
@@ -1779,13 +1832,13 @@ pub fn alerts(app: &mut App, ui: &mut egui::Ui) {
         });
         card(&mut cols[1], tr("Actions"), |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui.add_enabled(s.alertes_installees && !s.nas_check_en_cours, egui::Button::new(tr("\u{E30C} Vérifier maintenant"))).clicked() {
+                if ui.add_enabled((s.alertes_installees || api8) && !s.nas_check_en_cours, egui::Button::new(tr("\u{E30C} Vérifier maintenant"))).clicked() {
                     app.action_toast(HostId::Omv, tr("Vérification"), remote::nas_check(), 30);
                 }
                 if s.nas_check_en_cours {
                     ui.spinner();
                 }
-                if ui.add_enabled(s.alertes_installees, egui::Button::new(tr("\u{E1E0} Notification de test"))).clicked() {
+                if !api8 && ui.add_enabled(s.alertes_installees, egui::Button::new(tr("\u{E1E0} Notification de test"))).clicked() {
                     app.action_toast(HostId::Omv, tr("Notification"), remote::notify_test(), 30);
                 }
                 if ui.button(tr("\u{E2D6} Mots de passe de chiffrement")).on_hover_text(tr("Indispensables pour relire les sauvegardes chiffrées")).clicked() {
@@ -1796,28 +1849,23 @@ pub fn alerts(app: &mut App, ui: &mut egui::Ui) {
         });
     });
     ui.add_space(8.0);
-    card(ui, &tf("\u{E0CE} Alertes en cours ({0})", &[&(s.alertes.len())]), |ui| {
-        if s.alertes.is_empty() {
-            dot_label(ui, OK, tr("Aucune alerte en cours."));
-        }
-        for a in &s.alertes {
-            ui.horizontal(|ui| {
-                dot(ui, ERR);
-                ui.label(RichText::new(alert_label(&a.tag)).strong());
-                ui.label(RichText::new(tf("depuis {0}", &[&(fmt::ago(a.depuis, now).replace("il y a ", ""))])).weak());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button(tr("Acquitter"))
-                        .on_hover_text(tr("Retire l'alerte. Si le problème persiste, elle reviendra à la prochaine vérification."))
-                        .clicked()
-                    {
-                        app.action_toast(HostId::Omv, tr("Acquittement"), remote::ack_alert(&a.tag), 20);
-                    }
-                });
-            });
-        }
-        ui.label(RichText::new(tr("Une alerte non résolue est rappelée sur le téléphone toutes les 12 h.")).small().weak());
-    });
+
+    // ---- sante des disques
+    let syno_ok = syno_api >= 4;
+    if api8 || syno_ok {
+        crate::notifs::disks_card(app, ui, s.sante_disques.as_ref(), api8, syno.as_ref().and_then(|x| x.sante_disques.as_ref()), syno_ok, now);
+        ui.add_space(8.0);
+    }
+
+    // ---- rapport et reglages
+    if let (true, Some(n)) = (api8, s.notif.clone()) {
+        crate::notifs::report_card(app, ui, &n);
+        ui.add_space(6.0);
+        crate::notifs::thresholds(app, ui, &n);
+    } else if !api8 {
+        info_banner(ui, tr("Mets à jour le script nas-debian (2.3 ou plus) pour les notifications ntfy, Telegram, Discord et e-mail, la santé des disques et le rapport périodique."));
+        crate::scripts::widget(app, ui, crate::scripts::Kind::Debian);
+    }
 }
 
 pub fn alert_label(tag: &str) -> String {
@@ -1850,6 +1898,12 @@ pub fn alert_label(tag: &str) -> String {
     }
     if let Some(n) = tag.strip_prefix("restore-") {
         return tf("Restauration « {0} » en échec", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("disque-") {
+        return tf("Disque en danger (n° de série {0})", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("raid-") {
+        return tf("RAID {0} dégradé", &[&n]);
     }
     match tag {
         "gdrive" => tr("Google Drive inaccessible").into(),

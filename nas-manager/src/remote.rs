@@ -437,6 +437,15 @@ if os.path.isdir(ad):
             pass
 out["alertes"] = al
 out["alertes_installees"] = os.path.exists("/etc/nas-backup/notify.conf")
+# ---------------- Canaux de notification, sante des disques (script 2.3+) ----------------
+if ag and int(ag.get("api") or 0) >= 8:
+    out["notif"] = jload(sh(AG + " alertes voir", 15))
+    if out["notif"]:
+        out["alertes_installees"] = bool(out["notif"].get("canaux"))
+    try:
+        out["sante_disques"] = json.load(open(S + "/disques.json"))
+    except Exception:
+        out["sante_disques"] = None
 out["nas_check_en_cours"] = rc("pgrep -f '/usr/local/bin/nas-chec[k]' >/dev/null") == 0
 out["suivi_ha"] = os.path.exists("/etc/cron.d/nas-ha-status") and os.path.exists("/root/.config/mosquitto_pub")
 
@@ -646,6 +655,29 @@ mg["historique"] = [l for l in rd(M + "/historique.log").splitlines() if l.strip
 ev = re.compile(r"^(===|    (dmesg|stderr):)|ERROR|CRITICAL|Attempt \d")
 mg["journal"] = [l for l in tail(M + "/progression.log", 200000).splitlines() if l.strip() and ev.search(l)][-14:]
 out["migration"] = mg
+
+# ---------------- Sante des disques (script 2.2+) : verifiee au plus une fois par heure ----------------
+if api >= 4:
+    D = "/root/.nas-synology/disques.json"
+    try:
+        out["sante_disques"] = json.load(open(D))
+    except Exception:
+        out["sante_disques"] = None
+    try:
+        age = time.time() - os.path.getmtime(D)
+    except OSError:
+        age = 1e9
+    if age > 3600:
+        sh("nohup setsid " + AG + " disques verifier >/dev/null 2>&1 < /dev/null &", 5)
+    al = []
+    ad = "/root/.nas-synology/alertes"
+    if os.path.isdir(ad):
+        for f in sorted(os.listdir(ad)):
+            try:
+                al.append({"tag": f, "depuis": int(os.path.getmtime(os.path.join(ad, f)))})
+            except OSError:
+                pass
+    out["alertes"] = al
 print(json.dumps(out, ensure_ascii=False))
 PYEOF
 "#####;
@@ -1002,6 +1034,63 @@ pub fn ack_alert(tag: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
         .collect();
     format!("rm -f /var/lib/nas-backup/alertes/{t} && echo 'Alerte « {t} » acquittée.'\n")
+}
+
+pub fn ack_alert_syno(tag: &str) -> String {
+    let t: String = tag.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+    format!("rm -f /root/.nas-synology/alertes/{t} && echo 'Alerte « {t} » acquittée.'\n")
+}
+
+// ---------------- Notifications (nas-debian 2.3+) ----------------
+fn word(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect()
+}
+
+/// Configure un canal (ha, ntfy, telegram, discord, email) puis envoie un message de test.
+/// Les parametres vides ne sont pas transmis (un secret vide garde l'ancien).
+pub fn canal_set(canal: &str, niveau: &str, params: &[(&str, String)]) -> String {
+    let body: String = params.iter().filter(|(_, v)| !one_line(v).is_empty()).map(|(k, v)| format!("{k}={}\n", one_line(v))).collect();
+    format!("{NB_BIN} alertes canal {} {} 2>&1 <<'NASMGR_EOF'\n{body}NASMGR_EOF\n", word(canal), word(niveau))
+}
+
+pub fn canal_level(canal: &str, niveau: &str) -> String {
+    format!("{NB_BIN} alertes niveau {} {} 2>&1\n", word(canal), word(niveau))
+}
+
+pub fn canal_remove(canal: &str) -> String {
+    format!("{NB_BIN} alertes retirer {} 2>&1\n", word(canal))
+}
+
+pub fn canal_test(canal: &str) -> String {
+    format!("{NB_BIN} alertes tester {} 2>&1\n", word(canal))
+}
+
+/// Conversations Telegram ayant ecrit au bot : lignes « id|nom »
+pub fn telegram_chats(token: &str) -> String {
+    format!("{NB_BIN} alertes telegram 2>&1 <<'NASMGR_EOF'\n{}\nNASMGR_EOF\n", one_line(token))
+}
+
+pub fn alert_thresholds(repeat_h: u32, quota_pct: u32, late_h: u32) -> String {
+    format!("{NB_BIN} alertes seuils {repeat_h} {quota_pct} {late_h} 2>&1\n")
+}
+
+pub fn report_view(freq: &str) -> String {
+    format!("{NB_BIN} rapport voir {} 2>&1\n", word(freq))
+}
+
+pub fn report_send(freq: &str) -> String {
+    format!("{NB_BIN} rapport envoyer {} 2>&1\n", word(freq))
+}
+
+pub fn report_plan(freq: &str, day: u32, time: &str, channels: &[String]) -> String {
+    let ch: Vec<String> = channels.iter().map(|c| word(c)).filter(|c| !c.is_empty()).collect();
+    let t: String = time.chars().filter(|c| c.is_ascii_digit() || *c == ':').collect();
+    format!("{NB_BIN} rapport planifier {} {day} {t} {} 2>&1\n", word(freq), ch.join(" "))
+}
+
+/// Verification immediate de la sante des disques (SMART, RAID)
+pub fn disks_check(syno: bool) -> String {
+    format!("{} disques verifier >/dev/null 2>&1; echo 'Disques vérifiés.'\n", if syno { SYNO_BIN } else { NB_BIN })
 }
 
 pub fn show_passwords() -> String {
@@ -1380,6 +1469,48 @@ mod live {
         assert_eq!(o.code, 0, "suppression : {}", o.text());
         let o = run(true, "grep -v '^#' /etc/nas-backup/temps-reel.conf; cat /etc/cron.d/nas-temps-reel");
         assert!(!o.stdout.contains("Bureau") && o.stdout.contains("Cameras"), "{}", o.stdout);
+    }
+
+    /// Sante des disques (faux smartctl), canaux de notification, rapport : collecte et commandes
+    #[test]
+    fn sante_disques_live() {
+        if !on() {
+            return;
+        }
+        assert_eq!(run(true, &install_file(DEBIAN_BIN, NAS_DEBIAN_SH)).code, 0);
+        let o = run(true, &disks_check(false));
+        assert_eq!(o.code, 0, "{}", o.text());
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let h = st.sante_disques.expect("sante des disques");
+        assert!(h.smart && h.disques.len() == 3, "{h:?}");
+        assert_eq!(h.problems(), (0, 1), "sdb a surveiller");
+        let n = st.notif.expect("canaux");
+        assert_eq!(n.rapport.frequence, "non");
+        // canaux : adresse invalide refusee, seuils, rapport
+        assert_ne!(run(true, &canal_set("discord", "tout", &[("url", "https://exemple.fr/x".into())])).code, 0);
+        assert_ne!(run(true, &canal_set("pigeon", "tout", &[])).code, 0);
+        assert_ne!(run(true, &telegram_chats("pas-un-jeton")).code, 0);
+        assert_eq!(run(true, &alert_thresholds(8, 85, 40)).code, 0);
+        let o = run(true, &report_view("mensuel"));
+        assert!(o.code == 0 && o.stdout.to_lowercase().contains("rapport"), "{}", o.text());
+        assert_eq!(run(true, &report_plan("hebdo", 7, "09:05", &[])).code, 0);
+        assert!(run(true, "cat /etc/cron.d/nas-backup").stdout.contains("5 9 * * 0 root /usr/local/bin/nas-debian rapport envoyer hebdo"));
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let n = st.notif.unwrap();
+        assert!(n.rappel_h == 8 && n.quota_pct == 85 && n.retard_h == 40 && n.rapport.jour == 7, "{n:?}");
+        assert_eq!(run(true, &report_plan("non", 1, "08:30", &[])).code, 0);
+        assert_eq!(run(true, &alert_thresholds(12, 90, 50)).code, 0);
+        // Synology : verification, alerte, acquittement
+        assert_eq!(run(false, &install_file(SYNO_BIN, NAS_SYNOLOGY_SH)).code, 0);
+        assert_eq!(run(false, &format!("echo 2 > /tmp/faux-nas/smart-sdb-en-attente; {}", disks_check(true))).code, 0);
+        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        let h = sy.sante_disques.expect("sante des disques Synology");
+        assert_eq!(h.problems(), (1, 0), "{h:?}");
+        assert!(sy.alertes.iter().any(|a| a.tag == "disque-ZDH0USE2"), "{:?}", sy.alertes);
+        assert_eq!(run(false, &ack_alert_syno("disque-ZDH0USE2")).code, 0);
+        assert_eq!(run(false, &format!("rm -f /tmp/faux-nas/smart-sdb-en-attente; {}", disks_check(true))).code, 0);
+        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        assert!(sy.alertes.is_empty(), "{:?}", sy.alertes);
     }
 
     #[test]

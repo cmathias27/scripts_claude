@@ -58,10 +58,12 @@ jobs:
         run: sudo bash tests/temps-reel.sh /usr/bin/rclone
       - name: Destinations, versions (vrai restic) et kit de secours
         run: sudo bash tests/destinations.sh /usr/bin/rclone /usr/bin/restic
+      - name: Notifications (ntfy, Telegram, Discord, e-mail), disques et rapport
+        run: sudo bash tests/notifications.sh
       - name: Syntaxe des scripts
         working-directory: .
         run: |
-          for f in nas-debian.sh nas-synology.sh nas-manager/tests/faux-nas.sh nas-manager/tests/temps-reel.sh nas-manager/tests/destinations.sh; do bash -n "$f"; done
+          for f in nas-debian.sh nas-synology.sh nas-manager/tests/faux-nas.sh nas-manager/tests/temps-reel.sh nas-manager/tests/destinations.sh nas-manager/tests/notifications.sh; do bash -n "$f"; done
           shellcheck -S warning -e SC2034,SC1090,SC2155,SC2015 nas-debian.sh nas-synology.sh
       - name: Versions des scripts (versions-scripts.json a jour)
         working-directory: .

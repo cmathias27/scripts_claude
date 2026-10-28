@@ -92,7 +92,7 @@ Une version testable par étape (1.1, 1.2…).
    détection d'anomalie.
 3. **Destinations et sécurité des données** *(1.3.0)* : autres destinations · multi-destinations chiffrées ·
    sauvegardes versionnées (restic) · sauvegarde de ce qui permet de restaurer.
-4. **Être prévenu et surveiller** : notifications ntfy / Telegram / Discord / e-mail · santé des
+4. **Être prévenu et surveiller** *(1.4.0)* : notifications ntfy / Telegram / Discord / e-mail · santé des
    disques · rapport hebdomadaire / mensuel.
 5. **Fiabilité et restauration** : test de restauration à blanc · retour à une date précise ·
    Wake-on-LAN.
@@ -229,9 +229,9 @@ Une version testable par étape (1.1, 1.2…).
       de l'oCIS vers le NAS, avec les mêmes options que les sauvegardes programmées).
 
 #### Surveillance
-- [ ] **Santé des disques** : état SMART, température, secteurs défectueux, état du RAID,
+- [x] **Santé des disques** *(1.4.0)* : état SMART, température, secteurs défectueux, état du RAID,
       sur toutes les machines suivies ; alerte avant la panne.
-- [ ] **Rapport hebdomadaire / mensuel** envoyé sur le téléphone : volumes envoyés, échecs,
+- [x] **Rapport hebdomadaire / mensuel** *(1.4.0)* envoyé sur le téléphone : volumes envoyés, échecs,
       espace restant, santé des disques.
 
 #### Fiabilité
@@ -258,7 +258,7 @@ Une version testable par étape (1.1, 1.2…).
       programmée ou en temps réel, mêmes options que les autres sauvegardes.
 
 #### Notifications
-- [ ] **Autres canaux que Home Assistant** : ntfy, Telegram, Discord, e-mail, au choix et combinables.
+- [x] **Autres canaux que Home Assistant** *(1.4.0)* : ntfy, Telegram, Discord, e-mail, au choix et combinables.
       Home Assistant devient une option : l'outil doit fonctionner sans lui.
 
 #### Plus aucune ligne de commande

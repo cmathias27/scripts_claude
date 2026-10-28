@@ -5,7 +5,8 @@ Ensemble de scripts Bash (avec un peu de Python) pour gérer l'infrastructure de
 - **migrer** les données de l'ancien NAS **Synology** vers le nouveau NAS **OpenMediaVault (OMV)** et vers **ownCloud Infinite Scale (oCIS)** ;
 - **sauvegarder** l'OMV vers **Google Drive**, avec chiffrement, via `rclone` ;
 - **synchroniser en temps réel** les vidéos des caméras vers Google Drive ;
-- **superviser** le tout depuis **Home Assistant** (notifications sur le téléphone + tableau de bord).
+- **superviser** le tout : notifications sur le téléphone (ntfy, Telegram, Discord, e-mail ou **Home Assistant**),
+  santé des disques (SMART, RAID), rapport hebdomadaire ou mensuel, tableau de bord Home Assistant.
 
 Tous les scripts sont interactifs, en français, et pensés pour être lancés en SSH sans connaître les commandes sous-jacentes.
 
@@ -73,6 +74,9 @@ Commandes principales (toutes sans question, utilisées par NAS Manager) :
 | `nas-debian racines` / `dossiers` | disques de données / dossiers proposés comme sources |
 | `nas-debian migrer simulation \| appliquer` | reprise d'une installation faite avec les anciens scripts |
 | `nas-debian alertes configurer <ip HA> <webhook>` | alertes Home Assistant (ex-`install-alertes.sh`) |
+| `nas-debian alertes voir \| canal <canal> [niveau] \| niveau \| retirer \| tester \| telegram \| seuils` | [canaux de notification](#canaux-de-notification-nas-debian-alertes-canal) : ntfy, Telegram, Discord, e-mail, Home Assistant |
+| `nas-debian disques verifier \| etat` | [santé des disques](#santé-des-disques-nas-debian-disques) (SMART, RAID) |
+| `nas-debian rapport voir \| envoyer \| planifier <hebdo\|mensuel\|non> [jour] [HH:MM] [canaux]` | [rapport périodique](#rapport-périodique-nas-debian-rapport) |
 | `nas-debian suivi configurer <serveur MQTT>` | tableau de bord Home Assistant (ex-`install-suivi-ha.sh`) |
 | `nas-debian temps-reel liste \| save \| pause \| reprendre \| …` | sauvegardes temps réel (voir plus bas) |
 | `nas-debian destinations liste \| etat [NOM] \| creer NOM TYPE \| jeton NOM TYPE \| supprimer NOM` | [destinations](#destinations-nas-debian-destinations) des sauvegardes (remotes rclone) |
@@ -153,7 +157,10 @@ caractères, affiché par `mots-de-passe`).
 `nas-synology copie <commande>` (ex-`copie-omv`) et `nas-synology migration <commande>`
 (ex-`migre-drive-ocis`), plus `version`, `outils etat | installer | rclone-maj`,
 `reglages voir | ram … | omv <adresse> | ha <adresse> <webhook>` (fichier `/root/.nas-synology/config` :
-plus besoin de modifier le script) et `migration jeton` (expiration du jeton d'application oCIS).
+plus besoin de modifier le script), `migration jeton` (expiration du jeton d'application oCIS) et
+`disques verifier | etat` (santé des disques et du RAID, `/root/.nas-synology/disques.json` ; NAS Manager
+la fait vérifier au plus une fois par heure, alertes `disque-<série>` / `raid-<grappe>` envoyées à Home
+Assistant si `reglages ha` est renseigné).
 Sur le Synology, le profil *automatique* correspond à *équilibré* (2 fichiers à la fois, 1/5 de la RAM
 entre 128 et 512 Mo).
 
@@ -426,6 +433,52 @@ Si `cam-sync` est installé, le cron de rattrapage est remplacé par `/usr/local
 Une automatisation (« NAS - Alertes sauvegardes ») doit écouter les deux webhooks `…-critique` et `…-info` et transformer `title` / `message` / `tag` en notification mobile. Le script envoie une notification de test, et propose une alerte critique de test.
 
 Paramètres : `HA_IP`, `WEBHOOK`, `REPEAT_HOURS`, `QUOTA_ALERT`, `LATE_HOURS`.
+
+### Canaux de notification (`nas-debian alertes canal`)
+
+Home Assistant n'est plus obligatoire : les notifications partent vers un ou plusieurs canaux
+(`/etc/nas-backup/canaux.conf`, droits 600), réglés depuis NAS Manager (page Alertes & santé) ou par :
+
+```
+printf 'url=https://ntfy.sh/mon-sujet-secret\n' | nas-debian alertes canal ntfy tout
+printf 'jeton=123456:ABC...\nconversation=42\n' | nas-debian alertes canal telegram critique
+printf 'url=https://discord.com/api/webhooks/...\n' | nas-debian alertes canal discord
+printf 'destinataire=moi@exemple.fr\nserveur=smtp.gmail.com\nport=587\nsecurite=starttls\nutilisateur=moi@gmail.com\nmot_de_passe=...\n' \
+  | nas-debian alertes canal email
+```
+
+- Les paramètres passent par l'entrée standard (jamais dans la liste des processus). Un message de test
+  part à l'enregistrement ; `alertes tester [canal]` en renvoie un.
+- Niveau par canal : `tout` (alertes et messages discrets) ou `critique` (alertes et « rétabli »
+  seulement ; par défaut pour l'e-mail). `alertes niveau <canal> <niveau>` le change.
+- `alertes telegram` (jeton du bot sur l'entrée standard) liste les conversations qui ont écrit au bot.
+- `alertes voir` : canaux (secrets masqués), seuils, rapport et derniers envois en échec (JSON).
+- Une alerte est toujours notée dans `/var/lib/nas-backup/alertes/`, même sans canal ; si tous les envois
+  échouent, elle est renvoyée à la vérification suivante. Échecs dans `/var/lib/nas-backup/notifications.log`.
+- `alertes seuils <rappel h> <espace %> <retard h>` : rappel d'une alerte non résolue, seuil
+  « destination presque pleine », délai avant « sauvegarde en retard ».
+- `nas-check` est planifié dès l'installation (cron `/etc/cron.d/nas-check`, hh:07), avec ou sans canal.
+
+### Santé des disques (`nas-debian disques`)
+
+`nas-check` lit chaque heure l'état **SMART** des disques (`smartctl`, paquet `smartmontools` installé
+par `outils installer`) sans réveiller ceux qui sont en veille, et l'état du **RAID** (`/proc/mdstat`,
+pools ZFS). Résultat dans `/var/lib/nas-backup/disques.json`.
+
+| État | Quand |
+|---|---|
+| à surveiller | secteurs réalloués, erreurs non corrigées, SSD usé à 80 % ; événement notifié quand ils apparaissent ou augmentent |
+| en danger (alerte `disque-<série>`) | secteurs instables ou illisibles, test SMART en échec, SSD usé ou sans réserve, avertissement critique NVMe |
+| RAID dégradé (alerte `raid-<grappe>`) | disque en panne ou manquant, grappe arrêtée ; reconstruction suivie |
+
+Les erreurs de transmission en hausse (câble SATA) sont signalées par un événement.
+
+### Rapport périodique (`nas-debian rapport`)
+
+`rapport planifier hebdo 1 08:30` (lundi 8 h 30 ; `mensuel` = le 1er du mois, `non` = arrêt), canaux
+au choix en fin de ligne (tous par défaut). Le rapport résume la période : sauvegardes programmées
+(réussites, échecs, volumes), temps réel, destinations, espace (relevé toutes les 6 h dans
+`espace.jsonl`), disques et alertes. `rapport voir` l'affiche, `rapport envoyer` l'envoie tout de suite.
 
 ---
 

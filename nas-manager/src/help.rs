@@ -93,6 +93,17 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         code(ui, "openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -in kit-secours-NAS.tar.gz.enc | tar xzv");
     });
 
+    section(ui, tr("Être prévenu : notifications, disques, rapport"), false, |ui| {
+        ui.label(tr("Chaque heure, le NAS vérifie les sauvegardes, les destinations, l'espace libre et la santé des disques. Un problème déclenche une alerte, rappelée tant qu'il n'est pas résolu, puis un message « rétabli »."));
+        step(ui, 1, tr("Page Alertes & santé, « Ajouter un canal » : ntfy (le plus simple : application gratuite, sans compte), Telegram, Discord, e-mail ou Home Assistant. Plusieurs canaux peuvent être combinés."));
+        step(ui, 2, tr("Chaque canal reçoit soit les alertes seulement, soit aussi les messages discrets. Un message de test part à l'enregistrement."));
+        step(ui, 3, tr("Rapport : un résumé chaque semaine ou chaque mois (sauvegardes, espace, disques, alertes). « Aperçu » le montre sans l'envoyer."));
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Santé des disques")).strong());
+        ui.label(tr("Les disques préviennent souvent avant de lâcher : secteurs réalloués (à surveiller), secteurs instables ou illisibles, test SMART en échec (à remplacer vite). Un RAID qui perd un disque n'a plus de redondance : remplace le disque en panne au plus vite. Les disques en veille ne sont pas réveillés pour la vérification."));
+        ui.label(RichText::new(tr("Les alertes du Synology (disques, RAID) s'affichent ici et passent par Home Assistant s'il est configuré sur le Synology.")).small());
+    });
+
     section(ui, tr("Sauvegardes programmées ou temps réel ?"), false, |ui| {
         ui.label(RichText::new(tr("Programmées")).strong());
         ui.label(tr("Une copie complète du dossier à heure fixe (par exemple chaque nuit). Idéal pour de gros volumes qui changent peu : photos, musique, archives."));
