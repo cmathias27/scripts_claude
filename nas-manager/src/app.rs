@@ -31,6 +31,7 @@ pub enum Page {
     Dashboard,
     Backups,
     Realtime,
+    Destinations,
     History,
     Alerts,
     Copy,
@@ -109,6 +110,7 @@ pub enum BrowsePurpose {
     MigSource,
     PermsDir,
     RtSource,
+    DestPath,
 }
 
 pub struct Browser {
@@ -127,8 +129,12 @@ pub struct JobFormState {
     pub source: String,
     pub folder: String,
     pub folder_touched: bool,
-    pub mirror: bool,
-    pub encrypt: bool,
+    /// 0 miroir, 1 copie, 2 versionnee (restic)
+    pub mode: u8,
+    /// destinations choisies (nom, chiffrer), la premiere sert a la simulation
+    pub dests: Vec<(String, bool)>,
+    /// versions gardees : jours, semaines, mois, annees
+    pub rot: [String; 4],
     pub sched: crate::sched::SchedEdit,
     pub bw: crate::sched::BwEdit,
     pub trash_days: String,
@@ -243,6 +249,8 @@ pub struct App {
     pub scripts: crate::scripts::ScriptsState,
     /// formulaire de sauvegarde temps reel ouvert
     pub rt_form: Option<crate::realtime::RtForm>,
+    /// page Destinations : formulaire, connexion en cours, kit de secours
+    pub dests: crate::dests::DestUi,
 }
 
 impl App {
@@ -308,6 +316,7 @@ impl App {
             wizard: None,
             scripts: Default::default(),
             rt_form: None,
+            dests: Default::default(),
         };
         crate::i18n::set_language(&app.settings.language);
         if !app.settings.wizard_done {
@@ -355,6 +364,7 @@ impl App {
                 "sauvegardes" => Page::Backups,
                 "historique" => Page::History,
                 "temps-reel" | "cameras" => Page::Realtime,
+                "destinations" => Page::Destinations,
                 "alertes" => Page::Alerts,
                 "copie" => Page::Copy,
                 "migration" => Page::Migration,
@@ -945,6 +955,11 @@ impl App {
                 self.mig.src = path;
             }
             BrowsePurpose::PermsDir => self.perms.dir = path,
+            BrowsePurpose::DestPath => {
+                if let Some(f) = &mut self.dests.form {
+                    f.values.insert("chemin".into(), path.trim_end_matches('/').to_string());
+                }
+            }
             BrowsePurpose::RtSource => {
                 if let Some(f) = &mut self.rt_form {
                     let p = path.trim_end_matches('/').to_string();
@@ -1190,6 +1205,7 @@ impl App {
         crate::pages::browser_window(self, ctx);
         crate::pages::job_form_window(self, ctx);
         crate::realtime::form_window(self, ctx);
+        crate::dests::form_window(self, ctx);
         crate::pages::restore_window(self, ctx);
         crate::pages::passwords_window(self, ctx);
         crate::extras::fingerprint_window(self, ctx);
@@ -1242,7 +1258,7 @@ impl App {
         }
         if let Some(j) = self.omv.status.as_ref().and_then(|s| s.sauvegardes.first().cloned()) {
             DONE.store(true, std::sync::atomic::Ordering::SeqCst);
-            let mut r = RestoreState::new(&j.nom, &j.source, true);
+            let mut r = RestoreState::new(&j);
             r.tab = 1;
             self.restore = Some(r);
             crate::restore::demo_list(self, "2024".into());
@@ -1271,6 +1287,7 @@ impl eframe::App for App {
         crate::tray::update(self, ctx);
         if self.wizard.is_none() {
             crate::scripts::auto_check(self);
+            crate::dests::auto_kit(self);
         }
         #[cfg(debug_assertions)]
         self.demo();
@@ -1298,6 +1315,7 @@ impl eframe::App for App {
                     Page::Backups => crate::pages::backups(self, ui),
                     Page::History => crate::history::page(self, ui),
                     Page::Realtime => crate::realtime::page(self, ui),
+                    Page::Destinations => crate::dests::page(self, ui),
                     Page::Alerts => crate::pages::alerts(self, ui),
                     Page::Copy => crate::pages::copy(self, ui),
                     Page::Migration => crate::pages::migration(self, ui),

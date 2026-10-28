@@ -44,6 +44,97 @@ pub struct Bilan {
     pub volume_octets: i64,
     /// pic de memoire de rclone (Mo)
     pub ram_max_mo: Option<i64>,
+    /// sauvegardes versionnees : nombre de versions gardees
+    pub versions: Option<i64>,
+    /// resultat par destination (script 2.2+)
+    pub destinations: Vec<DestBilan>,
+}
+
+/// Resultat d'une execution pour une destination
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct DestBilan {
+    pub destination: String,
+    pub chiffre: bool,
+    pub code: i64,
+    pub fichiers_envoyes: i64,
+    pub volume_octets: i64,
+    pub erreurs: i64,
+    pub erreur: Option<String>,
+    pub versions: Option<i64>,
+    pub derniere_version: Option<i64>,
+}
+
+/// Destination d'une sauvegarde (jobs.conf)
+#[derive(Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct JobDest {
+    pub nom: String,
+    pub chiffre: bool,
+}
+
+/// Destination en cours de traitement (i sur n)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct DestProgress {
+    pub i: i64,
+    pub n: i64,
+    pub nom: String,
+}
+
+/// Entretien hebdomadaire des versions
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Maintenance {
+    pub fin: i64,
+    pub code: i64,
+    pub erreurs: String,
+}
+
+/// Etat d'une destination (dernier test : nas-check ou bouton Tester)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct DestState {
+    pub ok: bool,
+    pub verifie: i64,
+    pub total: Option<u64>,
+    pub utilise: Option<u64>,
+    pub libre: Option<u64>,
+    pub erreur: Option<String>,
+}
+
+/// Destination configuree sur la machine (remote rclone)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Destination {
+    pub nom: String,
+    /// type rclone : drive, onedrive, local, sftp...
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub libelle: String,
+    pub cible: String,
+    pub chiffre_pret: bool,
+    pub etat: Option<DestState>,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct SecoursDest {
+    pub ok: bool,
+    pub date: i64,
+    pub erreur: Option<String>,
+}
+
+/// Kit de secours (secours etat)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Secours {
+    pub mot_de_passe: bool,
+    pub nom: String,
+    pub taille: Option<u64>,
+    pub date: Option<i64>,
+    pub empreinte: Option<String>,
+    pub destinations: std::collections::BTreeMap<String, SecoursDest>,
 }
 
 /// Script installe sur une machine (nas-debian / nas-synology)
@@ -117,6 +208,26 @@ pub struct Job {
     pub ram_mo: Option<i64>,
     pub simulation: Option<Simulation>,
     pub verification: Option<Verification>,
+    /// destinations (script 2.2+ ; avant : Google Drive seul)
+    pub destinations: Vec<JobDest>,
+    /// sauvegardes versionnees : jours:semaines:mois:annees
+    pub rotation: String,
+    pub dest_en_cours: Option<DestProgress>,
+    pub entretien: Option<Maintenance>,
+}
+
+impl Job {
+    pub fn versions(&self) -> bool {
+        self.mode == "versions"
+    }
+    /// destinations (anciennes collectes : Google Drive)
+    pub fn dests(&self) -> Vec<JobDest> {
+        if self.destinations.is_empty() {
+            vec![JobDest { nom: "gdrive".into(), chiffre: self.chiffre }]
+        } else {
+            self.destinations.clone()
+        }
+    }
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -129,6 +240,11 @@ pub struct Verification {
     pub manquants: i64,
     pub en_trop: i64,
     pub erreurs: i64,
+    /// etat par destination : « gdrive:ok;usb:ecarts »
+    pub destinations: String,
+    /// « versions » : controle des depots restic
+    #[serde(rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -161,6 +277,8 @@ pub struct Restore {
     pub fin: String,
     pub code: String,
     pub element: String,
+    /// sauvegarde versionnee : version restauree
+    pub version: String,
     pub avancement: Option<Progress>,
 }
 
@@ -235,6 +353,8 @@ pub struct Health {
     pub used_go: Option<f64>,
     pub total_go: Option<f64>,
     pub checked: Option<String>,
+    /// remote Google Drive configure (script 2.2+)
+    pub gdrive_configure: Option<bool>,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -286,6 +406,9 @@ pub struct OmvStatus {
     pub temps_reel: Vec<RtJob>,
     /// sauvegarde temps reel reprise de l'ancienne synchro des cameras
     pub cam_job: String,
+    /// destinations configurees (script 2.2+)
+    pub destinations: Vec<Destination>,
+    pub secours: Option<Secours>,
 }
 
 impl OmvStatus {

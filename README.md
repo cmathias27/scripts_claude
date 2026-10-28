@@ -75,6 +75,10 @@ Commandes principales (toutes sans question, utilisées par NAS Manager) :
 | `nas-debian alertes configurer <ip HA> <webhook>` | alertes Home Assistant (ex-`install-alertes.sh`) |
 | `nas-debian suivi configurer <serveur MQTT>` | tableau de bord Home Assistant (ex-`install-suivi-ha.sh`) |
 | `nas-debian temps-reel liste \| save \| pause \| reprendre \| …` | sauvegardes temps réel (voir plus bas) |
+| `nas-debian destinations liste \| etat [NOM] \| creer NOM TYPE \| jeton NOM TYPE \| supprimer NOM` | [destinations](#destinations-nas-debian-destinations) des sauvegardes (remotes rclone) |
+| `nas-debian versions liste \| ls \| restaurer \| entretien` | [sauvegardes versionnées](#sauvegardes-versionnées-restic) (restic) |
+| `nas-debian secours etat \| sauvegarder [force] \| telecharger \| restaurer FICHIER [appliquer] \| mots-de-passe` | [kit de secours](#kit-de-secours-nas-debian-secours) |
+| `nas-debian mots-de-passe` | tous les mots de passe à noter hors du NAS (chiffrement, versions, kit) |
 | `nas-debian run \| save \| restore \| …` | toutes les commandes de `nas-backup` (voir plus bas) |
 
 **Mémoire de rclone** (`/etc/nas-backup/agent.conf`) : profil *économe* (1 fichier à la fois, 1/8 de la
@@ -84,6 +88,65 @@ limite fixe en Mo possible. La limite est appliquée par `GOMEMLIMIT` (limite do
 sauvegarde peut avoir son propre réglage (9ᵉ colonne de `jobs.conf`). Après un manque de mémoire, la
 sauvegarde reprend automatiquement avec un seul fichier à la fois ; le pic de mémoire est gardé dans
 le bilan.
+
+## Destinations (`nas-debian destinations`)
+
+Une destination est un remote rclone : Google Drive (`gdrive`), OneDrive, Dropbox, pCloud, Box, un
+disque local ou USB, un autre NAS (SFTP ou SMB), un serveur WebDAV (Nextcloud, ownCloud, oCIS),
+Backblaze B2 ou un stockage S3. Elles se créent depuis NAS Manager (page **Destinations**) : les
+services à connexion par navigateur (Google, Microsoft, Dropbox…) passent par `rclone authorize` dans
+un tunnel SSH, comme Google Drive ; les autres par `destinations creer NOM TYPE` avec les paramètres
+`cle=valeur` (mots de passe compris) sur l'entrée standard, suivi d'un **test d'envoi réel**.
+
+Organisation sur chaque destination :
+
+| Emplacement | Contenu |
+|---|---|
+| `<remote>:NAS/<dossier>` | sauvegardes en clair (corbeille : `NAS/_corbeille/<nom>`) |
+| `<remote>-chiffre:<dossier>` | sauvegardes chiffrées : remote crypt sur `<remote>:NAS-chiffre`, **mêmes mots de passe** que `gbackup` (le remote chiffré de `gdrive`) |
+| `<remote>:NAS-versions/<dossier>` | dépôts restic des sauvegardes versionnées |
+| `<remote>:NAS-secours/` | kit de secours (+ `LISEZMOI.txt`, anciens kits 120 jours) |
+
+Bucket (B2, S3), partage (SMB) ou sous-dossier : remote `<nom>-base` + alias `<nom>`. Un **disque
+local** est un alias vers un dossier : refusé s'il est sur le disque système (sauf confirmation), et
+une sauvegarde vers un disque débranché échoue au lieu de recréer le dossier sur le disque système.
+`nas-check` teste toutes les destinations chaque heure (état et espace dans
+`/var/lib/nas-backup/destinations.json`, alertes `dest-<nom>` / `quota-<nom>` ; Google Drive garde
+`gdrive` / `quota` et `health.json`). Une destination utilisée par une sauvegarde ne peut pas être
+retirée.
+
+## Sauvegardes versionnées (restic)
+
+Troisième mode des sauvegardes programmées, à côté de miroir et copie : chaque exécution enregistre
+une **version** complète du dossier dans un dépôt restic (`rclone:<remote>:NAS-versions/<dossier>`),
+avec déduplication et chiffrement. Le mot de passe des dépôts est dans `/etc/nas-backup/restic.pass`.
+
+- Rotation après chaque sauvegarde (`restic forget`) : toutes les versions des dernières 24 h, puis
+  `jours:semaines:mois:annees` (11ᵉ colonne de `jobs.conf`, par défaut `7:4:12:0`).
+- Entretien le dimanche à 5 h 15 (`versions entretien`) : `prune` puis `check --read-data-subset=2%` ;
+  alerte `versions-<nom>` en cas d'échec. « Vérifier l'intégrité » lance `check --read-data-subset=5%`.
+- `versions liste NOM [DEST]` (JSON), `versions ls NOM DEST VERSION [CHEMIN]`,
+  `versions restaurer NOM DEST VERSION DOSSIER [ELEMENT]` (restauration d'un fichier, d'un dossier ou
+  de tout, à la date choisie).
+- restic est installé par `outils installer` (version officielle de GitHub, celle des paquets
+  si GitHub est injoignable) ; `outils restic-maj` le met à jour.
+
+## Kit de secours (`nas-debian secours`)
+
+Tout ce qu'il faut pour reconstruire si le NAS est perdu : `rclone.conf`, mots de passe de chiffrement
+(rclone crypt, caméras, restic), `jobs.conf`, `temps-reel.conf`, `agent.conf`, `notify.conf`, réglages
+de vérification et connexion MQTT. Archive chiffrée par `openssl` (AES-256-CBC, PBKDF2 200 000
+itérations) avec le **mot de passe du kit** (`/etc/nas-backup/secours.pass`, 6 groupes de 4
+caractères, affiché par `mots-de-passe`).
+
+- Construit chaque jour à 5 h 40 ; envoyé vers chaque destination s'il a changé, ou chaque semaine
+  (`NAS-secours/kit-secours-<machine>.tar.gz.enc`, en clair dans la destination : téléchargeable
+  depuis le site du cloud). NAS Manager en garde une copie sur le PC.
+- `secours restaurer FICHIER` (mot de passe sur l'entrée standard) liste ce qui serait remis en place ;
+  `appliquer` le fait (anciens fichiers gardés dans `/root/.nas-manager/avant-secours-*`), régénère
+  les planifications et redémarre les sauvegardes temps réel dont les dossiers existent.
+- Sans kit : `secours mots-de-passe` enregistre les mots de passe notés (chiffrement, sel, versions).
+- À la main : `openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -in kit-secours-NAS.tar.gz.enc | tar xzv`.
 
 ## `nas-synology.sh`
 
@@ -216,8 +279,13 @@ Gestionnaire de sauvegardes **OMV → Google Drive** avec `rclone` : on définit
 ### Une sauvegarde = une ligne de `/etc/nas-backup/jobs.conf`
 
 ```
-NOM|SOURCE|DOSSIER_DRIVE|MODE(sync/copy)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|CORBEILLE_JOURS
+NOM|SOURCE|DOSSIER|MODE(sync/copy/versions)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|CORBEILLE_JOURS|DEBIT|MEMOIRE|DESTINATIONS|ROTATION
 ```
+
+`DESTINATIONS` (script 2.2+) : `remote:oui|non` séparés par `;` (ex. `gdrive:oui;usb:non`), chacune
+avec son chiffrement ; vide = Google Drive seul, chiffré selon `CHIFFRE`. Les destinations sont
+faites l'une après l'autre ; le bilan (`<nom>.bilan.json`) a une entrée par destination et la
+sauvegarde est en échec si l'une d'elles échoue (les autres sont faites quand même).
 
 | Champ | Détail |
 |---|---|

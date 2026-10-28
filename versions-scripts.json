@@ -1,15 +1,14 @@
 {
   "nas-debian": {
-    "version": "2.1.0",
+    "version": "2.2.0",
     "fichier": "nas-debian.sh",
-    "sha256": "8cc9923df661e5f04164fd0c661f352708108b1d88f7300cf33de19ef8dea442",
+    "sha256": "39fe560aeca711d41733f9dd47857e3d3e97e68fce9ebea4451a8e896c648fe7",
     "nouveautes": [
-      "Sauvegardes temps réel : un ou plusieurs dossiers surveillés, chaque changement envoyé au fil de l'eau",
-      "Suppressions au choix : directe, corbeille de X jours (anciennes versions gardées) ou copie seule",
-      "Exclusions, types de fichiers, regroupement des envois, rattrapage périodique",
-      "Détection d'anomalie : pause et alerte si trop de fichiers sont supprimés ou modifiés d'un coup",
-      "La synchro des caméras devient une sauvegarde temps réel (reprise automatique, historique conservé)",
-      "Corbeille des sauvegardes programmées : durée comptée depuis la suppression du fichier (et non depuis sa date)"
+      "Destinations : OneDrive, Dropbox, pCloud, Box, disque USB, autre NAS (SFTP, SMB), WebDAV, Backblaze B2, S3, en plus de Google Drive",
+      "Sauvegardes programmées vers plusieurs destinations, chiffrement au choix pour chacune (règle 3-2-1)",
+      "Sauvegardes versionnées (restic) : versions datées, déduplication, rotation, restauration à une date choisie",
+      "Kit de secours : ce qui permet de tout reconstruire, chiffré, envoyé chaque jour vers les destinations",
+      "Vérification horaire de toutes les destinations (connexion, espace) avec alertes"
     ]
   },
   "nas-synology": {

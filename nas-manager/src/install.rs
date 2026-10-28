@@ -75,9 +75,22 @@ pub struct Tools {
     pub rsync: bool,
     pub ssh: bool,
     pub cle_omv: bool,
+    /// sauvegardes versionnees (script 2.2+)
+    pub restic: Option<String>,
+    pub restic_derniere: String,
+    pub bzip2: Option<bool>,
 }
 
 impl Tools {
+    pub fn restic_update(&self) -> Option<String> {
+        let cur = self.restic.as_deref().unwrap_or("");
+        if !cur.is_empty() && !self.restic_derniere.is_empty() && crate::update::is_newer(&self.restic_derniere, cur) {
+            Some(self.restic_derniere.clone())
+        } else {
+            None
+        }
+    }
+
     pub fn rclone_update(&self) -> Option<String> {
         if !self.rclone.is_empty() && !self.rclone_derniere.is_empty() && crate::update::is_newer(&self.rclone_derniere, self.rclone.trim_end_matches("-faux")) {
             Some(self.rclone_derniere.clone())
@@ -263,6 +276,9 @@ fn tools_rows(ui: &mut egui::Ui, t: &Tools, linux: bool, mqtt: bool) -> bool {
         r(ui, t.flock, "flock", "");
         r(ui, t.logrotate, "logrotate", tr("rotation des journaux"));
         r(ui, t.inotify_max >= 524288, tr("Limite de surveillance de fichiers"), &t.inotify_max.to_string());
+        if let Some(rv) = &t.restic {
+            r(ui, !rv.is_empty(), "restic", &if rv.is_empty() { tr("sauvegardes versionnées").to_string() } else { tf("{0} · sauvegardes versionnées", &[rv]) });
+        }
         if mqtt {
             r(ui, t.mosquitto_pub, "mosquitto-clients", tr("tableau de bord Home Assistant"));
         }
@@ -325,6 +341,11 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     app.action_dialog(HostId::Omv, tr("Mise à jour de rclone"), format!("{} outils rclone-maj 2>&1\n", remote::DEBIAN_BIN), 600);
                 }
             }
+            if let Some(v) = t.restic_update() {
+                if ui.button(tf("Mettre à jour restic {0} → {1}", &[&(t.restic.clone().unwrap_or_default()), &v])).clicked() {
+                    app.action_dialog(HostId::Omv, tr("Mise à jour de restic"), format!("{} outils restic-maj 2>&1\n", remote::DEBIAN_BIN), 600);
+                }
+            }
         });
         if !missing {
             ui.label(RichText::new(tr("Tout est installé.")).small().color(OK));
@@ -349,6 +370,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             .small()
             .weak(),
         );
+        ui.label(RichText::new(tr("Autres destinations (OneDrive, Dropbox, disque USB, autre NAS, Backblaze B2…) : page Destinations. Google Drive est facultatif.")).small().weak());
         let busy = app.install.google.as_ref().map(|g| !g.done).unwrap_or(false);
         ui.horizontal(|ui| {
             let label = if st.gdrive == 1 { tr("\u{E2D6} Reconnecter Google Drive") } else { tr("\u{E2D6} Connecter Google Drive") };
@@ -513,6 +535,12 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("Mémoire de rclone (migration oCIS)")).strong());
         crate::ram::card(app, ui, HostId::Syno);
     });
+    ui.add_space(8.0);
+
+    // ---- 9. reconstruction apres une panne
+    crate::pages::card_pub(ui, &tf("9. Reconstruire après une panne ({0})", &[&srv]), |ui| {
+        crate::dests::rebuild_card(app, ui);
+    });
 }
 
 /// Etat du jeton d'application oCIS
@@ -603,15 +631,49 @@ pub fn start_google(app: &mut App) {
     });
 }
 
-/// Deroule l'autorisation ; `send` transmet les etapes a l'interface
+/// Deroule l'autorisation Google Drive ; `send` transmet les etapes a l'interface
 pub fn google_flow(
     ssh: &crate::ssh::Ssh,
     cfg: &crate::config::HostCfg,
     pass: Option<&str>,
     send: &dyn Fn(crate::app::Handler),
 ) -> Result<String, String> {
+    let token = oauth_token(ssh, cfg, pass, "drive", send, &google_step)?;
+    send(Box::new(|app: &mut App, _| set_step(app, |g| g.step = tr("Enregistrement de la connexion sur l'OMV…").into())));
+    let script = format!(
+        "T={}\nif rclone listremotes 2>/dev/null | grep -x 'gdrive:' >/dev/null; then\n  rclone config update gdrive token \"$T\" --non-interactive >/dev/null 2>&1 || rclone config update gdrive token \"$T\" >/dev/null\nelse\n  rclone config create gdrive drive scope drive token \"$T\" --non-interactive >/dev/null 2>&1 || rclone config create gdrive drive scope drive token \"$T\" >/dev/null\nfi\nif timeout 30 rclone lsd gdrive: --max-depth 1 >/dev/null 2>&1; then echo 'Google Drive est connecté.'; [ -x {bin} ] && {bin} destinations etat gdrive >/dev/null 2>&1; else echo 'Connexion enregistrée, mais Google Drive ne répond pas encore.'; exit 1; fi\n",
+        sq(&token),
+        bin = remote::DEBIAN_BIN
+    );
+    let o = ssh.run(cfg, pass, &script, std::time::Duration::from_secs(120)).map_err(|e| e.to_string())?;
+    if o.code == 0 {
+        Ok(o.text())
+    } else {
+        Err(o.text())
+    }
+}
+
+fn google_step(app: &mut App, f: &dyn Fn(&mut GoogleFlow)) {
+    set_step(app, |g| f(g))
+}
+
+/// Mise a jour de l'etape affichee (fenetre d'autorisation)
+pub type StepFn = dyn Fn(&mut App, &dyn Fn(&mut GoogleFlow)) + Send + Sync;
+
+/// Autorisation OAuth d'un service (drive, onedrive, dropbox, pcloud, box) :
+/// `rclone authorize` sur le NAS, page de connexion ouverte sur le PC par un tunnel SSH.
+/// Renvoie le jeton (JSON).
+pub fn oauth_token(
+    ssh: &crate::ssh::Ssh,
+    cfg: &crate::config::HostCfg,
+    pass: Option<&str>,
+    kind: &str,
+    send: &dyn Fn(crate::app::Handler),
+    step: &'static StepFn,
+) -> Result<String, String> {
+    let kind: String = kind.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     let mut child = ssh
-        .spawn_tunnel(cfg, pass, 53682, 53682, "rclone authorize drive --auth-no-open-browser 2>&1")
+        .spawn_tunnel(cfg, pass, 53682, 53682, &format!("rclone authorize {kind} --auth-no-open-browser 2>&1"))
         .map_err(|e| e.to_string())?;
     let out = child.stdout.take().ok_or(tr("sortie indisponible"))?;
     let reader = std::io::BufReader::new(out);
@@ -630,9 +692,9 @@ pub fn google_flow(
                 opened = true;
                 open_url(&url);
                 send(Box::new(move |app: &mut App, _| {
-                    set_step(app, |g| {
+                    step(app, &|g: &mut GoogleFlow| {
                         g.url = url.clone();
-                        g.step = tr("Connecte-toi à Google dans le navigateur qui vient de s'ouvrir, puis autorise rclone.").into();
+                        g.step = tr("Connecte-toi dans le navigateur qui vient de s'ouvrir, puis autorise rclone.").into();
                     })
                 }));
             }
@@ -665,15 +727,5 @@ pub fn google_flow(
         }
         return Err(tf("Autorisation non reçue (fenêtre fermée ou délai dépassé).{0}", &[&(err.lines().last().map(|l| format!(" {l}")).unwrap_or_default())]));
     }
-    send(Box::new(|app: &mut App, _| set_step(app, |g| g.step = tr("Enregistrement de la connexion sur l'OMV…").into())));
-    let script = format!(
-        "T={}\nif rclone listremotes 2>/dev/null | grep -x 'gdrive:' >/dev/null; then\n  rclone config update gdrive token \"$T\" --non-interactive >/dev/null 2>&1 || rclone config update gdrive token \"$T\" >/dev/null\nelse\n  rclone config create gdrive drive scope drive token \"$T\" --non-interactive >/dev/null 2>&1 || rclone config create gdrive drive scope drive token \"$T\" >/dev/null\nfi\nif timeout 30 rclone lsd gdrive: --max-depth 1 >/dev/null 2>&1; then echo 'Google Drive est connecté.'; else echo 'Connexion enregistrée, mais Google Drive ne répond pas encore.'; exit 1; fi\n",
-        sq(&token)
-    );
-    let o = ssh.run(cfg, pass, &script, std::time::Duration::from_secs(90)).map_err(|e| e.to_string())?;
-    if o.code == 0 {
-        Ok(o.text())
-    } else {
-        Err(o.text())
-    }
+    Ok(token)
 }

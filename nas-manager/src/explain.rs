@@ -19,9 +19,9 @@ const RULES: &[(&[&str], Explanation)] = &[
     (
         &["invalid_grant", "token expired", "couldn't fetch token", "oauth2: cannot fetch token", "token has been expired or revoked"],
         Explanation {
-            cause: "L'autorisation Google Drive de rclone a expiré ou a été révoquée.",
-            remedy: "Sur l'OMV, relancer l'autorisation de rclone (un navigateur est nécessaire, une seule fois). Les sauvegardes reprendront ensuite normalement.",
-            command: Some("rclone config reconnect gdrive:"),
+            cause: "L'autorisation du cloud (Google Drive, OneDrive…) a expiré ou a été révoquée.",
+            remedy: "Reconnecter la destination : page Destinations > Reconnecter (Google Drive : aussi page Installation). Les sauvegardes reprendront ensuite normalement.",
+            command: None,
             transient: false,
         },
     ),
@@ -41,6 +41,51 @@ const RULES: &[(&[&str], Explanation)] = &[
             remedy: "Rien à faire : rclone ralentit et réessaie. Si la limite quotidienne est atteinte, la suite partira à la prochaine exécution.",
             command: None,
             transient: true,
+        },
+    ),
+    (
+        &["mot de passe du depot refuse", "wrong password", "no key found"],
+        Explanation {
+            cause: "Le mot de passe des sauvegardes versionnées ne correspond pas au dépôt (machine reconstruite sans le kit de secours ?).",
+            remedy: "Restaurer le kit de secours (page Installation, carte 9) ou saisir le mot de passe des versions noté (même carte, « Pas de kit ? »).",
+            command: None,
+            transient: false,
+        },
+    ),
+    (
+        &["repository is already locked", "unable to create lock"],
+        Explanation {
+            cause: "Le dépôt de versions est verrouillé par une autre opération (ou par une sauvegarde interrompue).",
+            remedy: "Rien à faire en général : le verrou d'une sauvegarde interrompue est levé à la sauvegarde suivante.",
+            command: None,
+            transient: true,
+        },
+    ),
+    (
+        &["restic n'est pas installe"],
+        Explanation {
+            cause: "restic, l'outil des sauvegardes versionnées, n'est pas installé sur la machine.",
+            remedy: "Page Installation > Outils nécessaires > « Installer ce qui manque ».",
+            command: None,
+            transient: false,
+        },
+    ),
+    (
+        &["disque debranche", "non monte"],
+        Explanation {
+            cause: "Le disque de destination n'est pas branché ou pas monté.",
+            remedy: "Rebrancher le disque (et le monter dans OpenMediaVault si besoin), puis relancer la sauvegarde. Rien n'a été écrit sur le disque système.",
+            command: None,
+            transient: false,
+        },
+    ),
+    (
+        &["introuvable (retiree de rclone"],
+        Explanation {
+            cause: "Cette destination n'existe plus sur la machine.",
+            remedy: "Modifier la sauvegarde pour choisir une autre destination, ou recréer la destination (page Destinations).",
+            command: None,
+            transient: false,
         },
     ),
     (
@@ -159,7 +204,9 @@ mod tests {
     #[test]
     fn erreurs_courantes() {
         assert!(explain("Failed to copy: googleapi: Error 403: User Rate Limit Exceeded").unwrap().transient);
-        assert!(explain("oauth2: cannot fetch token: 400 Bad Request {\"error\": \"invalid_grant\"}").unwrap().command.is_some());
+        assert!(!explain("oauth2: cannot fetch token: 400 Bad Request {\"error\": \"invalid_grant\"}").unwrap().transient);
+        assert!(explain("Fatal: wrong password or no key found").unwrap().cause.contains("versionnées"));
+        assert!(explain("usb (destination « usb » : le dossier /media/usb est introuvable (disque debranche ou non monte ?))").unwrap().cause.contains("branché"));
         assert!(explain("Error 403: The user's Drive storage quota has been exceeded., storageQuotaExceeded").is_some());
         assert!(explain("tout va bien").is_none());
     }

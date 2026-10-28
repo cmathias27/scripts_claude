@@ -90,7 +90,7 @@ Une version testable par étape (1.1, 1.2…).
 2. **Sauvegardes programmées / temps réel** *(1.2.0)* : séparation des deux types et renommage des pages ·
    temps réel sur n'importe quel(s) dossier(s) · modes de suppression et réglages fins du temps réel ·
    détection d'anomalie.
-3. **Destinations et sécurité des données** : autres destinations · multi-destinations chiffrées ·
+3. **Destinations et sécurité des données** *(1.3.0)* : autres destinations · multi-destinations chiffrées ·
    sauvegardes versionnées (restic) · sauvegarde de ce qui permet de restaurer.
 4. **Être prévenu et surveiller** : notifications ntfy / Telegram / Discord / e-mail · santé des
    disques · rapport hebdomadaire / mensuel.
@@ -171,12 +171,12 @@ Une version testable par étape (1.1, 1.2…).
 - [x] **Détection d'anomalie** : si beaucoup de fichiers sont supprimés ou modifiés en peu de temps
       (seuil réglable), la synchro se met en pause et une alerte critique est envoyée, au lieu de tout
       répercuter (protection contre les rançongiciels et les fausses manipulations). Reprise manuelle.
-- [ ] **Sauvegarde de ce qui permet de restaurer** : `rclone.conf`, mots de passe de chiffrement,
+- [x] **Sauvegarde de ce qui permet de restaurer** *(1.3.0)* : `rclone.conf`, mots de passe de chiffrement,
       `jobs.conf` et configuration de l'outil, sauvegardés automatiquement, chiffrés, hors du NAS.
       Plus un guide « mon NAS est mort, je reconstruis » dans l'aide.
 
 #### Sauvegardes versionnées (type Hyper Backup)
-- [ ] **Troisième mode de sauvegarde « Versionnée »**, à côté de miroir et copie, pour les données
+- [x] **Troisième mode de sauvegarde « Versionnée »** *(1.3.0)*, à côté de miroir et copie, pour les données
       importantes. Basé sur **restic**, qui stocke via rclone : toutes les destinations prévues
       (Drive, OneDrive, B2, SFTP, oCIS…). Binaire unique amd64 / arm64 / armv7 : OMV, Synology, Debian.
   - Instantanés complets, **déduplication** (seuls les morceaux modifiés sont envoyés et stockés),
@@ -194,10 +194,10 @@ Une version testable par étape (1.1, 1.2…).
     la destination, restauration uniquement par l'outil.
 
 #### Destinations
-- [ ] **Autres destinations que Google Drive** : tout ce que gère rclone (OneDrive, Dropbox,
+- [x] **Autres destinations que Google Drive** *(1.3.0)* : tout ce que gère rclone (OneDrive, Dropbox,
       Backblaze B2, S3, autre NAS en SFTP, WebDAV / oCIS…), choisies par sauvegarde,
       configurées depuis l'application.
-- [ ] **Multi-destinations (3-2-1)** : une même sauvegarde envoyée vers plusieurs supports
+- [x] **Multi-destinations (3-2-1)** *(1.3.0)* : une même sauvegarde envoyée vers plusieurs supports
       (ex. Drive + disque USB + autre NAS). **Chiffrement au choix pour chaque destination**,
       si l'utilisateur le demande.
 
@@ -262,7 +262,7 @@ Une version testable par étape (1.1, 1.2…).
       Home Assistant devient une option : l'outil doit fonctionner sans lui.
 
 #### Plus aucune ligne de commande
-- [ ] **Connexion aux clouds depuis l'application** *(Google Drive : fait en 1.0 ; autres services avec l'étape 3)* : la page de connexion (Google, OneDrive,
+- [x] **Connexion aux clouds depuis l'application** *(Google Drive : 1.0 ; OneDrive, Dropbox, pCloud, Box : 1.3.0)* : la page de connexion (Google, OneDrive,
       Dropbox…) s'ouvre sur le PC, l'application récupère le jeton et l'envoie au NAS.
       Remplace `rclone config reconnect gdrive:` en SSH.
 - [x] **Entretien des outils** : vérification de la version de rclone sur chaque machine avec mise à

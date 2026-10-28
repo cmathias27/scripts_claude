@@ -66,8 +66,19 @@ cmd="$1"; shift
 log=""; dur=${FAKE_DUR:-20}
 args=("$@")
 for ((i=0;i<${#args[@]};i++)); do [ "${args[$i]}" = "--log-file" ] && log="${args[$((i+1))]}"; done
+conf=/tmp/faux-nas/rclone.conf
 case "$cmd" in
-  listremotes) printf 'gdrive:\ngbackup:\ngcrypt:\n' ;;
+  listremotes)
+    if [[ " $* " == *" --long "* ]]; then awk '/^\[/{n=substr($0,2,length($0)-2)} /^type = /{print n": "$3}' "$conf"
+    else grep -oE '^\[[^]]+\]' "$conf" | tr -d '[]' | sed 's/$/:/'; fi ;;
+  config)
+    sub="$1"; shift
+    case "$sub" in
+      file) printf 'Configuration file is stored at:\n%s\n' "$conf" ;;
+      show) awk -v n="[$1]" '$0==n{p=1; print; next} /^\[/{p=0} p' "$conf" ;;
+      delete) awk -v n="[$1]" '$0==n{p=1; next} /^\[/{p=0} !p' "$conf" > "$conf.new" && mv "$conf.new" "$conf" ;;
+      *) exit 0 ;;
+    esac ;;
   about) echo '{"total":2199023255552,"used":1301234567890}' ;;
   obscure) echo obscured ;;
   version) echo "rclone v1.70.0-faux" ;;
@@ -106,11 +117,32 @@ esac
 EOF
 chmod 755 /usr/local/bin/rclone
 
+# remotes rclone du faux OMV : Google Drive (+ chiffres) et un disque USB
+cat > /tmp/faux-nas/rclone.conf <<EOF
+[gdrive]
+type = drive
+scope = drive
+
+[gbackup]
+type = crypt
+remote = gdrive:NAS-chiffre
+
+[gcrypt]
+type = crypt
+remote = gdrive:Cam-chiffre
+
+[usb]
+type = alias
+remote = /srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Sauvegardes
+EOF
+
 # ---------------- OMV simule
 # (liens laisses par un test precedent : supprimes avant d'ecrire les anciens scripts)
 rm -f /usr/local/bin/nas-notify /usr/local/bin/nas-check /usr/local/bin/nas-backup /usr/local/bin/nas-ha-status
 D=/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5
-mkdir -p $D/Photos $D/Documents $D/Cam $D/Musique /etc/nas-backup /var/lib/nas-backup/alertes
+mkdir -p $D/Photos $D/Documents $D/Cam $D/Musique $D/Sauvegardes /etc/nas-backup /var/lib/nas-backup/alertes
+rm -f /etc/nas-backup/restic.pass /etc/nas-backup/secours.pass /var/lib/nas-backup/destinations.json
+rm -rf /var/lib/nas-backup/secours
 cat > /etc/nas-backup/jobs.conf <<EOF
 # NOM|SOURCE|DOSSIER_DRIVE|MODE(sync/copy)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|CORBEILLE_JOURS
 Photos|$D/Photos|Photos|sync|oui|03:30|30

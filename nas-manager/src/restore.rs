@@ -19,12 +19,25 @@ pub struct DriveEntry {
     pub is_dir: bool,
 }
 
+/// Une version d'une sauvegarde versionnee (versions liste)
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct Snapshot {
+    pub id: String,
+    pub court: String,
+    pub date: i64,
+    pub chemin: String,
+    pub fichiers: Option<u64>,
+    pub taille: Option<u64>,
+    pub ajoute: Option<u64>,
+}
+
 #[derive(Clone, Default)]
 pub struct RestoreState {
     pub job: String,
     pub source: String,
     pub target: String,
-    /// 0 = tout, 1 = parcourir le Drive, 2 = corbeille
+    /// 0 = tout, 1 = parcourir la destination, 2 = corbeille
     pub tab: u8,
     pub has_trash: bool,
     pub path: String,
@@ -34,10 +47,19 @@ pub struct RestoreState {
     pub selected: Option<String>,
     /// restaurer a l'emplacement d'origine (ecrase les fichiers locaux)
     pub to_origin: bool,
+    /// destinations de la sauvegarde ; restauration depuis la n° `dest`
+    pub dests: Vec<crate::model::JobDest>,
+    pub dest: usize,
+    /// sauvegarde versionnee : versions disponibles, version choisie
+    pub versions: bool,
+    pub snaps: Vec<Snapshot>,
+    pub snap: Option<String>,
+    pub snaps_loading: bool,
 }
 
 impl RestoreState {
-    pub fn new(job: &str, source: &str, has_trash: bool) -> Self {
+    pub fn new(j: &crate::model::Job) -> Self {
+        let (job, source) = (j.nom.as_str(), j.source.as_str());
         let base = source
             .strip_prefix("/srv/")
             .and_then(|r| r.split('/').next())
@@ -48,24 +70,86 @@ impl RestoreState {
             job: job.into(),
             source: source.into(),
             target: format!("{base}/Restauration/{job}_{stamp}"),
-            has_trash,
+            has_trash: j.mode == "sync" && j.corbeille > 0,
+            dests: j.dests(),
+            versions: j.versions(),
             ..Default::default()
         }
     }
 }
 
+/// Versions disponibles sur la destination choisie
+pub fn load_snaps(app: &mut App) {
+    let Some(r) = &mut app.restore else { return };
+    r.snaps_loading = true;
+    r.snaps.clear();
+    r.snap = None;
+    r.entries.clear();
+    r.error.clear();
+    let (job, dest) = (r.job.clone(), r.dest);
+    app.exec(
+        HostId::Omv,
+        tr("Lecture des versions"),
+        remote::versions_list(&job, dest),
+        180,
+        Box::new(move |app, res| {
+            let Some(r) = &mut app.restore else { return };
+            if r.job != job || r.dest != dest {
+                return;
+            }
+            r.snaps_loading = false;
+            match res {
+                Ok(o) => match serde_json::from_str::<Vec<Snapshot>>(o.stdout.trim()) {
+                    Ok(v) => {
+                        r.snap = v.first().map(|s| s.id.clone());
+                        r.snaps = v;
+                        if r.snaps.is_empty() {
+                            r.error = tr("Aucune version sur cette destination pour l'instant.").into();
+                        }
+                    }
+                    Err(_) => r.error = o.text().lines().last().unwrap_or(tr("Lecture impossible")).to_string(),
+                },
+                Err(e) => r.error = e.to_string(),
+            }
+            let need = r.tab == 1 && r.snap.is_some();
+            if need {
+                list(app, String::new());
+            }
+        }),
+    );
+}
+
+pub fn snap_label(s: &Snapshot) -> String {
+    let mut t = format!("{} · {}", fmt::date(s.date), s.court);
+    if let Some(n) = s.fichiers {
+        t.push_str(&tf(" · {0} fichiers", &[&n]));
+    }
+    if let Some(b) = s.taille {
+        t.push_str(&format!(" · {}", fmt::bytes(b)));
+    }
+    t
+}
+
 fn list(app: &mut App, path: String) {
     let Some(r) = &mut app.restore else { return };
+    if r.versions && r.snap.is_none() {
+        return;
+    }
     r.path = path.clone();
     r.loading = true;
     r.error.clear();
     r.entries.clear();
     r.selected = None;
     let (job, trash) = (r.job.clone(), r.tab == 2);
+    let script = if r.versions {
+        remote::versions_ls(&job, r.dest, r.snap.as_deref().unwrap_or(""), &path)
+    } else {
+        remote::nb_ls(&job, &path, trash, r.dest)
+    };
     app.exec(
         HostId::Omv,
-        tr("Lecture du Drive"),
-        remote::nb_ls(&job, &path, trash),
+        tr("Lecture de la sauvegarde"),
+        script,
         120,
         Box::new(move |app, res| {
             let Some(r) = &mut app.restore else { return };
@@ -83,7 +167,7 @@ fn list(app: &mut App, path: String) {
                         }
                         Err(_) => {
                             r.error = if line.contains("directory not found") {
-                                if trash { tr("La corbeille est vide.").into() } else { tr("Dossier vide ou absent du Drive.").into() }
+                                if trash { tr("La corbeille est vide.").into() } else { tr("Dossier vide ou absent de la destination.").into() }
                             } else {
                                 o.text().lines().last().unwrap_or(tr("Lecture impossible")).to_string()
                             }
@@ -117,7 +201,10 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     let mut browse_target = false;
     let mut nav: Option<String> = None;
     let mut tab_changed = false;
-    egui::Window::new(RichText::new(tf("Restaurer « {0} »", &[&r.job])).strong())
+    let mut dest_changed = false;
+    let mut snap_changed = false;
+    let mut reload_snaps = false;
+    egui::Window::new(RichText::new(if r.versions { tf("Versions de « {0} »", &[&r.job]) } else { tf("Restaurer « {0} »", &[&r.job]) }).strong())
         .id(egui::Id::unique("restore"))
         .collapsible(false)
         .resizable(true)
@@ -125,16 +212,54 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
+            if r.dests.len() > 1 {
+                ui.horizontal(|ui| {
+                    ui.label(tr("Depuis la destination :"));
+                    let cur = r.dests.get(r.dest).map(|d| d.nom.clone()).unwrap_or_default();
+                    egui::ComboBox::from_id_salt("rdest").selected_text(cur).show_ui(ui, |ui| {
+                        for (i, d) in r.dests.iter().enumerate() {
+                            let lab = if d.chiffre && !r.versions { tf("{0} (chiffrée)", &[&d.nom]) } else { d.nom.clone() };
+                            dest_changed |= ui.selectable_value(&mut r.dest, i, lab).changed();
+                        }
+                    });
+                });
+            }
+            if r.versions {
+                ui.horizontal(|ui| {
+                    ui.label(tr("Version :"));
+                    let cur = r.snaps.iter().find(|s| Some(&s.id) == r.snap.as_ref()).map(snap_label).unwrap_or_else(|| if r.snaps_loading { tr("lecture…").into() } else { "—".into() });
+                    egui::ComboBox::from_id_salt("rsnap").width(420.0).selected_text(cur).show_ui(ui, |ui| {
+                        for sn in &r.snaps {
+                            if ui.selectable_label(Some(&sn.id) == r.snap.as_ref(), snap_label(sn)).clicked() && Some(&sn.id) != r.snap.as_ref() {
+                                r.snap = Some(sn.id.clone());
+                                snap_changed = true;
+                            }
+                        }
+                    });
+                    if r.snaps_loading {
+                        ui.spinner();
+                    } else if ui.small_button("\u{E094}").on_hover_text(tr("Relire les versions")).clicked() {
+                        reload_snaps = true;
+                    }
+                });
+                if !r.snaps.is_empty() {
+                    ui.label(RichText::new(tf("{0} version(s) gardée(s), de la plus récente à la plus ancienne.", &[&r.snaps.len()])).small().weak());
+                }
+            }
             ui.horizontal(|ui| {
-                tab_changed |= ui.selectable_value(&mut r.tab, 0, tr("Tout restaurer")).changed();
+                tab_changed |= ui.selectable_value(&mut r.tab, 0, if r.versions { tr("Toute la version") } else { tr("Tout restaurer") }).changed();
                 tab_changed |= ui.selectable_value(&mut r.tab, 1, tr("\u{E256} Un fichier ou un dossier")).changed();
                 if r.has_trash {
-                    tab_changed |= ui.selectable_value(&mut r.tab, 2, tr("\u{E4A6} Corbeille du Drive")).changed();
+                    tab_changed |= ui.selectable_value(&mut r.tab, 2, tr("\u{E4A6} Corbeille")).changed();
                 }
             });
             ui.separator();
             if r.tab == 0 {
-                ui.label(tr("Tout le contenu de la sauvegarde est recopié (déchiffré si besoin) dans le dossier ci-dessous."));
+                ui.label(if r.versions {
+                    tr("Tout le dossier, tel qu'il était à la date de la version choisie, est recopié dans le dossier ci-dessous.")
+                } else {
+                    tr("Tout le contenu de la sauvegarde est recopié (déchiffré si besoin) dans le dossier ci-dessous.")
+                });
             } else {
                 if r.tab == 2 {
                     ui.label(RichText::new(tr("Fichiers supprimés ou remplacés par les sauvegardes miroir, rangés par date. Choisis la date puis le fichier.")).small());
@@ -198,12 +323,12 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
             }
             let dest = effective_target(&r);
             if r.to_origin || dest.trim_end_matches('/') == r.source.trim_end_matches('/') {
-                ui.colored_label(ERR, tr("\u{E4E0} Les fichiers locaux de même nom seront remplacés par ceux du Drive."));
+                ui.colored_label(ERR, tr("\u{E4E0} Les fichiers locaux de même nom seront remplacés par ceux de la sauvegarde."));
             }
             ui.label(RichText::new(tr("La restauration tourne en arrière-plan ; son avancement s'affiche sur la page Sauvegardes.")).small().weak());
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let can = r.tab == 0 || r.selected.is_some();
+                let can = (r.tab == 0 || r.selected.is_some()) && (!r.versions || r.snap.is_some());
                 if ui
                     .add_enabled(can && !dest.trim().is_empty(), egui::Button::new(RichText::new(tr("\u{E20C} Restaurer")).color(Color32::WHITE)).fill(INFO))
                     .clicked()
@@ -228,7 +353,11 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         let item = if r.tab == 0 { String::new() } else { r.selected.clone().unwrap_or_default() };
         let target = effective_target(&r);
         let label = if item.is_empty() { r.job.clone() } else { item.clone() };
-        let script = remote::nb_restore(&r.job, &target, &item, r.tab == 2);
+        let script = if r.versions {
+            remote::versions_restore(&r.job, r.dest, r.snap.as_deref().unwrap_or(""), &target, &item)
+        } else {
+            remote::nb_restore(&r.job, &target, &item, r.tab == 2, r.dest)
+        };
         let overwrite = r.to_origin || target.trim_end_matches('/') == r.source.trim_end_matches('/');
         if overwrite {
             app.ask_confirm(
@@ -244,9 +373,12 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         }
         return;
     }
-    let need_list = tab_changed && r.tab != 0;
+    let need_snaps = r.versions && (dest_changed || reload_snaps || (r.snaps.is_empty() && !r.snaps_loading && r.error.is_empty()));
+    let need_list = (tab_changed || dest_changed || snap_changed) && r.tab != 0;
     app.restore = Some(r);
-    if need_list {
+    if need_snaps {
+        load_snaps(app);
+    } else if need_list {
         list(app, String::new());
     } else if let Some(p) = nav {
         list(app, p);

@@ -12,6 +12,7 @@ mod i18n;
 mod i18n_en;
 mod install;
 mod config;
+mod dests;
 mod extras;
 mod fmt;
 mod log;

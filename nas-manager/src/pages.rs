@@ -204,7 +204,9 @@ fn host_banner(app: &mut App, ui: &mut egui::Ui, h: HostId) -> bool {
 }
 
 fn job_dest(j: &Job) -> String {
-    if j.chiffre {
+    if j.versions() {
+        format!("NAS-versions/{}", j.dossier)
+    } else if j.chiffre {
         format!("NAS-chiffre/{}", j.dossier)
     } else {
         format!("NAS/{}", j.dossier)
@@ -292,8 +294,14 @@ fn progress_details(ui: &mut egui::Ui, p: &Progress) {
     }
 }
 
-fn bilan_text(b: &Bilan) -> String {
-    let mut t = if b.fichiers_envoyes == 0 && b.retires == 0 && b.erreurs == 0 {
+fn bilan_text(b: &Bilan, versions: bool) -> String {
+    let mut t = if versions {
+        if b.fichiers_envoyes == 0 {
+            tr("aucun changement, version enregistrée").to_string()
+        } else {
+            tf("{0} fichier(s) nouveau(x) ou modifié(s), {1} ajoutés, version enregistrée", &[&b.fichiers_envoyes, &(fmt::bytes(b.volume_octets.max(0) as u64))])
+        }
+    } else if b.fichiers_envoyes == 0 && b.retires == 0 && b.erreurs == 0 {
         tr("Déjà à jour, aucun changement").to_string()
     } else if b.fichiers_envoyes == 0 {
         tr("Rien à envoyer").to_string()
@@ -301,7 +309,7 @@ fn bilan_text(b: &Bilan) -> String {
         tf("{0} fichier{1} envoyé{1} ({2})", &[&b.fichiers_envoyes, &(if b.fichiers_envoyes > 1 { "s" } else { "" }), &(fmt::bytes(b.volume_octets.max(0) as u64))])
     };
     if b.retires > 0 {
-        t.push_str(&tf(", {0} supprimé(s) du Drive", &[&b.retires]));
+        t.push_str(&tf(", {0} supprimé(s) de la destination", &[&b.retires]));
     }
     if b.erreurs > 0 {
         t.push_str(&tf(", {0} erreur(s)", &[&b.erreurs]));
@@ -442,6 +450,7 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
         .unwrap_or(0);
     let alerts = omv.as_ref().map(|s| s.alertes.len()).unwrap_or(0);
     let rt_badge = omv.as_ref().and_then(crate::realtime::nav_badge);
+    let dest_badge = omv.as_ref().and_then(crate::dests::nav_badge);
     let copy_run = syno.as_ref().map(|s| s.copie.en_cours).unwrap_or(false);
     let mig_run = syno.as_ref().map(|s| s.migration.en_cours).unwrap_or(false);
     let mig_q = syno.as_ref().map(|s| s.migration.file.len()).unwrap_or(0);
@@ -460,6 +469,7 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
             },
         ),
         (Page::Realtime, tr("\u{E094}  Sauvegardes temps réel"), rt_badge),
+        (Page::Destinations, tr("\u{E67C}  Destinations"), dest_badge),
         (Page::History, tr("\u{E154}  Historique"), None),
         (Page::Alerts, tr("\u{E0CE}  Alertes"), if alerts > 0 { Some((alerts.to_string(), ERR)) } else { None }),
         (Page::Copy, tr("\u{E390}  Copie → OMV"), if copy_run { Some((tr("en cours").into(), INFO)) } else { None }),
@@ -531,7 +541,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
         banner(ui, ERR, &tf("OMV : {0} (dernières informations affichées)", &[&e]));
     }
     if let Some(s) = &omv {
-        let uses_crypt = s.sauvegardes.iter().any(|j| j.chiffre) || s.cameras.installe || s.temps_reel.iter().any(|j| j.chiffre);
+        let uses_crypt = s.sauvegardes.iter().any(|j| j.chiffre || j.versions()) || s.cameras.installe || s.temps_reel.iter().any(|j| j.chiffre);
         if uses_crypt && !app.settings.passwords_noted {
             ui.horizontal(|ui| {
                 banner(ui, WARN, tr("\u{E2D6} As-tu noté les mots de passe de chiffrement hors du NAS ? Sans eux, les sauvegardes chiffrées sont illisibles si le NAS tombe en panne."));
@@ -611,37 +621,68 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
         });
         cols[k].add_space(10.0);
 
-        // ---- Google Drive
+        // ---- Destinations (script 2.2+) ou Google Drive
         let k = next(cols);
-        card(&mut cols[k], tr("\u{E1AA} Google Drive"), |ui| {
-            match omv.as_ref().and_then(|s| s.sante.clone()) {
-                None => {
-                    ui.label(RichText::new(tr("État inconnu (nas-check pas encore lancé).")).weak());
+        let dests = omv.as_ref().map(|s| s.destinations.clone()).unwrap_or_default();
+        if !dests.is_empty() {
+            card(&mut cols[k], tr("\u{E67C} Destinations"), |ui| {
+                for d in dests.iter().take(6) {
+                    let (col, st) = match &d.etat {
+                        Some(e) if e.ok => (OK, String::new()),
+                        Some(_) => (ERR, tr(" · injoignable").to_string()),
+                        None => (IDLE, String::new()),
+                    };
+                    let space = d.etat.as_ref().and_then(|e| match (e.total, e.utilise) {
+                        (Some(t), Some(u)) if t > 0 => Some(format!(" · {} %", u * 100 / t)),
+                        _ => None,
+                    });
+                    dot_label(ui, col, RichText::new(format!("{}{}{st}", crate::dests::short_label(&d.nom, &dests), space.unwrap_or_default())).small());
                 }
-                Some(h) => {
-                    dot_label(ui, if h.gdrive { OK } else { ERR }, if h.gdrive { tr("Connexion OK") } else { tr("Connexion en échec") });
-                    if let Some(p) = h.quota_pct {
-                        let col = if p >= 90.0 { ERR } else if p >= 75.0 { WARN } else { OK };
-                        let txt = match (h.used_go, h.total_go) {
-                            (Some(u), Some(t)) => tf("{0} % · {1} / {2} Go", &[&format!("{:.0}", p), &format!("{:.1}", u), &format!("{:.0}", t)]),
-                            _ => format!("{p:.0} %"),
-                        };
-                        ui.add(egui::ProgressBar::new((p / 100.0) as f32).fill(col).text(txt));
+                if let Some(s) = &omv {
+                    if !s.alertes.is_empty() {
+                        ui.colored_label(ERR, tf("\u{E0CE} {0} alerte(s) en cours", &[&(s.alertes.len())]));
                     }
-                    if let Some(c) = &h.checked {
-                        ui.label(RichText::new(tf("Vérifié : {0}", &[&(c.replace('T', " ").chars().take(16).collect::<String>())])).small().weak());
+                }
+                ui.horizontal(|ui| {
+                    if ui.link(tr("Destinations →")).clicked() {
+                        goto = Some(Page::Destinations);
+                    }
+                    if ui.link(tr("Alertes & santé →")).clicked() {
+                        goto = Some(Page::Alerts);
+                    }
+                });
+            });
+        } else {
+            card(&mut cols[k], tr("\u{E1AA} Google Drive"), |ui| {
+                match omv.as_ref().and_then(|s| s.sante.clone()) {
+                    None => {
+                        ui.label(RichText::new(tr("État inconnu (nas-check pas encore lancé).")).weak());
+                    }
+                    Some(h) => {
+                        dot_label(ui, if h.gdrive { OK } else { ERR }, if h.gdrive { tr("Connexion OK") } else { tr("Connexion en échec") });
+                        if let Some(p) = h.quota_pct {
+                            let col = if p >= 90.0 { ERR } else if p >= 75.0 { WARN } else { OK };
+                            let txt = match (h.used_go, h.total_go) {
+                                (Some(u), Some(t)) => tf("{0} % · {1} / {2} Go", &[&format!("{:.0}", p), &format!("{:.1}", u), &format!("{:.0}", t)]),
+                                _ => format!("{p:.0} %"),
+                            };
+                            ui.add(egui::ProgressBar::new((p / 100.0) as f32).fill(col).text(txt));
+                        }
+                        if let Some(c) = &h.checked {
+                            ui.label(RichText::new(tf("Vérifié : {0}", &[&(c.replace('T', " ").chars().take(16).collect::<String>())])).small().weak());
+                        }
                     }
                 }
-            }
-            if let Some(s) = &omv {
-                if !s.alertes.is_empty() {
-                    ui.colored_label(ERR, tf("\u{E0CE} {0} alerte(s) en cours", &[&(s.alertes.len())]));
+                if let Some(s) = &omv {
+                    if !s.alertes.is_empty() {
+                        ui.colored_label(ERR, tf("\u{E0CE} {0} alerte(s) en cours", &[&(s.alertes.len())]));
+                    }
                 }
-            }
-            if ui.link(tr("Alertes & santé →")).clicked() {
-                goto = Some(Page::Alerts);
-            }
-        });
+                if ui.link(tr("Alertes & santé →")).clicked() {
+                    goto = Some(Page::Alerts);
+                }
+            });
+        }
         cols[k].add_space(10.0);
 
         // ---- Copie
@@ -743,7 +784,7 @@ pub fn dashboard(app: &mut App, ui: &mut egui::Ui) {
 // =====================================================================
 
 pub fn backups(app: &mut App, ui: &mut egui::Ui) {
-    page_title(ui, tr("Sauvegardes programmées"), tr("Sauvegardes vers Google Drive à heure fixe ou à la demande"));
+    page_title(ui, tr("Sauvegardes programmées"), tr("Sauvegardes à heure fixe ou à la demande, vers une ou plusieurs destinations"));
     if !host_banner(app, ui, HostId::Omv) {
         return;
     }
@@ -767,10 +808,13 @@ pub fn backups(app: &mut App, ui: &mut egui::Ui) {
     let any_running = s.any_job_running();
     ui.horizontal(|ui| {
         if primary_button(ui, tr("+ Nouvelle sauvegarde")).clicked() {
+            let avail = crate::dests::available(app);
+            let first = avail.iter().find(|d| d.nom == "gdrive").or(avail.first()).map(|d| (d.nom.clone(), true));
             app.job_form = Some(JobFormState {
                 new: true,
-                mirror: true,
-                encrypt: true,
+                mode: 0,
+                dests: first.into_iter().collect(),
+                rot: crate::dests::rot_parse(""),
                 trash_days: "30".into(),
                 ..Default::default()
             });
@@ -848,9 +892,20 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
             dot(ui, job_color(j));
             ui.label(RichText::new(&j.nom).strong().size(16.0));
             badge(ui, job_state_text(j), job_color(j));
-            badge(ui, if j.mode == "sync" { tr("Miroir") } else { tr("Copie") }, IDLE);
-            if j.chiffre {
+            badge(
+                ui,
+                match j.mode.as_str() {
+                    "sync" => tr("Miroir"),
+                    "versions" => tr("Versionnée"),
+                    _ => tr("Copie"),
+                },
+                IDLE,
+            );
+            if j.chiffre || j.versions() {
                 badge(ui, tr("\u{E2FA} Chiffré"), IDLE);
+            }
+            if j.dests().len() > 1 {
+                badge(ui, &tf("{0} destinations", &[&(j.dests().len())]), IDLE);
             }
             badge(
                 ui,
@@ -862,14 +917,14 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                 ui.menu_button(tr("\u{E1FE}"), |ui| {
                     if ui
                         .add_enabled(!j.en_cours && j.simulation.as_ref().map(|s| s.etat != "en_cours").unwrap_or(true), egui::Button::new(tr("\u{E30C} Simuler (sans rien envoyer)")))
-                        .on_hover_text(tr("Liste ce que la sauvegarde enverrait et supprimerait sur le Drive"))
+                        .on_hover_text(tr("Liste ce que la sauvegarde enverrait et supprimerait sur la destination (la première)"))
                         .clicked()
                     {
                         app.action_toast(HostId::Omv, tr("Simulation"), remote::nb_simulate(&name), 30);
                         ui.close();
                     }
-                    if ui.button(tr("\u{E20C} Restaurer…")).clicked() {
-                        app.restore = Some(RestoreState::new(&name, &j.source, j.mode == "sync" && j.corbeille > 0));
+                    if ui.button(if j.versions() { tr("\u{E20C} Versions et restauration…") } else { tr("\u{E20C} Restaurer…") }).clicked() {
+                        app.restore = Some(RestoreState::new(j));
                         ui.close();
                     }
                     if ui
@@ -877,7 +932,7 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                             j.verification.as_ref().map(|v| v.etat != "en_cours").unwrap_or(true),
                             egui::Button::new(tr("\u{E40C} Vérifier l'intégrité")),
                         )
-                        .on_hover_text(tr("Compare chaque fichier du NAS avec sa copie sur le Drive (empreintes, déchiffrement si besoin)"))
+                        .on_hover_text(if j.versions() { tr("Contrôle les dépôts de versions (structure et une partie des données relue)") } else { tr("Compare chaque fichier du NAS avec sa copie sur chaque destination (empreintes, déchiffrement si besoin)") })
                         .clicked()
                     {
                         app.action_toast(HostId::Omv, tr("Vérification"), remote::nb_verify(&name), 30);
@@ -887,7 +942,7 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         let n = name.clone();
                         app.ask_confirm(
                             tr("Supprimer la sauvegarde"),
-                            &tf("La sauvegarde « {0} » ne sera plus planifiée.\nLes fichiers déjà envoyés restent sur le Drive.", &[&n]),
+                            &tf("La sauvegarde « {0} » ne sera plus planifiée.\nLes fichiers déjà envoyés restent sur les destinations.", &[&n]),
                             tr("Supprimer"),
                             true,
                             None,
@@ -895,13 +950,13 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         );
                         ui.close();
                     }
-                    if ui.button(RichText::new(tr("\u{E4A6} Supprimer et effacer du Drive…")).color(ERR)).clicked() {
+                    if ui.button(RichText::new(tr("\u{E4A6} Supprimer et effacer les sauvegardes…")).color(ERR)).clicked() {
                         let n = name.clone();
                         let word = name.clone();
-                        let dest = job_dest(j);
+                        let dest = format!("{} : {}", crate::dests::job_dests_text(j, &crate::dests::available(app)), job_dest(j));
                         app.ask_confirm(
-                            tr("Supprimer et effacer du Drive"),
-                            &tf("La sauvegarde « {0} » est supprimée ET ses fichiers sont DÉFINITIVEMENT effacés du Drive ({1}, corbeille comprise).", &[&n, &dest]),
+                            tr("Supprimer et effacer les sauvegardes"),
+                            &tf("La sauvegarde « {0} » est supprimée ET ses fichiers sont DÉFINITIVEMENT effacés de toutes ses destinations ({1}, corbeille et versions comprises).", &[&n, &dest]),
                             tr("Supprimer définitivement"),
                             true,
                             Some(&word),
@@ -917,8 +972,13 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         source: j.source.clone(),
                         folder: j.dossier.clone(),
                         folder_touched: true,
-                        mirror: j.mode == "sync",
-                        encrypt: j.chiffre,
+                        mode: match j.mode.as_str() {
+                            "sync" => 0,
+                            "versions" => 2,
+                            _ => 1,
+                        },
+                        dests: j.dests().into_iter().map(|d| (d.nom, d.chiffre)).collect(),
+                        rot: crate::dests::rot_parse(&j.rotation),
                         sched: crate::sched::SchedEdit::parse(&j.horaire),
                         bw: crate::sched::BwEdit::parse(&j.debit),
                         trash_days: j.corbeille.to_string(),
@@ -946,8 +1006,9 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                 }
             });
         });
+        let avail = crate::dests::available(app);
         ui.label(
-            RichText::new(tf("{0}  →  Drive : {1}", &[&(fmt::short_path(&j.source)), &(job_dest(j))]))
+            RichText::new(tf("{0}  →  {1} ({2})", &[&(fmt::short_path(&j.source)), &(crate::dests::job_dests_text(j, &avail)), &(job_dest(j))]))
                 .color(ui.visuals().strong_text_color()),
         )
         .on_hover_text(&j.source);
@@ -957,21 +1018,28 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
         if !j.en_cours && j.dernier_etat.as_deref() == Some("ECHEC") {
             if let Some(e) = &j.derniere_erreur {
                 crate::explain::show(ui, e);
-                if crate::explain::explain(e).and_then(|x| x.command).map(|c| c.contains("reconnect")).unwrap_or(false)
-                    && ui.button(tr("\u{E2D6} Reconnecter Google Drive")).clicked()
-                {
-                    app.page = Page::Install;
-                    crate::install::start_google(app);
+                if crate::explain::explain(e).map(|x| x.cause.starts_with("L'autorisation du cloud")).unwrap_or(false) {
+                    // destination en cause : « nom : erreur » (script 2.2+), sinon Google Drive
+                    let who = e.split(" : ").next().filter(|n| avail.iter().any(|d| d.nom == *n)).unwrap_or("gdrive").to_string();
+                    let kind = avail.iter().find(|d| d.nom == who).map(|d| d.kind.clone()).unwrap_or_else(|| "drive".into());
+                    if ui.button(tf("\u{E2D6} Reconnecter {0}", &[&(crate::dests::short_label(&who, &avail))])).clicked() {
+                        crate::dests::start_oauth(app, &who, &kind);
+                    }
                 }
             }
         }
         if j.en_cours {
+            if let Some(d) = &j.dest_en_cours {
+                if d.n > 1 {
+                    ui.label(RichText::new(tf("Destination {0}/{1} : {2}", &[&d.i, &d.n, &(crate::dests::short_label(&d.nom, &avail))])).strong().color(INFO));
+                }
+            }
             match &j.avancement {
                 Some(p) => {
                     progress_bar(ui, p.pct, progress_text(p));
                     progress_details(ui, p);
                 }
-                None => progress_bar(ui, None, tr("Comparaison avec le Drive…").into()),
+                None => progress_bar(ui, None, if j.versions() { tr("Préparation de la version…").into() } else { tr("Comparaison avec la destination…").into() }),
             }
             if let Some(d) = j.debut {
                 let ram = j.ram_mo.map(|m| tf(" · rclone utilise {0} Mo", &[&m])).unwrap_or_default();
@@ -997,7 +1065,35 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                 ui.label(RichText::new(parts.join(" · ")).small());
             }
             if let Some(b) = &j.bilan {
-                ui.label(RichText::new(tf("Bilan : {0}", &[&(bilan_text(b))])).small().weak());
+                ui.label(RichText::new(tf("Bilan : {0}", &[&(bilan_text(b, j.versions()))])).small().weak());
+                if b.destinations.len() > 1 {
+                    ui.horizontal_wrapped(|ui| {
+                        for d in &b.destinations {
+                            let lab = crate::dests::short_label(&d.destination, &avail);
+                            if d.code == 0 {
+                                badge(ui, &format!("\u{E182} {lab}"), OK);
+                            } else {
+                                badge(ui, &format!("\u{E4E0} {lab}"), ERR);
+                            }
+                        }
+                    });
+                }
+            }
+            if j.versions() {
+                let last = j.bilan.as_ref().and_then(|b| b.destinations.iter().filter_map(|d| d.derniere_version).max());
+                let mut parts = vec![tf("Versions gardées : {0}", &[&(crate::dests::rot_human(&j.rotation))])];
+                if let Some(n) = j.bilan.as_ref().and_then(|b| b.versions) {
+                    parts.push(tf("{0} version(s) disponible(s)", &[&n]));
+                }
+                if let Some(t) = last {
+                    parts.push(tf("la dernière {0}", &[&(fmt::ago(t, now))]));
+                }
+                ui.label(RichText::new(parts.join(" · ")).small().weak());
+                if let Some(m) = &j.entretien {
+                    if m.code != 0 {
+                        ui.colored_label(ERR, tf("Entretien des versions en échec ({0}) : voir le journal.", &[&m.erreurs]));
+                    }
+                }
             }
         }
         if !j.debit.is_empty() {
@@ -1014,7 +1110,7 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
         }
         if j.mode == "sync" && j.corbeille > 0 {
             ui.label(
-                RichText::new(tf("Fichiers supprimés/modifiés gardés {0} jours dans la corbeille du Drive", &[&j.corbeille]))
+                RichText::new(tf("Fichiers supprimés/modifiés gardés {0} jours dans la corbeille de la destination", &[&j.corbeille]))
                     .small()
                     .weak(),
             );
@@ -1069,7 +1165,7 @@ fn verif_planner(app: &mut App, ui: &mut egui::Ui, current: &str) {
                 close = true;
             }
         });
-        ui.label(RichText::new(tr("Compare chaque fichier du NAS avec le Drive (lit tout le Drive : à prévoir la nuit). Une notification signale les écarts.")).small().weak());
+        ui.label(RichText::new(tr("Compare chaque fichier du NAS avec les destinations (relit tout : à prévoir la nuit). Une notification signale les écarts.")).small().weak());
     }
     if let Some(a) = action {
         app.verif_edit = None;
@@ -1100,10 +1196,13 @@ fn verification_box(app: &mut App, ui: &mut egui::Ui, name: &str, v: &Verificati
                 match v.etat.as_str() {
                     "en_cours" => {
                         ui.spinner();
-                        ui.label(tr("comparaison fichier par fichier avec le Drive…"));
+                        ui.label(tr("comparaison fichier par fichier avec les destinations…"));
+                    }
+                    "ok" if v.kind == "versions" => {
+                        ui.label(tf("dépôts contrôlés {0} : aucune erreur", &[&(fmt::ago(v.fin, fmt::now()))]));
                     }
                     "ok" => {
-                        ui.label(tf("vérifiée {0} : les {1} fichiers sont identiques sur le Drive", &[&(fmt::ago(v.fin, fmt::now())), &v.identiques]));
+                        ui.label(tf("vérifiée {0} : les {1} fichiers sont identiques sur chaque destination", &[&(fmt::ago(v.fin, fmt::now())), &v.identiques]));
                     }
                     "ecarts" => {
                         let mut parts = Vec::new();
@@ -1111,10 +1210,14 @@ fn verification_box(app: &mut App, ui: &mut egui::Ui, name: &str, v: &Verificati
                             parts.push(tf("{0} différent(s)", &[&v.differents]));
                         }
                         if v.manquants > 0 {
-                            parts.push(tf("{0} absent(s) du Drive", &[&v.manquants]));
+                            parts.push(tf("{0} absent(s) de la destination", &[&v.manquants]));
                         }
                         if v.en_trop > 0 {
-                            parts.push(tf("{0} en trop sur le Drive", &[&v.en_trop]));
+                            parts.push(tf("{0} en trop sur la destination", &[&v.en_trop]));
+                        }
+                        let ko: Vec<&str> = v.destinations.split(';').filter(|d| !d.ends_with(":ok") && !d.is_empty()).map(|d| d.split(':').next().unwrap_or("")).collect();
+                        if v.destinations.contains(';') && !ko.is_empty() {
+                            parts.push(tf("sur {0}", &[&(ko.join(", "))]));
                         }
                         if v.erreurs > 0 {
                             parts.push(tf("{0} illisible(s)", &[&v.erreurs]));
@@ -1138,6 +1241,22 @@ fn verification_box(app: &mut App, ui: &mut egui::Ui, name: &str, v: &Verificati
                                         text: tf("{0}\nUne nouvelle sauvegarde corrige en général ces écarts (fichiers modifiés ou ajoutés depuis la dernière sauvegarde).", &[&t]),
                                         ok: false,
                                     });
+                                }),
+                            );
+                        }
+                    }
+                    _ if v.kind == "versions" => {
+                        ui.colored_label(ERR, tr("le contrôle des dépôts signale un problème (voir le détail et les journaux)"));
+                        if ui.small_button(tr("Voir le détail")).clicked() {
+                            let n = name.to_string();
+                            app.exec(
+                                HostId::Omv,
+                                tr("Lecture de la vérification"),
+                                remote::tail_file(&format!("/var/lib/nas-backup/{n}.verif.log"), 60),
+                                30,
+                                Box::new(move |app, r| {
+                                    let t = r.map(|o| o.stdout).unwrap_or_else(|e| e.to_string());
+                                    app.output = Some(OutputDialog { title: tf("Vérification de « {0} »", &[&n]), text: t, ok: false });
                                 }),
                             );
                         }
@@ -1166,10 +1285,10 @@ fn simulation_box(app: &mut App, ui: &mut egui::Ui, name: &str, sim: &Simulation
                 match sim.etat.as_str() {
                     "en_cours" => {
                         ui.spinner();
-                        ui.label(tr("comparaison avec le Drive en cours…"));
+                        ui.label(tr("comparaison avec la destination en cours…"));
                     }
                     "ok" => {
-                        ui.label(tf("{0} : {1} fichier(s) à envoyer ({2}), {3} à retirer du Drive", &[&(fmt::ago(sim.fin, fmt::now())), &sim.envois, &(fmt::bytes(sim.octets)), &sim.suppressions]));
+                        ui.label(tf("{0} : {1} fichier(s) à envoyer ({2}), {3} à retirer de la destination", &[&(fmt::ago(sim.fin, fmt::now())), &sim.envois, &(fmt::bytes(sim.octets)), &sim.suppressions]));
                         if ui.small_button(tr("Voir le détail")).clicked() {
                             let n = name.to_string();
                             app.exec(
@@ -1180,8 +1299,8 @@ fn simulation_box(app: &mut App, ui: &mut egui::Ui, name: &str, sim: &Simulation
                                 Box::new(move |app, r| {
                                     let t = r.map(|o| o.stdout).unwrap_or_else(|e| e.to_string());
                                     app.output = Some(OutputDialog {
-                                        title: tf("Simulation de « {0} » (+ envoyé, - retiré du Drive)", &[&n]),
-                                        text: if t.trim().is_empty() { tr("Rien à envoyer ni à retirer : le Drive est à jour.").into() } else { t },
+                                        title: tf("Simulation de « {0} » (+ envoyé, ~ modifié, - retiré de la destination)", &[&n]),
+                                        text: if t.trim().is_empty() { tr("Rien à envoyer ni à retirer : la destination est à jour.").into() } else { t },
                                         ok: true,
                                     });
                                 }),
@@ -1203,15 +1322,19 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
     let mut save = false;
     let mut cancel = false;
     let mut browse = false;
+    let mut goto_dests = false;
     let sources = app.backup_sources.clone();
+    let avail = crate::dests::available(app);
+    let api_ok = app.omv.status.as_ref().map(|s| s.nb_api >= 7).unwrap_or(false);
     egui::Window::new(RichText::new(if f.new { tr("Nouvelle sauvegarde") } else { tr("Modifier la sauvegarde") }).strong())
         .id(egui::Id::unique("jobform"))
         .collapsible(false)
         .resizable(false)
-        .default_width(520.0)
+        .default_width(600.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
+            egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 160.0).max(200.0)).show(ui, |ui| {
             egui::Grid::new("jobgrid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
                 ui.label(tr("Nom"));
                 ui.add_enabled(f.new, egui::TextEdit::singleline(&mut f.name).hint_text(tr("ex : Photos")).desired_width(300.0));
@@ -1241,31 +1364,57 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 });
                 ui.end_row();
 
-                ui.label(tr("Dossier sur le Drive"));
-                if ui.add(egui::TextEdit::singleline(&mut f.folder).desired_width(300.0)).changed() {
-                    f.folder_touched = true;
-                }
-                ui.end_row();
-
                 ui.label(tr("Mode"));
                 ui.vertical(|ui| {
-                    ui.radio_value(&mut f.mirror, true, tr("Miroir : le Drive devient identique au NAS"));
-                    ui.radio_value(&mut f.mirror, false, tr("Copie : ajoute et met à jour, ne supprime jamais"));
+                    ui.radio_value(&mut f.mode, 0, tr("Miroir : la destination devient identique au NAS"));
+                    ui.radio_value(&mut f.mode, 1, tr("Copie : ajoute et met à jour, ne supprime jamais"));
+                    ui.add_enabled_ui(api_ok, |ui| {
+                        ui.radio_value(&mut f.mode, 2, tr("Versionnée : garde des versions datées (type Hyper Backup)"));
+                    });
+                    if f.mode == 2 {
+                        ui.label(
+                            RichText::new(tr("Chaque sauvegarde enregistre une version complète ; seuls les morceaux modifiés sont envoyés (déduplication), tout est chiffré. Les fichiers ne sont pas lisibles un par un sur la destination : on les récupère avec « Versions et restauration »."))
+                                .small()
+                                .weak(),
+                        );
+                    }
                 });
                 ui.end_row();
 
-                if f.mirror {
+                ui.label(tr("Destinations"));
+                ui.vertical(|ui| {
+                    goto_dests = crate::dests::job_dests_ui(ui, &mut f.dests, &avail, f.mode == 2, api_ok);
+                });
+                ui.end_row();
+
+                ui.label(if f.mode == 2 { tr("Nom du dépôt") } else { tr("Dossier sur la destination") });
+                ui.vertical(|ui| {
+                    if ui.add(egui::TextEdit::singleline(&mut f.folder).desired_width(300.0)).changed() {
+                        f.folder_touched = true;
+                    }
+                    let shown = f.folder.trim().trim_matches('/');
+                    let hint = match f.mode {
+                        2 => tf("dans NAS-versions/{0} sur chaque destination", &[&shown]),
+                        _ => tf("dans NAS/{0} (en clair) ou NAS-chiffre/{0} (chiffré) sur chaque destination", &[&shown]),
+                    };
+                    ui.label(RichText::new(hint).small().weak());
+                });
+                ui.end_row();
+
+                if f.mode == 0 {
                     ui.label(tr("Corbeille (jours)"));
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.trash_days).desired_width(50.0));
-                        ui.label(RichText::new(tr("fichiers supprimés/modifiés gardés sur le Drive (0 = aucune)")).small().weak());
+                        ui.label(RichText::new(tr("fichiers supprimés/modifiés gardés sur la destination (0 = aucune)")).small().weak());
                     });
                     ui.end_row();
                 }
 
-                ui.label(tr("Chiffrement"));
-                ui.checkbox(&mut f.encrypt, tr("Chiffrer (illisible sur le Drive sans les mots de passe)"));
-                ui.end_row();
+                if f.mode == 2 {
+                    ui.label(tr("Versions gardées"));
+                    crate::dests::rot_ui(ui, &mut f.rot);
+                    ui.end_row();
+                }
 
                 ui.label(tr("Horaire"));
                 f.sched.ui(ui);
@@ -1279,8 +1428,9 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 crate::ram::job_memory_ui(ui, "jobmem", &mut f.memory);
                 ui.end_row();
             });
+            });
             if !f.new {
-                ui.label(RichText::new(tr("Changer le dossier Drive ou le chiffrement : les fichiers déjà envoyés restent à l'ancien emplacement.")).small().weak());
+                ui.label(RichText::new(tr("Changer le dossier, une destination ou le chiffrement : les fichiers déjà envoyés restent à l'ancien emplacement.")).small().weak());
             }
             if !f.error.is_empty() {
                 ui.colored_label(ERR, &f.error);
@@ -1295,6 +1445,11 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 }
             });
         });
+    if goto_dests {
+        app.job_form = Some(f);
+        app.page = Page::Destinations;
+        return;
+    }
     if browse {
         let start = if f.source.is_empty() { String::new() } else { f.source.rsplit_once('/').map(|(a, _)| a.to_string()).unwrap_or_default() };
         app.job_form = Some(f);
@@ -1308,12 +1463,15 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
         let name = f.name.trim().to_string();
         let folder = f.folder.trim().trim_matches('/').to_string();
         let src = f.source.trim().trim_end_matches('/').to_string();
+        let rot = crate::dests::rot_build(&f.rot);
         let err = if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             tr("Nom invalide : lettres, chiffres, - et _ uniquement.")
         } else if src.is_empty() {
             tr("Choisis le dossier à sauvegarder.")
-        } else if folder.is_empty() || folder.contains('|') || folder.starts_with("_corbeille") {
-            tr("Dossier Drive invalide.")
+        } else if f.dests.is_empty() {
+            tr("Choisis au moins une destination.")
+        } else if folder.is_empty() || folder.contains('|') || folder.contains("..") || folder.starts_with("_corbeille") {
+            tr("Dossier de destination invalide.")
         } else if let Err(e) = f.sched.build() {
             f.error = e;
             app.job_form = Some(f);
@@ -1322,8 +1480,10 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
             f.error = e;
             app.job_form = Some(f);
             return;
-        } else if f.mirror && f.trash_days.trim().parse::<u32>().is_err() {
+        } else if f.mode == 0 && f.trash_days.trim().parse::<u32>().is_err() {
             tr("Nombre de jours de corbeille invalide.")
+        } else if f.mode == 2 && rot.is_none() {
+            tr("Versions gardées invalides : des nombres, au moins un supérieur à 0.")
         } else if !crate::ram::valid_job_memory(f.memory.trim()) {
             tr("Mémoire de rclone invalide : un nombre de Mo, 64 au minimum.")
         } else {
@@ -1336,23 +1496,26 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
         }
         let sched = f.sched.build().unwrap_or_else(|_| "manuel".into());
         let bw = f.bw.build().unwrap_or_default();
-        let days = if f.mirror { f.trash_days.trim().parse().unwrap_or(0) } else { 0 };
+        let days = if f.mode == 0 { f.trash_days.trim().parse().unwrap_or(0) } else { 0 };
+        let dests = crate::dests::dests_build(&f.dests, f.mode == 2);
         let script = remote::nb_save(
             f.new,
             &remote::JobForm {
                 name: &name,
                 source: &src,
                 folder: &folder,
-                mirror: f.mirror,
-                encrypt: f.encrypt,
+                mode: ["sync", "copy", "versions"][f.mode.min(2) as usize],
+                encrypt: f.mode == 2 || f.dests.first().map(|d| d.1).unwrap_or(true),
                 schedule: &sched,
                 trash_days: days,
                 bwlimit: &bw,
                 memory: f.memory.trim(),
+                dests: if api_ok { &dests } else { "" },
+                rotation: &rot.unwrap_or_default(),
             },
         );
         let title = if f.new { tr("Nouvelle sauvegarde") } else { tr("Modification") };
-        app.action_dialog(HostId::Omv, title, script, 120);
+        app.action_dialog(HostId::Omv, title, script, 180);
         return;
     }
     app.job_form = Some(f);
@@ -1374,7 +1537,7 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
         HostId::Omv => tr("Disques de l'OMV"),
         HostId::Syno => tr("Dossiers partagés du Synology"),
     };
-    let can_mkdir = matches!(purpose, BrowsePurpose::CopyDest | BrowsePurpose::RestoreTarget) && !app.settings.read_only;
+    let can_mkdir = matches!(purpose, BrowsePurpose::CopyDest | BrowsePurpose::RestoreTarget | BrowsePurpose::DestPath) && !app.settings.read_only;
     egui::Window::new(RichText::new(tf("Choisir un dossier — {0}", &[&(host.label())])).strong())
         .id(egui::Id::unique("browser"))
         .collapsible(false)
@@ -1591,13 +1754,16 @@ pub fn alerts(app: &mut App, ui: &mut egui::Ui) {
     }
     ui.columns(2, |cols| {
         card(&mut cols[0], tr("\u{E1AA} Google Drive"), |ui| match &s.sante {
+            Some(h) if h.gdrive_configure == Some(false) => {
+                ui.label(RichText::new(tr("Google Drive n'est pas utilisé. État des autres destinations : page Destinations.")).weak());
+            }
             None => {
                 ui.label(RichText::new(tr("Pas encore vérifié.")).weak());
             }
             Some(h) => {
                 dot_label(ui, if h.gdrive { OK } else { ERR }, if h.gdrive { tr("Connexion OK") } else { tr("Connexion en échec") });
                 if !h.gdrive {
-                    ui.label(RichText::new(tr("Sur l'OMV : rclone config reconnect gdrive:")).small().monospace());
+                    ui.label(RichText::new(tr("Reconnecte-le : page Installation (Google Drive) ou Destinations.")).small());
                 }
                 if let Some(p) = h.quota_pct {
                     let col = if p >= 90.0 { ERR } else if p >= 75.0 { WARN } else { OK };
@@ -1670,6 +1836,21 @@ pub fn alert_label(tag: &str) -> String {
     if let Some(n) = tag.strip_prefix("rt-") {
         return tf("Temps réel « {0} » : envoi en échec", &[&n]);
     }
+    if let Some(n) = tag.strip_prefix("dest-") {
+        return tf("Destination « {0} » inaccessible", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("quota-") {
+        return tf("Destination « {0} » presque pleine", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("versions-") {
+        return tf("Versions « {0} » : entretien en échec", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("verif-") {
+        return tf("Vérification « {0} » : écarts", &[&n]);
+    }
+    if let Some(n) = tag.strip_prefix("restore-") {
+        return tf("Restauration « {0} » en échec", &[&n]);
+    }
     match tag {
         "gdrive" => tr("Google Drive inaccessible").into(),
         "quota" => tr("Google Drive presque plein").into(),
@@ -1689,7 +1870,7 @@ pub fn passwords_window(app: &mut App, ctx: &egui::Context) {
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
-            banner(ui, WARN, tr("Sans ces mots de passe, les sauvegardes chiffrées du Drive sont définitivement illisibles (panne ou perte du NAS). Garde-les hors du NAS : gestionnaire de mots de passe, clé USB rangée, papier dans un lieu sûr."));
+            banner(ui, WARN, tr("Sans ces mots de passe, les sauvegardes chiffrées et versionnées sont définitivement illisibles (panne ou perte du NAS). Garde-les hors du NAS : gestionnaire de mots de passe, clé USB rangée, papier dans un lieu sûr. Le mot de passe du kit de secours suffit pour tout reconstruire."));
             ui.add_space(6.0);
             let mut tt = t.clone();
             ui.add(egui::TextEdit::multiline(&mut tt).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
@@ -2975,7 +3156,7 @@ fn maintenance_card(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         ui.label(RichText::new(tf("Dossier de l'application : {0}", &[&(crate::config::app_dir().display())])).small().weak());
-        ui.label(RichText::new(tr("Raccourcis : F5 actualiser · Ctrl+1 à Ctrl+9 changer de page")).small().weak());
+        ui.label(RichText::new(tr("Raccourcis : F5 actualiser · Ctrl+1 à Ctrl+0 changer de page")).small().weak());
     });
 }
 

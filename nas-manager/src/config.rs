@@ -85,6 +85,12 @@ pub struct Settings {
     /// mises a jour deja signalees ("nas-debian=2.1.0;...")
     #[serde(default)]
     pub scripts_notified: String,
+    /// copie automatique du kit de secours sur ce PC (dossier de l'application)
+    #[serde(default = "yes")]
+    pub kit_pc: bool,
+    /// mot de passe du kit de secours note en lieu sur (plus de rappel)
+    #[serde(default)]
+    pub kit_noted: bool,
 }
 
 /// Un site : un OMV et (eventuellement) un Synology
@@ -151,6 +157,8 @@ impl Default for Settings {
             scripts_check_hours: 12,
             scripts_last_check: 0,
             scripts_notified: String::new(),
+            kit_pc: true,
+            kit_noted: false,
         }
     }
 }
