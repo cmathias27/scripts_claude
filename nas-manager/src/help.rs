@@ -99,6 +99,19 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("Une destination en veille avec réveil configuré ne déclenche pas d'alerte « injoignable » lors de la vérification horaire.")).small());
     });
 
+    section(ui, tr("oCIS : migration et transferts"), false, |ui| {
+        ui.label(RichText::new(tr("Migration vers oCIS")).strong());
+        ui.label(tr("Page oCIS, onglet « Migration vers oCIS » : un dossier envoyé dans un espace oCIS (personnel ou projet), depuis le Synology, l'OMV / Debian ou ce PC. Chaque machine a sa propre connexion à oCIS (adresse, compte et jeton d'application)."));
+        step(ui, 1, tr("Crée un jeton d'application dans oCIS et configure la connexion de la machine d'où part la migration."));
+        step(ui, 2, tr("Choisis le dossier, l'espace oCIS (et un sous-dossier), puis ajoute-le à la file d'attente ; lance la file."));
+        step(ui, 3, tr("En option, chaque fichier est contrôlé dans oCIS puis l'original est supprimé ; un fichier en défaut est renvoyé, et gardé s'il reste en défaut."));
+        ui.label(RichText::new(tr("Depuis ce PC : rclone tourne sur le PC, qui doit rester allumé (il est tenu éveillé pendant la migration). Si l'application est fermée en cours de route, la migration reprend à son prochain lancement.")).small());
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Transferts oCIS → NAS")).strong());
+        ui.label(tr("Onglet « Transferts oCIS → NAS » : un dossier d'un espace oCIS recopié dans un dossier du Synology ou de l'OMV, par l'accès WebDAV d'oCIS, dates conservées. Ponctuel, à la demande ou programmé (sauvegarde régulière d'oCIS vers le NAS)."));
+        ui.label(RichText::new(tr("Copie : rien n'est jamais supprimé sur le NAS. Miroir : le NAS suit oCIS ; ce qui y est supprimé ou remplacé est gardé quelques jours dans .corbeille-oCIS. Choisis un dossier dédié à chaque transfert miroir.")).small());
+    });
+
     section(ui, tr("Mon NAS est mort : reconstruire"), false, |ui| {
         ui.label(tr("Ce qu'il faut : le kit de secours (copié sur ce PC et dans le dossier NAS-secours de chaque destination) et son mot de passe (6 groupes de 4 caractères)."));
         step(ui, 1, tr("Installe Debian ou OpenMediaVault sur la nouvelle machine, monte les disques de données et active SSH (compte root)."));

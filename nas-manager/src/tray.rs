@@ -69,6 +69,20 @@ pub fn summary(app: &App) -> (Level, String) {
         if s.migration.en_cours {
             busy.push(tr("migration oCIS").into());
         }
+        if let Some(t) = s.transferts.as_ref().and_then(|t| t.en_cours.as_ref()) {
+            busy.push(tf("transfert oCIS « {0} »", &[&t.nom]));
+        }
+    }
+    if let Some(s) = &app.omv.status {
+        if s.migration.as_ref().map(|m| m.en_cours).unwrap_or(false) {
+            busy.push(tr("migration oCIS (OMV)").into());
+        }
+        if let Some(t) = s.transferts.as_ref().and_then(|t| t.en_cours.as_ref()) {
+            busy.push(tf("transfert oCIS « {0} »", &[&t.nom]));
+        }
+    }
+    if crate::pcmig::running(app) {
+        busy.push(tr("migration oCIS depuis ce PC").into());
     }
     let level = if !problems.is_empty() {
         Level::Problem
@@ -185,6 +199,12 @@ pub fn diff_omv(prev: &OmvStatus, new: &OmvStatus) -> Vec<(String, String)> {
             ev.push((tf("❌ Temps réel « {0} » arrêté", &[&j.nom]), tr("La surveillance ne tourne plus.").into()));
         }
     }
+    if let (Some(p), Some(n)) = (&prev.migration, &new.migration) {
+        ev.extend(mig_end(p, n, tr("OMV")));
+    }
+    if let (Some(p), Some(n)) = (&prev.transferts, &new.transferts) {
+        ev.extend(tr_end(p, n));
+    }
     if let (Some(p), Some(n)) = (&prev.restauration, &new.restauration) {
         if p.etat == "en_cours" && n.etat != "en_cours" {
             ev.push((
@@ -206,13 +226,9 @@ pub fn diff_syno(prev: &SynoStatus, new: &SynoStatus) -> Vec<(String, String)> {
             _ => ev.push((tr("❌ Copie vers l'OMV en échec").into(), tf("{0} — la relancer reprendra où elle s'est arrêtée", &[&name]))),
         }
     }
-    if prev.migration.en_cours && !new.migration.en_cours {
-        let ko = new.migration.resultats.iter().filter(|r| r.etat != "OK").count();
-        let ok = new.migration.resultats.len() - ko;
-        ev.push((
-            if ko == 0 { tr("✅ Migration oCIS terminée").into() } else { tr("⚠ Migration oCIS terminée avec des erreurs").into() },
-            tf("{0} réussie(s), {1} en échec", &[&ok, &ko]),
-        ));
+    ev.extend(mig_end(&prev.migration, &new.migration, "Synology"));
+    if let (Some(p), Some(n)) = (&prev.transferts, &new.transferts) {
+        ev.extend(tr_end(p, n));
     }
     for a in &new.alertes {
         if !prev.alertes.iter().any(|p| p.tag == a.tag) {
@@ -220,6 +236,36 @@ pub fn diff_syno(prev: &SynoStatus, new: &SynoStatus) -> Vec<(String, String)> {
         }
     }
     ev
+}
+
+/// Fin d'une migration vers oCIS
+fn mig_end(prev: &crate::model::Migration, new: &crate::model::Migration, host: &str) -> Option<(String, String)> {
+    if !prev.en_cours || new.en_cours {
+        return None;
+    }
+    let ko = new.resultats.iter().filter(|r| r.etat != "OK").count();
+    let ok = new.resultats.len() - ko;
+    Some((
+        if ko == 0 { tf("✅ Migration oCIS terminée ({0})", &[&host]) } else { tf("⚠ Migration oCIS terminée avec des erreurs ({0})", &[&host]) },
+        tf("{0} réussie(s), {1} en échec", &[&ok, &ko]),
+    ))
+}
+
+/// Fin d'un transfert oCIS -> machine
+fn tr_end(prev: &crate::model::Transferts, new: &crate::model::Transferts) -> Option<(String, String)> {
+    let p = prev.en_cours.as_ref()?;
+    if new.en_cours.as_ref().map(|n| n.nom == p.nom).unwrap_or(false) {
+        return None;
+    }
+    let t = new.transferts.iter().find(|t| t.nom == p.nom);
+    let d = t.and_then(|t| t.dernier.as_ref());
+    match d.map(|d| d.etat.as_str()) {
+        Some("OK") => Some((tf("✅ Transfert oCIS « {0} » terminé", &[&p.nom]), d.map(|d| d.detail.clone()).unwrap_or_default())),
+        Some("ARRETE") => Some((tf("⏹ Transfert oCIS « {0} » arrêté", &[&p.nom]), String::new())),
+        Some(_) => Some((tf("❌ Transfert oCIS « {0} » en échec", &[&p.nom]), d.map(|d| d.detail.clone()).unwrap_or_default())),
+        // transfert ponctuel reussi : retire de la liste
+        None => Some((tf("✅ Transfert oCIS « {0} » terminé", &[&p.nom]), String::new())),
+    }
 }
 
 /// Affiche une notification Windows (sans effet ailleurs)

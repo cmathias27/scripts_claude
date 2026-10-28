@@ -1,5 +1,25 @@
 # Journal des modifications
 
+## 1.6.0
+
+Étape 6 de la feuille de route, première partie : migration et transferts oCIS (scripts nas-debian 2.5.0 et nas-synology 2.4.0).
+
+### Migration vers oCIS depuis l'OMV / Debian ou ce PC
+- La page **« Migration oCIS »** devient **« oCIS »**, avec deux onglets. Onglet **« Migration vers oCIS »** : choix de la machine d'où part la migration, **Synology**, **OMV / Debian** ou **Ce PC**.
+- **OMV / Debian** : la migration est exécutée par le script de la machine, avec les mêmes options que sur le Synology (file d'attente, suivi sur la vraie taille de la source, reprise automatique, dates conservées, contrôle de chaque fichier puis suppression des originaux en option avec renvoi des fichiers en défaut, bilan de fin). Le dossier se choisit avec l'explorateur de dossiers. Chaque machine a sa propre connexion à oCIS.
+- **Ce PC** (dossier local, disque USB branché au PC) : rclone tourne sur le PC (téléchargé en un clic depuis downloads.rclone.org s'il manque). Connexion oCIS propre au PC (jeton chiffré avec le compte Windows), choix de l'espace (personnel ou projet), file d'attente, suivi, reprise automatique, contrôle puis suppression des originaux en option, bilan, notification à la fin.
+- Le PC doit rester allumé : il est tenu éveillé pendant la migration, et si l'application est fermée en cours de route, la migration reprend à son prochain lancement.
+
+### Transferts oCIS → Synology / OMV
+- Onglet **« Transferts oCIS → NAS »** : un dossier d'un espace oCIS (personnel ou projet, sous-dossier choisi avec un explorateur des dossiers d'oCIS) recopié dans un dossier du Synology ou de l'OMV / Debian.
+- Toujours par l'accès WebDAV d'oCIS (jamais de lecture directe de son stockage), dates de modification conservées, reprise en cas d'interruption, un transfert à la fois par machine (les autres attendent dans la file), suivi détaillé, journal, historique, notification à la fin.
+- **Ponctuel** (lancé tout de suite, retiré de la liste après un succès), **à la demande**, ou **programmé** (jours et heures, comme les sauvegardes programmées : sauvegarde régulière d'oCIS vers le NAS). **Copie** ou **miroir** (ce qui est supprimé dans oCIS l'est aussi sur le NAS, gardé quelques jours dans une corbeille `.corbeille-oCIS`), limite de débit.
+
+### Aussi
+- Code oCIS commun aux deux scripts (`commun/ocis.sh`, recopié dans chaque script par `maj-versions-scripts.py`).
+- Aide : section « oCIS : migration et transferts ».
+- Tests automatiques avec un faux serveur oCIS et le vrai rclone (`tests/ocis.sh`, migration depuis le PC dans les tests de l'application).
+
 ## 1.5.0
 
 Étape 5 de la feuille de route : fiabilité et restauration (scripts nas-debian 2.4.0 et nas-synology 2.3.0).

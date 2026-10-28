@@ -1,21 +1,22 @@
 {
   "nas-debian": {
-    "version": "2.4.0",
+    "version": "2.5.0",
     "fichier": "nas-debian.sh",
-    "sha256": "d2f77d22d00ce951fb12ff8c4f126c94b0b98caf3d9dc14ca35c5a9a750db623",
+    "sha256": "0a888b8fbfeef70397302d7ec5070def27e0695a04f6cbb054bbfcca20eb5364",
     "nouveautes": [
-      "Test de restauration à blanc : quelques fichiers au hasard restaurés depuis chaque destination, comparés aux originaux puis effacés, à la demande ou planifié ; alerte en cas d'écart",
-      "Retour à une date précise : un dossier remis tel qu'il était à la date choisie, grâce à la corbeille datée (miroir) ou aux versions",
-      "Réveil des destinations (Wake-on-LAN) avant les sauvegardes, vérifications, tests et restaurations, puis remise en veille ou arrêt au choix",
-      "Une destination en veille avec réveil configuré ne déclenche plus d'alerte « injoignable »"
+      "Migration d'un dossier de l'OMV / Debian vers oCIS (espace projet ou personnel), avec contrôle et suppression des originaux en option, comme sur le Synology",
+      "Transferts oCIS → OMV / Debian : un dossier d'un espace oCIS recopié dans un dossier de la machine, ponctuel, à la demande ou programmé (copie ou miroir avec corbeille)",
+      "Code oCIS commun avec le script du Synology (commun/ocis.sh)"
     ]
   },
   "nas-synology": {
-    "version": "2.3.0",
+    "version": "2.4.0",
     "fichier": "nas-synology.sh",
-    "sha256": "b9e92b927ff5f894f767f8e7536c7bc07cfa895945d64d20b6d9d13a1bf703b2",
+    "sha256": "a18026367e6983e8ea12a2a0893ccc840be53972cd9a4ec674ab9538f136608b",
     "nouveautes": [
-      "Réveil de l'OMV (Wake-on-LAN) avant les copies, puis remise en veille ou arrêt au choix"
+      "Transferts oCIS → Synology : un dossier d'un espace oCIS recopié dans un dossier du Synology, ponctuel, à la demande ou programmé (copie ou miroir avec corbeille)",
+      "La liste des espaces oCIS comprend aussi l'espace personnel du compte",
+      "Code oCIS commun avec le script de l'OMV / Debian (commun/ocis.sh)"
     ]
   }
 }

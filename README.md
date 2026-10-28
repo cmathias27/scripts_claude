@@ -18,8 +18,8 @@ Depuis NAS Manager 1.1, **un seul script par type de machine**, installé et mis
 
 | Script | Machine | Rôle |
 |---|---|---|
-| [`nas-debian.sh`](#nas-debiansh) | OMV et tout Debian (Ubuntu, Raspberry Pi OS…) | Sauvegardes programmées et [temps réel](#sauvegardes-temps-réel-nas-debian-temps-reel) vers Google Drive, alertes et suivi Home Assistant, outils, mémoire de rclone |
-| [`nas-synology.sh`](#nas-synologysh) | Synology (DSM 7) | Copie vers l'OMV, migration des « Mon Drive » vers oCIS |
+| [`nas-debian.sh`](#nas-debiansh) | OMV et tout Debian (Ubuntu, Raspberry Pi OS…) | Sauvegardes programmées et [temps réel](#sauvegardes-temps-réel-nas-debian-temps-reel) vers Google Drive, alertes et suivi Home Assistant, outils, mémoire de rclone, [migration vers oCIS et transferts oCIS → machine](#ocis--code-commun-communocissh) |
+| [`nas-synology.sh`](#nas-synologysh) | Synology (DSM 7) | Copie vers l'OMV, migration des « Mon Drive » vers oCIS, transferts oCIS → Synology |
 
 Les anciens scripts (`nas-backup.sh`, `install-alertes.sh`, `install-suivi-ha.sh`, `install-cam-sync.sh`,
 `copie-omv.sh`, `migre-drive-ocis.sh`) sont rangés dans [`ancien/`](ancien/). Depuis la 1.2, la
@@ -323,6 +323,40 @@ Pensé pour un Synology avec peu de RAM :
 ### Fichiers
 
 `/root/.migre-ocis/` : `config`, `file-attente`, `lot`, `en-cours`, `etape`, `progression.log` (+ `.precedent`), `historique.log`, `rclone-err.log`, `supprimes-*.txt`, `verif-*/`, `bin/rclone`.
+
+## oCIS : code commun (`commun/ocis.sh`)
+
+Depuis nas-debian 2.5 et nas-synology 2.4, la migration vers oCIS et les transferts oCIS → machine sont
+**le même code** dans les deux scripts : `commun/ocis.sh`, recopié entre les repères
+`# >>> commun/ocis.sh` et `# <<< commun/ocis.sh` de chaque script par `python3 maj-versions-scripts.py`
+(qui met aussi les empreintes à jour ; `--verifier` échoue si une copie n'est pas à jour). Chaque script
+fournit quelques fonctions d'accroche (nom de la machine, notifications, mémoire de rclone, droits des
+fichiers, planification).
+
+- **Migration** : `nas-debian migration <commande>` sur l'OMV / Debian, comme `nas-synology migration`
+  (mêmes commandes et fichiers, voir ci-dessus). La source est un dossier de la machine.
+- **Transferts oCIS → machine** : `nas-debian transferts …` / `nas-synology transferts …`, état dans
+  `/root/.ocis-transferts/`. Un transfert = une ligne de `transferts.conf` :
+
+```
+NOM|ESPACE_ID|ESPACE|SOUS_DOSSIER|DESTINATION|MODE(copie/miroir)|CORBEILLE_JOURS|HORAIRE|DEBIT
+```
+
+  `HORAIRE` : `manuel`, `une-fois` (lancé à l'enregistrement, retiré après un succès) ou `HH:MM[/jours]`
+  (plusieurs séparés par `;`), planifié dans `/etc/cron.d/ocis-transferts` (Debian) ou un bloc de
+  `/etc/crontab` (Synology). Toujours par le WebDAV d'oCIS (connexion de `migration configurer`),
+  dates de modification conservées ; en miroir, ce qui est retiré ou remplacé est gardé `CORBEILLE_JOURS`
+  jours dans `DESTINATION/.corbeille-oCIS/<date>/`. Un transfert à la fois (file d'attente), reprise
+  automatique, notification à la fin.
+
+| Commande | Rôle |
+|---|---|
+| `espaces` / `parcourir <espace> [chemin]` | Espaces oCIS (personnel et projets) / sous-dossiers d'un dossier |
+| `save nouveau\|modif NOM ESPACE SOUS DEST MODE CORBEILLE HORAIRE [DEBIT]` | Créer ou modifier un transfert |
+| `supprimer NOM` / `lancer NOM` / `arreter` | Supprimer, lancer (file d'attente), arrêter |
+| `liste` / `suivi` | Transferts et dernier passage / suivre celui en cours |
+
+La migration **depuis le disque du PC** est faite par NAS Manager lui-même (rclone sur le PC).
 
 ---
 

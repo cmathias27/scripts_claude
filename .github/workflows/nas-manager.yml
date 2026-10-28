@@ -62,11 +62,14 @@ jobs:
         run: sudo bash tests/notifications.sh
       - name: Test de restauration, retour a une date, reveil (vrais rclone et restic)
         run: sudo bash tests/restauration.sh /usr/bin/rclone /usr/bin/restic
+      - name: Migration et transferts oCIS (faux oCIS, vrai rclone)
+        run: sudo bash tests/ocis.sh /usr/bin/rclone
       - name: Syntaxe des scripts
         working-directory: .
         run: |
-          for f in nas-debian.sh nas-synology.sh nas-manager/tests/*.sh; do bash -n "$f"; done
-          shellcheck -S warning -e SC2034,SC1090,SC2155,SC2015 nas-debian.sh nas-synology.sh
+          for f in nas-debian.sh nas-synology.sh commun/*.sh nas-manager/tests/*.sh; do bash -n "$f"; done
+          shellcheck -S warning -e SC2034,SC1090,SC2155,SC2015 nas-debian.sh nas-synology.sh commun/*.sh
+          python3 -m py_compile nas-manager/tests/faux-ocis.py
       - name: Versions des scripts (versions-scripts.json a jour)
         working-directory: .
         run: |

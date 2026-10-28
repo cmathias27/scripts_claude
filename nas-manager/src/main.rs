@@ -19,6 +19,8 @@ mod fmt;
 mod log;
 mod model;
 mod notifs;
+mod ocis;
+mod pcmig;
 mod pages;
 mod ram;
 mod realtime;

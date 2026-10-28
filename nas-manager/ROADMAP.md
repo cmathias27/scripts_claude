@@ -96,8 +96,8 @@ Une version testable par étape (1.1, 1.2…).
    disques · rapport hebdomadaire / mensuel.
 5. **Fiabilité et restauration** *(1.5.0)* : test de restauration à blanc · retour à une date précise ·
    Wake-on-LAN.
-6. **Nouvelles fonctions** : transferts oCIS → Synology / Debian · sauvegarde du PC Windows ·
-   version SSH de NAS Manager.
+6. **Nouvelles fonctions** : migration vers oCIS depuis l'OMV / Debian ou le PC et transferts
+   oCIS → Synology / Debian *(1.6.0)* · sauvegarde du PC Windows · version SSH de NAS Manager.
 7. **Confort et finitions** : débit selon l'heure, estimation, doublons · actions depuis Home
    Assistant · page d'aide avec exemples de configuration.
 
@@ -209,7 +209,7 @@ Une version testable par étape (1.1, 1.2…).
   - mêmes options que pour un dossier : file d'attente, suivi (taille réelle du fichier),
     reprise d'un gros fichier interrompu, contrôle puis suppression de l'original en option
     (mode « déplacer »).
-- [ ] **Migration vers oCIS depuis d'autres sources que le Synology** : choisir le dossier à migrer
+- [x] **Migration vers oCIS depuis d'autres sources que le Synology** *(1.6.0)* : choisir le dossier à migrer
       (avec le même explorateur de dossiers que pour les sauvegardes) :
   - **sur le serveur local** (OMV / Debian), et plus seulement sur le Synology distant :
     la migration est alors exécutée par le script de cette machine ;
@@ -220,7 +220,7 @@ Une version testable par étape (1.1, 1.2…).
     suppression des originaux en option (renvoi des fichiers en défaut), bilan de fin.
   - Pour le PC : prévenir que le PC doit rester allumé pendant la migration ; reprise
     automatique au redémarrage de l'application.
-- [ ] **Transferts oCIS → dossier Synology (DSM) ou Debian** : sens inverse de la migration actuelle.
+- [x] **Transferts oCIS → dossier Synology (DSM) ou Debian** *(1.6.0)* : sens inverse de la migration actuelle.
       Choix de l'espace oCIS (personnel ou projet) et d'un sous-dossier, puis du dossier de destination
       sur le Synology ou la machine Debian. Passage par l'API WebDAV d'oCIS (jamais de lecture directe
       du stockage oCIS), dates de modification conservées, reprise en cas d'interruption,

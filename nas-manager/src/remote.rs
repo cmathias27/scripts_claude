@@ -2,6 +2,7 @@
 //! Les scripts des machines (nas-debian pour OMV / Debian, nas-synology) sont
 //! integres a l'application (version de secours) et mis a jour depuis GitHub
 //! (module `scripts`).
+use crate::app::HostId;
 
 use crate::ssh::sq;
 use base64::Engine;
@@ -32,7 +33,164 @@ pub const MIGRE_BIN: &str = "/usr/local/bin/nas-synology migration";
 // =====================================================================
 //  Collecte de l'etat de l'OMV
 // =====================================================================
-pub const OMV_STATUS: &str = r#####"
+pub static OMV_STATUS: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| OMV_STATUS_SRC.replace("#__OCIS__\n", OCIS_PY));
+pub static SYNO_STATUS: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| SYNO_STATUS_SRC.replace("#__OCIS__\n", OCIS_PY));
+
+/// Collecte commune de la migration vers oCIS et des transferts oCIS -> machine (meme
+/// organisation sur le Synology et sur l'OMV / Debian : /root/.migre-ocis, /root/.ocis-transferts)
+const OCIS_PY: &str = r#####"
+def oc_collect(M="/root/.migre-ocis", T="/root/.ocis-transferts"):
+    import json, os, re, subprocess, time
+
+    def rd(p, d=""):
+        try:
+            with open(p, errors="ignore") as f:
+                return f.read().strip()
+        except OSError:
+            return d
+
+    def tail(p, n=65536):
+        try:
+            with open(p, "rb") as f:
+                f.seek(0, 2); sz = f.tell(); f.seek(max(0, sz - n))
+                return f.read().decode(errors="ignore")
+        except OSError:
+            return ""
+
+    def alive(pid):
+        try:
+            os.kill(int(pid), 0)
+        except (OSError, ValueError):
+            return False
+        # processus termine mais pas encore « reaped » : arrete
+        return not re.search(r"^State:\s+Z", rd("/proc/%s/status" % pid), re.M)
+
+    def src_vars(path, names):
+        if not os.path.exists(path):
+            return {}
+        code = '. "$1" 2>/dev/null; printf "%s\\037" ' + " ".join('"${%s:-}"' % n for n in names)
+        try:
+            out = subprocess.run(["bash", "-c", code, "_", path], capture_output=True, text=True, timeout=10).stdout
+        except Exception:
+            return {}
+        vals = out.split("\x1f")
+        return {n: (vals[i] if i < len(vals) else "") for i, n in enumerate(names)}
+
+    def ival(s, d=0):
+        try:
+            return int(s)
+        except (TypeError, ValueError):
+            return d
+
+    PG = ["PG_ETAPE", "PG_MAJ", "PG_PCT", "PG_FICHIERS", "PG_REF_FICHIERS", "PG_REF_OCTETS", "PG_ENVOYE", "PG_TOTAL_RCLONE",
+          "PG_PROVISOIRE", "PG_SURPLUS", "PG_VITESSE", "PG_FICH_MIN", "PG_ETA", "PG_ESSAIS", "PG_ERREURS"]
+
+    def avancement(pg):
+        opt = lambda k: ival(pg[k]) if pg[k] != "" else None
+        return {"pct": opt("PG_PCT"), "fichiers": ival(pg["PG_FICHIERS"]), "ref_fichiers": opt("PG_REF_FICHIERS"),
+                "ref_octets": opt("PG_REF_OCTETS"), "envoye": ival(pg["PG_ENVOYE"]),
+                "total_rclone": ival(pg["PG_TOTAL_RCLONE"]), "provisoire": pg["PG_PROVISOIRE"] == "1",
+                "surplus": ival(pg["PG_SURPLUS"]), "vitesse": opt("PG_VITESSE"), "fich_min": opt("PG_FICH_MIN"),
+                "eta": opt("PG_ETA"), "essais": ival(pg["PG_ESSAIS"]), "erreurs": ival(pg["PG_ERREURS"])}
+
+    ev = re.compile(r"^(===|    (dmesg|stderr):)|ERROR|CRITICAL|Attempt \d")
+
+    # ---------------- migration vers oCIS
+    mg = {}
+    conf = src_vars(M + "/config", ["OCIS_URL", "LOCAL_URL", "OCIS_USER", "OCIS_VENDOR", "OCIS_INSECURE"])
+    mg["config"] = {"url": conf.get("OCIS_URL", ""), "locale": conf.get("LOCAL_URL", ""), "utilisateur": conf.get("OCIS_USER", ""),
+                    "mode": conf.get("OCIS_VENDOR", ""), "certificat_accepte": conf.get("OCIS_INSECURE", "") == "1"} if conf else None
+    q = []
+    for line in rd(M + "/file-attente").splitlines():
+        p = line.split("|")
+        if len(p) >= 7:
+            q.append({"source": p[0], "libelle": p[1], "espace_id": p[2], "espace": p[3], "sous_dossier": p[5],
+                      "total": ival(p[6]), "suppression": p[7] if len(p) > 7 and p[7] else "non"})
+    mg["file"] = q
+    r = src_vars(M + "/en-cours", ["NB", "DEBUT", "PID"])
+    mg["en_cours"] = bool(r) and bool(r.get("PID")) and alive(r["PID"])
+    if r:
+        mg["nb"] = ival(r["NB"]); mg["debut"] = ival(r["DEBUT"])
+    e = src_vars(M + "/etape", ["ETAPE", "E_SRC", "E_LABEL", "E_SPACE", "E_TOTAL", "E_DEL", "REPRISE", "PHASE"])
+    if e and mg["en_cours"]:
+        et = {"etape": ival(e["ETAPE"]), "source": e["E_SRC"], "libelle": e["E_LABEL"], "espace": e["E_SPACE"],
+              "total": ival(e["E_TOTAL"]), "suppression": e["E_DEL"], "reprise": ival(e["REPRISE"]), "phase": e["PHASE"]}
+        logt = tail(M + "/progression.log", 20000)
+        line = ""
+        if e["PHASE"] in ("verification", "relecture"):
+            safe = re.sub(r"[^A-Za-z0-9_-]", "_", e["E_LABEL"])
+            for l in tail(f"{M}/verif-{safe}/check.log", 20000).splitlines():
+                if "Checks:" in l:
+                    line = re.sub(r"\s+", " ", l.split("Checks:", 1)[1]).strip()
+        else:
+            for l in logt.splitlines()[-80:]:
+                if l.startswith("=== "):
+                    line = ""
+                elif "NOTICE:" in l:
+                    line = re.sub(r"\s+", " ", l.split("NOTICE:", 1)[1]).strip()
+        et["ligne"] = line
+        m2 = re.search(r"(\d+)%", line)
+        et["pct"] = int(m2.group(1)) if m2 else None
+        rss = rd(M + "/rss").split()
+        if rss:
+            et["ram_mo"] = ival(rss[0])
+        # avancement detaille : par rapport a la vraie taille de la source
+        pg = src_vars(M + "/avancement", PG)
+        if pg and pg["PG_ETAPE"] == e["ETAPE"] and e["PHASE"] in ("", "transfert") and time.time() - ival(pg["PG_MAJ"]) < 60:
+            et["avancement"] = avancement(pg)
+            if et["avancement"]["pct"] is not None:
+                et["pct"] = et["avancement"]["pct"]
+        mg["etape"] = et
+    res = []
+    for line in rd(M + "/resultats").splitlines():
+        p = line.split("|", 4)
+        if len(p) == 5:
+            res.append({"n": ival(p[0]), "etat": p[1], "libelle": p[2], "espace": p[3], "detail": p[4]})
+    mg["resultats"] = res
+    code = rd(M + "/code")
+    mg["bilan"] = code if code else None
+    mg["historique"] = [l for l in rd(M + "/historique.log").splitlines() if l.strip()][-40:]
+    # journal : evenements seulement (etapes, erreurs, nouveaux essais, bilan), sans les lignes de stats
+    mg["journal"] = [l for l in tail(M + "/progression.log", 200000).splitlines() if l.strip() and ev.search(l)][-14:]
+
+    # ---------------- transferts oCIS -> machine
+    tr = {"config": bool(conf), "transferts": [], "planifies": False}
+    for line in rd(T + "/transferts.conf").splitlines():
+        p = line.split("|")
+        if len(p) < 8 or line.startswith("#"):
+            continue
+        p += [""] * (9 - len(p))
+        t = {"nom": p[0], "espace_id": p[1], "espace": p[2], "sous_dossier": p[3], "destination": p[4], "mode": p[5],
+             "corbeille": ival(p[6]), "horaire": p[7], "debit": p[8]}
+        if p[7] not in ("manuel", "une-fois", ""):
+            tr["planifies"] = True
+        d = src_vars("%s/%s.etat" % (T, re.sub(r"[^A-Za-z0-9_-]", "_", p[0])), ["ETAT", "DEBUT", "FIN", "DETAIL", "TRANSFERTS", "OCTETS", "SUPPR"])
+        if d:
+            t["dernier"] = {"etat": d["ETAT"], "debut": ival(d["DEBUT"]), "fin": ival(d["FIN"]), "detail": d["DETAIL"],
+                            "fichiers": ival(d["TRANSFERTS"]), "octets": ival(d["OCTETS"]), "supprimes": ival(d["SUPPR"])}
+        tr["transferts"].append(t)
+    tr["file"] = [l for l in rd(T + "/file-attente").splitlines() if l.strip()]
+    r = src_vars(T + "/en-cours", ["PID", "DEBUT"])
+    if r and r.get("PID") and alive(r["PID"]):
+        e = src_vars(T + "/etape", ["NOM", "DEBUT", "ESPACE", "SOUS", "DEST", "MODE", "REPRISE", "PHASE"])
+        if e:
+            c = {"nom": e["NOM"], "debut": ival(e["DEBUT"]), "espace": e["ESPACE"], "sous_dossier": e["SOUS"], "destination": e["DEST"],
+                 "mode": e["MODE"], "reprise": ival(e["REPRISE"])}
+            pg = src_vars(T + "/avancement", PG)
+            if pg and time.time() - ival(pg["PG_MAJ"]) < 60:
+                c["avancement"] = avancement(pg)
+            rss = rd(T + "/rss").split()
+            if rss:
+                c["ram_mo"] = ival(rss[0])
+            tr["en_cours"] = c
+    tr["historique"] = [l for l in rd(T + "/historique.log").splitlines() if l.strip()][-40:]
+    tr["journal"] = [l for l in tail(T + "/progression.log", 100000).splitlines() if l.strip() and ev.search(l)][-12:]
+    return mg, tr
+"#####;
+
+const OMV_STATUS_SRC: &str = r#####"
 export LC_ALL=C
 command -v python3 >/dev/null || { echo '{"erreur":"python3 introuvable sur l OMV"}'; exit 0; }
 python3 - <<'PYEOF'
@@ -181,6 +339,7 @@ def jload(txt):
     except ValueError:
         return None
 
+#__OCIS__
 out = {"serveur": sh("hostname"), "maintenant": int(time.time())}
 try:
     out["uptime_s"] = int(float(rd("/proc/uptime", "0").split()[0]))
@@ -455,6 +614,13 @@ if ag and int(ag.get("api") or 0) >= 8:
     except Exception:
         out["sante_disques"] = None
 out["nas_check_en_cours"] = rc("pgrep -f '/usr/local/bin/nas-chec[k]' >/dev/null") == 0
+# ---------------- Migration vers oCIS et transferts oCIS -> machine (script 2.5+)
+if ag and int(ag.get("api") or 0) >= 10:
+    mg, trf = oc_collect()
+    mg.update({"installe": True, "api": int(ag.get("api") or 0)})
+    trf["installe"] = True
+    out["migration"] = mg
+    out["transferts"] = trf
 out["suivi_ha"] = os.path.exists("/etc/cron.d/nas-ha-status") and os.path.exists("/root/.config/mosquitto_pub")
 
 # ---------------- Evolution de l'espace (un point toutes les 6 h, 1500 au plus)
@@ -485,7 +651,7 @@ PYEOF
 // =====================================================================
 //  Collecte de l'etat du Synology (copie vers l'OMV + migration oCIS)
 // =====================================================================
-pub const SYNO_STATUS: &str = r#####"
+const SYNO_STATUS_SRC: &str = r#####"
 export LC_ALL=C
 command -v python3 >/dev/null || { echo '{"erreur":"python3 introuvable sur le Synology"}'; exit 0; }
 python3 - <<'PYEOF'
@@ -549,6 +715,7 @@ def jload(txt):
         return None
 
 AG = "/usr/local/bin/nas-synology"
+#__OCIS__
 out = {"serveur": rd("/etc/hostname") or os.uname().nodename, "maintenant": int(time.time())}
 mi = {}
 for l in rd("/proc/meminfo").splitlines():
@@ -597,72 +764,16 @@ for line in rd(C + "/file-attente").splitlines():
 cp["file"] = cq
 out["copie"] = cp
 
-# ---------------- Migration oCIS ----------------
-mg = {"installe": bool(ag), "api": api}
-conf = src_vars(M + "/config", ["OCIS_URL", "LOCAL_URL", "OCIS_USER", "OCIS_VENDOR", "OCIS_INSECURE"])
-mg["config"] = {"url": conf.get("OCIS_URL", ""), "locale": conf.get("LOCAL_URL", ""), "utilisateur": conf.get("OCIS_USER", ""),
-                "mode": conf.get("OCIS_VENDOR", ""), "certificat_accepte": conf.get("OCIS_INSECURE", "") == "1"} if conf else None
-q = []
-for line in rd(M + "/file-attente").splitlines():
-    p = line.split("|")
-    if len(p) >= 7:
-        q.append({"source": p[0], "libelle": p[1], "espace_id": p[2], "espace": p[3], "sous_dossier": p[5],
-                  "total": ival(p[6]), "suppression": p[7] if len(p) > 7 and p[7] else "non"})
-mg["file"] = q
-r = src_vars(M + "/en-cours", ["NB", "DEBUT", "PID"])
-mg["en_cours"] = bool(r) and bool(r.get("PID")) and alive(r["PID"])
-if r:
-    mg["nb"] = ival(r["NB"]); mg["debut"] = ival(r["DEBUT"])
-e = src_vars(M + "/etape", ["ETAPE", "E_SRC", "E_LABEL", "E_SPACE", "E_TOTAL", "E_DEL", "REPRISE", "PHASE"])
-if e and mg["en_cours"]:
-    et = {"etape": ival(e["ETAPE"]), "source": e["E_SRC"], "libelle": e["E_LABEL"], "espace": e["E_SPACE"],
-          "total": ival(e["E_TOTAL"]), "suppression": e["E_DEL"], "reprise": ival(e["REPRISE"]), "phase": e["PHASE"]}
-    logt = tail(M + "/progression.log", 20000)
-    line = ""
-    if e["PHASE"] in ("verification", "relecture"):
-        safe = re.sub(r"[^A-Za-z0-9_-]", "_", e["E_LABEL"])
-        for l in tail(f"{M}/verif-{safe}/check.log", 20000).splitlines():
-            if "Checks:" in l:
-                line = re.sub(r"\s+", " ", l.split("Checks:", 1)[1]).strip()
-    else:
-        for l in logt.splitlines()[-80:]:
-            if l.startswith("=== "):
-                line = ""
-            elif "NOTICE:" in l:
-                line = re.sub(r"\s+", " ", l.split("NOTICE:", 1)[1]).strip()
-    et["ligne"] = line
-    m2 = re.search(r"(\d+)%", line)
-    et["pct"] = int(m2.group(1)) if m2 else None
-    rss = rd(M + "/rss").split()
-    if rss:
-        et["ram_mo"] = ival(rss[0])
-    # avancement detaille (script 2.1+) : par rapport a la vraie taille de la source
-    pg = src_vars(M + "/avancement", ["PG_ETAPE", "PG_MAJ", "PG_PCT", "PG_FICHIERS", "PG_REF_FICHIERS", "PG_REF_OCTETS",
-                                      "PG_ENVOYE", "PG_TOTAL_RCLONE", "PG_PROVISOIRE", "PG_SURPLUS", "PG_VITESSE",
-                                      "PG_FICH_MIN", "PG_ETA", "PG_ESSAIS", "PG_ERREURS"])
-    if pg and pg["PG_ETAPE"] == e["ETAPE"] and e["PHASE"] in ("", "transfert") and time.time() - ival(pg["PG_MAJ"]) < 60:
-        opt = lambda k: ival(pg[k]) if pg[k] != "" else None
-        et["avancement"] = {"pct": opt("PG_PCT"), "fichiers": ival(pg["PG_FICHIERS"]), "ref_fichiers": opt("PG_REF_FICHIERS"),
-                            "ref_octets": opt("PG_REF_OCTETS"), "envoye": ival(pg["PG_ENVOYE"]),
-                            "total_rclone": ival(pg["PG_TOTAL_RCLONE"]), "provisoire": pg["PG_PROVISOIRE"] == "1",
-                            "surplus": ival(pg["PG_SURPLUS"]), "vitesse": opt("PG_VITESSE"), "fich_min": opt("PG_FICH_MIN"),
-                            "eta": opt("PG_ETA"), "essais": ival(pg["PG_ESSAIS"]), "erreurs": ival(pg["PG_ERREURS"])}
-        if et["avancement"]["pct"] is not None:
-            et["pct"] = et["avancement"]["pct"]
-    mg["etape"] = et
-res = []
-for line in rd(M + "/resultats").splitlines():
-    p = line.split("|", 4)
-    if len(p) == 5:
-        res.append({"n": ival(p[0]), "etat": p[1], "libelle": p[2], "espace": p[3], "detail": p[4]})
-mg["resultats"] = res
-code = rd(M + "/code")
-mg["bilan"] = code if code else None
-mg["historique"] = [l for l in rd(M + "/historique.log").splitlines() if l.strip()][-40:]
-# journal : evenements seulement (etapes, erreurs, nouveaux essais, bilan), sans les lignes de stats
-ev = re.compile(r"^(===|    (dmesg|stderr):)|ERROR|CRITICAL|Attempt \d")
-mg["journal"] = [l for l in tail(M + "/progression.log", 200000).splitlines() if l.strip() and ev.search(l)][-14:]
+# ---------------- Migration oCIS et transferts oCIS -> Synology (code commun) ----------------
+mg, trf = oc_collect()
+mg.update({"installe": bool(ag), "api": api})
 out["migration"] = mg
+if api >= 6:
+    trf["installe"] = True
+    out["transferts"] = trf
+    # DSM peut reecrire /etc/crontab : planification des transferts remise si elle a disparu
+    if trf.get("planifies") and "# >>> nas-synology transferts" not in rd("/etc/crontab"):
+        sh("nohup setsid " + AG + " transferts gen-cron >/dev/null 2>&1 < /dev/null &", 5)
 
 # ---------------- Sante des disques (script 2.2+) : verifiee au plus une fois par heure ----------------
 if api >= 4:
@@ -1247,16 +1358,29 @@ pub fn copie_stop() -> String {
     format!("{COPIE_BIN} arreter 2>&1\n")
 }
 
-// ---------------- Synology : migration ----------------
-pub fn migre_spaces() -> String {
-    format!("{MIGRE_BIN} espaces 2>&1\n")
+// ---------------- Migration vers oCIS (Synology, OMV / Debian 2.5+) ----------------
+fn mig_bin(h: HostId) -> &'static str {
+    match h {
+        HostId::Syno => MIGRE_BIN,
+        HostId::Omv => "/usr/local/bin/nas-debian migration",
+    }
 }
-pub fn migre_sources() -> String {
-    format!("{MIGRE_BIN} sources 2>&1\n")
+pub fn migre_spaces(h: HostId) -> String {
+    format!("{} espaces 2>&1\n", mig_bin(h))
 }
-pub fn migre_add(src: &str, space_id: &str, sub: &str, del: &str, label: &str) -> String {
+pub fn migre_sources(h: HostId) -> String {
+    format!("{} sources 2>&1\n", mig_bin(h))
+}
+pub fn migre_add(
+    h: HostId,
+    src: &str,
+    space_id: &str,
+    sub: &str,
+    del: &str,
+    label: &str,
+) -> String {
     format!(
-        "{MIGRE_BIN} ajouter {} {} {} {} {} 2>&1\n",
+        "{} ajouter {} {} {} {} {} 2>&1\n",mig_bin(h),
         sq(src),
         sq(space_id),
         sq(if sub.trim().is_empty() { "-" } else { sub.trim() }),
@@ -1264,25 +1388,106 @@ pub fn migre_add(src: &str, space_id: &str, sub: &str, del: &str, label: &str) -
         sq(label)
     )
 }
-pub fn migre_remove(n: usize) -> String {
-    format!("{MIGRE_BIN} retirer {n} 2>&1\n")
+pub fn migre_remove(h: HostId, n: usize) -> String {
+    format!("{} retirer {n} 2>&1\n", mig_bin(h))
 }
-pub fn migre_start() -> String {
-    format!("{MIGRE_BIN} lancer 2>&1\n")
+pub fn migre_start(h: HostId) -> String {
+    format!("{} lancer 2>&1\n", mig_bin(h))
 }
-pub fn migre_stop() -> String {
-    format!("{MIGRE_BIN} arreter 2>&1\n")
+pub fn migre_stop(h: HostId) -> String {
+    format!("{} arreter 2>&1\n", mig_bin(h))
 }
-pub fn migre_configure(url: &str, user: &str, token: &str, local: &str, insecure: bool) -> String {
+pub fn migre_configure(h: HostId,
+    url: &str, user: &str, token: &str, local: &str, insecure: bool,
+) -> String {
     let clean = |s: &str| s.replace(['\n', '\r'], "").trim().to_string();
     format!(
-        "{MIGRE_BIN} configurer 2>&1 <<'NASMGR_EOF'\n{}\n{}\n{}\n{}\n{}\nNASMGR_EOF\n",
+        "{} configurer 2>&1 <<'NASMGR_EOF'\n{}\n{}\n{}\n{}\n{}\nNASMGR_EOF\n",mig_bin(h),
         clean(url),
         clean(user),
         clean(token),
         if clean(local).is_empty() { "-".into() } else { clean(local) },
         if insecure { 1 } else { 0 }
     )
+}
+
+// ---------------- Transferts oCIS -> machine (nas-debian 2.5+, nas-synology 2.4+) ----------------
+fn tr_bin(h: HostId) -> &'static str {
+    match h {
+        HostId::Syno => "/usr/local/bin/nas-synology transferts",
+        HostId::Omv => "/usr/local/bin/nas-debian transferts",
+    }
+}
+
+/// Espaces oCIS (personnel et projets) : lignes « id|nom|webDavUrl|libre|quota|type »
+pub fn tr_spaces(h: HostId) -> String {
+    format!("{} espaces 2>&1\n", tr_bin(h))
+}
+
+/// Sous-dossiers d'un dossier d'un espace oCIS (un par ligne)
+pub fn tr_browse(h: HostId, space: &str, path: &str) -> String {
+    format!("{} parcourir {} {} 2>&1\n", tr_bin(h), sq(space), sq(path))
+}
+
+#[derive(Clone, Copy)]
+pub struct TrSave<'a> {
+    pub name: &'a str,
+    pub space: &'a str,
+    pub sub: &'a str,
+    pub dest: &'a str,
+    /// copie ou miroir
+    pub mode: &'a str,
+    pub trash_days: u32,
+    /// manuel, une-fois ou HH:MM[/jours];...
+    pub schedule: &'a str,
+    pub bwlimit: &'a str,
+}
+
+pub fn tr_save(h: HostId, new: bool, f: &TrSave) -> String {
+    format!(
+        "{} save {} {} {} {} {} {} {} {} {} 2>&1\n",
+        tr_bin(h),
+        if new { "nouveau" } else { "modif" },
+        sq(f.name),
+        sq(f.space),
+        sq(if f.sub.trim().is_empty() {
+            "-"
+        } else {
+            f.sub.trim()
+        }),
+        sq(f.dest),
+        word(f.mode),
+        f.trash_days,
+        sq(f.schedule),
+        sq(f.bwlimit)
+    )
+}
+
+pub fn tr_delete(h: HostId, name: &str) -> String {
+    format!("{} supprimer {} 2>&1\n", tr_bin(h), sq(name))
+}
+
+pub fn tr_launch(h: HostId, name: &str) -> String {
+    format!("{} lancer {} 2>&1\n", tr_bin(h), sq(name))
+}
+
+pub fn tr_stop(h: HostId) -> String {
+    format!("{} arreter 2>&1\n", tr_bin(h))
+}
+
+/// Journal des derniers passages d'un transfert
+pub fn tr_log(name: &str) -> String {
+    let n: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    tail_file(&format!("/root/.ocis-transferts/journaux/{n}.log"), 300)
 }
 
 // ---------------- Installation des scripts ----------------
@@ -1336,7 +1541,7 @@ mod live {
         let v: crate::model::Agent = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("version");
         assert_eq!((v.script.as_str(), v.api), ("nas-debian", nb_api()));
         assert_eq!(v.version, crate::scripts::embedded_version(crate::scripts::Kind::Debian));
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         assert!(st.migration_requise, "anciens scripts : {:?}", st.anciens);
         assert!(st.anciens.contains(&"nas-backup".to_string()) && st.anciens.contains(&"nas-notify".to_string()));
         assert!(st.perf.is_some() && st.memoire.total_mo > 0);
@@ -1348,7 +1553,7 @@ mod live {
         assert!(o.stdout.matches("nas-debian\n").count() >= 2, "liens : {}", o.text());
         assert!(o.stdout.contains("nas-backup\n") && o.stdout.contains("nas-notify\n"), "anciens gardes : {}", o.text());
         assert!(o.stdout.contains("root /usr/local/bin/nas-debian run-at 03:30"), "{}", o.text());
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         assert!(!st.migration_requise && st.anciens.is_empty());
         // ancienne synchro des cameras reprise comme sauvegarde temps reel « Cameras »
         assert!(!st.cameras.installe, "cam-sync encore en place");
@@ -1455,7 +1660,7 @@ mod live {
         let o = run(true, &(nb_verify_plan("", "") + "cat /etc/cron.d/nas-backup\n"));
         assert!(!o.stdout.contains("verifier-tout"));
         // collecte de l'etat : JSON valide et coherent
-        let o = run(true, OMV_STATUS);
+        let o = run(true, &OMV_STATUS);
         let st: crate::model::OmvStatus = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json OMV");
         assert!(st.erreur.is_none());
         assert_eq!(st.nb_api, nb_api());
@@ -1492,7 +1697,7 @@ mod live {
         assert!(o.stdout.contains("versions entretien") && o.stdout.contains("secours sauvegarder"), "{}", o.stdout);
         assert_ne!(run(true, &nb_save(false, &JobForm { rotation: "0:0:0:0", ..v })).code, 0, "rotation vide refusee");
         // collecte
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         assert!(st.destinations.len() >= 2);
         let m = st.sauvegardes.iter().find(|j| j.nom == "Multi").expect("Multi");
         assert_eq!(m.dests(), vec![crate::model::JobDest { nom: "gdrive".into(), chiffre: true }, crate::model::JobDest { nom: "usb".into(), chiffre: false }]);
@@ -1529,14 +1734,14 @@ mod live {
         assert_ne!(run(true, &rt_save(false, &RtSave { trash_days: 0, ..f })).code, 0);
         assert_ne!(run(true, &rt_save(false, &RtSave { catchup: 7, ..f })).code, 0);
         assert_ne!(run(true, &rt_save(true, &RtSave { name: "a b; rm", ..f })).code, 0);
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         let j = st.temps_reel.iter().find(|j| j.nom == "Bureau").expect("Bureau");
         assert_eq!(j.dossiers.len(), 2);
         assert_eq!((j.suppression.as_str(), j.corbeille, j.anomalie, j.exclusions.as_str()), ("corbeille", 30, 200, "cache;*.bak"));
         assert!(j.chiffre && j.actif && j.pause.is_none(), "{j:?}");
         // pause manuelle puis reprise
         assert_eq!(run(true, &rt_cmd("pause", "Bureau")).code, 0);
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         let j = st.temps_reel.iter().find(|j| j.nom == "Bureau").unwrap();
         assert!(j.pause.as_ref().map(|p| p.raison.contains("manuelle")).unwrap_or(false), "{j:?}");
         assert!(run(true, &format!("{NB_BIN} temps-reel rattrapage Bureau")).stdout.contains("en pause"));
@@ -1552,7 +1757,7 @@ mod live {
         assert!(o.stdout.contains("Bureau|"), "{}", o.stdout);
         // arret / demarrage
         assert_eq!(run(true, &rt_cmd("arreter", "Bureau")).code, 0);
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         assert!(!st.temps_reel.iter().find(|j| j.nom == "Bureau").unwrap().actif);
         // suppression (sans effacer la destination)
         let o = run(true, &rt_delete("Bureau", false));
@@ -1570,7 +1775,7 @@ mod live {
         assert_eq!(run(true, &install_file(DEBIAN_BIN, NAS_DEBIAN_SH)).code, 0);
         let o = run(true, &disks_check(false));
         assert_eq!(o.code, 0, "{}", o.text());
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         let h = st.sante_disques.expect("sante des disques");
         assert!(h.smart && h.disques.len() == 3, "{h:?}");
         assert_eq!(h.problems(), (0, 1), "sdb a surveiller");
@@ -1585,7 +1790,7 @@ mod live {
         assert!(o.code == 0 && o.stdout.to_lowercase().contains("rapport"), "{}", o.text());
         assert_eq!(run(true, &report_plan("hebdo", 7, "09:05", &[])).code, 0);
         assert!(run(true, "cat /etc/cron.d/nas-backup").stdout.contains("5 9 * * 0 root /usr/local/bin/nas-debian rapport envoyer hebdo"));
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         let n = st.notif.unwrap();
         assert!(n.rappel_h == 8 && n.quota_pct == 85 && n.retard_h == 40 && n.rapport.jour == 7, "{n:?}");
         assert_eq!(run(true, &report_plan("non", 1, "08:30", &[])).code, 0);
@@ -1593,13 +1798,13 @@ mod live {
         // Synology : verification, alerte, acquittement
         assert_eq!(run(false, &install_file(SYNO_BIN, NAS_SYNOLOGY_SH)).code, 0);
         assert_eq!(run(false, &format!("echo 2 > /tmp/faux-nas/smart-sdb-en-attente; {}", disks_check(true))).code, 0);
-        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, &SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
         let h = sy.sante_disques.expect("sante des disques Synology");
         assert_eq!(h.problems(), (1, 0), "{h:?}");
         assert!(sy.alertes.iter().any(|a| a.tag == "disque-ZDH0USE2"), "{:?}", sy.alertes);
         assert_eq!(run(false, &ack_alert_syno("disque-ZDH0USE2")).code, 0);
         assert_eq!(run(false, &format!("rm -f /tmp/faux-nas/smart-sdb-en-attente; {}", disks_check(true))).code, 0);
-        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, &SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
         assert!(sy.alertes.is_empty(), "{:?}", sy.alertes);
     }
 
@@ -1621,7 +1826,7 @@ mod live {
         assert_eq!(o.code, 0, "{}", o.text());
         assert_ne!(run(true, &reveil_set("usb", "00:11", "", 60, "rien", "")).code, 0, "MAC invalide refusee");
         assert_ne!(run(true, &reveil_set("usb", "00:11:22:aa:bb:cc", "127.0.0.1", 60, "veille", "")).code, 0, "compte SSH requis");
-        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
         assert_eq!(st.test_auto, "6 06:15 4");
         let p = st.sauvegardes.iter().find(|j| j.nom == "Photos").expect("Photos");
         let t = p.test.as_ref().expect("test");
@@ -1647,10 +1852,70 @@ mod live {
         let o = run(false, &(syno_omv_wake("00:11:22:33:44:55", "veille") + &format!("{SYNO_BIN} reglages voir\n")));
         assert!(o.stdout.contains("\"omv_mac\":\"00:11:22:33:44:55\"") && o.stdout.contains("\"omv_apres\":\"veille\""), "{}", o.text());
         assert_ne!(run(false, &syno_omv_wake("zz", "rien")).code, 0);
-        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, &SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
         assert_eq!(sy.perf.map(|p| p.omv_apres), Some("veille".to_string()));
         assert_eq!(run(false, &syno_omv_wake("", "rien")).code, 0);
         run(false, "if [ -f /tmp/syno-config.sauve ]; then mv -f /tmp/syno-config.sauve /root/.nas-synology/config; else rm -f /root/.nas-synology/config; fi");
+    }
+
+    /// Etape 6 : connexion oCIS, espaces et transferts par les commandes de l'application,
+    /// lus par la collecte (faux oCIS sur le port 9251 ; etat remis en place a la fin)
+    #[test]
+    fn ocis_live() {
+        if !on() || !std::path::Path::new("/usr/bin/rclone").exists() {
+            return;
+        }
+        use crate::app::HostId;
+        let py = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/faux-ocis.py");
+        let mut srv = std::process::Command::new("python3")
+            .args([py, "9251", "/tmp/ocis-live/espaces", "/usr/bin/rclone", "alice", "secret"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("faux oCIS");
+        std::thread::sleep(Duration::from_secs(2));
+        assert_eq!(run(true, &install_file(DEBIAN_BIN, NAS_DEBIAN_SH)).code, 0);
+        assert_eq!(run(false, &install_file(SYNO_BIN, NAS_SYNOLOGY_SH)).code, 0);
+        let save = "rm -rf /tmp/ocis-live/avant; mkdir -p /tmp/ocis-live/avant /tmp/ocis-live/dest; for d in /root/.migre-ocis /root/.ocis-transferts; do [ -d $d ] && mv $d /tmp/ocis-live/avant/; done; cp -p /etc/crontab /tmp/ocis-live/avant/crontab 2>/dev/null; true";
+        run(true, save);
+        let res = std::panic::catch_unwind(|| {
+            let o = run(true, &migre_configure(HostId::Omv, "http://127.0.0.1:9251", "alice", "secret", "", false));
+            assert_eq!(o.code, 0, "{}", o.text());
+            let sp = crate::model::parse_spaces(&run(true, &tr_spaces(HostId::Omv)).stdout);
+            assert_eq!(sp.iter().map(|s| (s.id.as_str(), s.kind.as_str())).collect::<Vec<_>>(), vec![("personnel-alice", "personal"), ("projet-docs", "project"), ("projet-photos", "project")]);
+            assert_eq!(crate::model::parse_spaces(&run(true, &migre_spaces(HostId::Omv)).stdout).len(), 2, "migration : espaces projets");
+            let f = TrSave { name: "Photos-oCIS", space: "projet-photos", sub: "", dest: "/tmp/ocis-live/dest/photos", mode: "miroir", trash_days: 7, schedule: "03:10/12345", bwlimit: "" };
+            let o = run(true, &tr_save(HostId::Omv, true, &f));
+            assert_eq!(o.code, 0, "{}", o.text());
+            assert_ne!(run(true, &tr_save(HostId::Omv, true, &f)).code, 0, "nom deja pris");
+            assert_ne!(run(true, &tr_save(HostId::Omv, true, &TrSave { name: "x", space: "inconnu", ..f })).code, 0, "espace inconnu");
+            assert_ne!(run(true, &tr_save(HostId::Omv, true, &TrSave { name: "y", dest: "/", ..f })).code, 0, "destination refusee");
+            let o = run(true, "cat /etc/cron.d/ocis-transferts");
+            assert!(o.stdout.contains("10 3 * * ") && o.stdout.contains("root /usr/local/bin/nas-debian transferts run-at"), "{}", o.text());
+            let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+            assert!(st.migration.as_ref().map(|m| m.config.is_some()).unwrap_or(false), "{:?}", st.migration);
+            let t = st.transferts.expect("transferts");
+            assert!(t.config && t.en_cours.is_none());
+            let x = &t.transferts[0];
+            assert_eq!((x.nom.as_str(), x.espace.as_str(), x.mode.as_str(), x.corbeille, x.horaire.as_str()), ("Photos-oCIS", "Photos", "miroir", 7, "03:10/12345"));
+            let o = run(true, &tr_delete(HostId::Omv, "Photos-oCIS"));
+            assert_eq!(o.code, 0, "{}", o.text());
+            // Synology : meme moteur, planification dans /etc/crontab
+            let o = run(false, &migre_configure(HostId::Syno, "http://127.0.0.1:9251", "alice", "secret", "", false));
+            assert_eq!(o.code, 0, "{}", o.text());
+            let o = run(false, &tr_save(HostId::Syno, true, &TrSave { name: "Docs", space: "projet-docs", sub: "", dest: "/tmp/ocis-live/dest/docs", mode: "copie", trash_days: 0, schedule: "manuel", bwlimit: "2M" }));
+            assert_eq!(o.code, 0, "{}", o.text());
+            let sy: crate::model::SynoStatus = serde_json::from_str(run(false, &SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+            let t = sy.transferts.expect("transferts Synology");
+            assert_eq!(t.transferts.iter().map(|x| (x.nom.as_str(), x.debit.as_str())).collect::<Vec<_>>(), vec![("Docs", "2M")]);
+            assert_eq!(run(false, &tr_delete(HostId::Syno, "Docs")).code, 0);
+        });
+        run(true, "rm -rf /root/.migre-ocis /root/.ocis-transferts /etc/cron.d/ocis-transferts; for d in /tmp/ocis-live/avant/.migre-ocis /tmp/ocis-live/avant/.ocis-transferts; do [ -d $d ] && mv $d /root/; done; [ -f /tmp/ocis-live/avant/crontab ] && cp -p /tmp/ocis-live/avant/crontab /etc/crontab; true");
+        let _ = srv.kill();
+        let _ = srv.wait();
+        if let Err(e) = res {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]
@@ -1729,7 +1994,7 @@ mod live {
         }
         let o = run(false, &(install_file(SYNO_BIN, NAS_SYNOLOGY_SH) + &format!("{SYNO_BIN} installer\n")));
         assert_eq!(o.code, 0, "{}", o.text());
-        let st: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        let st: crate::model::SynoStatus = serde_json::from_str(run(false, &SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
         assert!(st.migration_requise, "{:?}", st.anciens);
         // migration : adresse de l'OMV reprise de l'ancien copie-omv
         let o = run(false, &format!("{SYNO_BIN} migrer appliquer 2>&1; readlink /usr/local/bin/copie-omv /usr/local/bin/migre-drive-ocis; {SYNO_BIN} reglages voir"));
@@ -1746,7 +2011,7 @@ mod live {
         assert!(o.stdout.contains("\"profil\":\"econome\""), "{}", o.text());
         run(false, &syno_list_dirs(""));
         run(false, &syno_size("/volume1/photo"));
-        run(false, &migre_remove(9));
+        run(false, &migre_remove(HostId::Syno, 9));
         // file d'attente de copies : deux copies l'une apres l'autre (vrai rsync vers « l'OMV »)
         let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Archives";
         let o = run(false, &format!(
@@ -1759,7 +2024,7 @@ mod live {
         let o = run(false, &format!("for i in $(seq 60); do [ $(grep -c OK /root/.copie-omv/historique.log 2>/dev/null || echo 0) -ge 2 ] && break; sleep 1; done; cat /root/.copie-omv/historique.log; ls {d} {d}/photo"));
         assert!(o.stdout.matches("| OK |").count() >= 2, "{}", o.text());
         assert!(o.stdout.contains("a.txt") && o.stdout.contains("2023"), "{}", o.text());
-        let o = run(false, SYNO_STATUS);
+        let o = run(false, &SYNO_STATUS);
         let st: crate::model::SynoStatus = serde_json::from_str(o.stdout.lines().last().unwrap()).expect("json Synology");
         assert!(st.erreur.is_none());
         assert!(st.copie.installe && st.migration.installe);
