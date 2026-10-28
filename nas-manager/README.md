@@ -5,9 +5,10 @@ Application Windows en Rust pour **suivre et gérer toutes les synchros du NAS s
 | Page | Script piloté | Ce qu'on peut faire |
 |---|---|---|
 | Tableau de bord | tous | état d'ensemble, transferts en cours, Drive, disques |
-| Sauvegardes | `nas-debian` (OMV / Debian) | suivre l'avancement en direct (Go, %, débit, fichiers en cours), lancer, tout lancer, arrêter, ajouter, modifier, supprimer (avec ou sans effacement du Drive), restaurer |
+| Sauvegardes programmées | `nas-debian` (OMV / Debian) | miroir, copie ou versionnée (restic), vers une ou plusieurs destinations ; suivre l'avancement en direct, lancer, arrêter, ajouter, modifier, supprimer, restaurer (fichier, dossier ou version datée) |
 | Caméras | `cam-sync` (OMV) | état du service, dernière vidéo envoyée, erreurs, démarrer / arrêter / redémarrer, lancer un rattrapage |
-| Alertes | `nas-debian` (`nas-check`, `nas-notify`) | connexion et quota Google Drive, alertes en cours (acquitter), vérifier maintenant, notification de test, afficher les mots de passe de chiffrement |
+| Destinations | `nas-debian destinations`, `secours` | clouds, disques USB, autres NAS (connexion par le navigateur ou formulaire, test d'envoi), règle 3-2-1, kit de secours (copie sur le PC) |
+| Alertes & santé | `nas-debian alertes`, `disques`, `rapport` ; `nas-synology disques` | canaux de notification (ntfy, Telegram, Discord, e-mail, Home Assistant) avec test, alertes en cours des deux machines (acquitter), santé des disques (SMART, RAID), rapport hebdomadaire / mensuel, réglages des alertes, Google Drive, mots de passe de chiffrement |
 | Copie → OMV | `nas-synology copie` | suivre / arrêter la copie, en lancer une nouvelle avec navigateur de dossiers des deux NAS, historique, réparer les droits |
 | Migration oCIS | `nas-synology migration` | connexion oCIS, file d'attente (ajouter / retirer / lancer), suivi en direct, arrêt, résultats, historique |
 | Historique | `nas-debian` (OMV / Debian) | exécutions, taux de réussite, volumes, évolution de l'espace |
@@ -27,9 +28,11 @@ qui lit l'état (fichiers d'état et journaux des scripts) et le renvoie en JSON
 des commandes « sans question » ajoutées aux scripts :
 
 ```
-nas-debian save <nouveau|modif> NOM SOURCE DOSSIER sync|copy oui|non HORAIRE JOURS [DEBIT] [MEMOIRE]
+nas-debian save <nouveau|modif> NOM SOURCE DOSSIER sync|copy|versions oui|non HORAIRE JOURS [DEBIT] [MEMOIRE] [DESTINATIONS] [ROTATION]
 nas-debian delete <NOM> [effacer-drive]
-nas-debian restore <NOM> <DOSSIER>
+nas-debian restore <NOM> <DOSSIER> [ELEMENT] [corbeille] [DESTINATION]
+nas-debian versions liste | ls | restaurer ...      destinations liste | etat | creer | jeton | supprimer
+nas-debian secours etat | sauvegarder | telecharger | restaurer
 nas-debian version | outils etat | outils installer | reglages ram ... | migrer appliquer
 nas-synology copie lancer <source> <dossier OMV> <dossier|contenu> <copie|deplacement>
 nas-synology migration espaces | sources | ajouter ... | retirer <n> | lancer | arreter | configurer | jeton

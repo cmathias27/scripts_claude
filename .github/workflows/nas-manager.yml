@@ -45,7 +45,7 @@ jobs:
         with:
           workspaces: nas-manager
       - name: Dependances
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync inotify-tools shellcheck rclone
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync inotify-tools shellcheck rclone restic
       - name: Faux OMV et faux Synology
         run: sudo bash tests/faux-nas.sh "$RUNNER_TEMP/app"
       - name: Tests
@@ -56,10 +56,14 @@ jobs:
         run: cargo test --locked -- --test-threads=1
       - name: Moteur des sauvegardes temps reel (vrai rclone, inotify)
         run: sudo bash tests/temps-reel.sh /usr/bin/rclone
+      - name: Destinations, versions (vrai restic) et kit de secours
+        run: sudo bash tests/destinations.sh /usr/bin/rclone /usr/bin/restic
+      - name: Notifications (ntfy, Telegram, Discord, e-mail), disques et rapport
+        run: sudo bash tests/notifications.sh
       - name: Syntaxe des scripts
         working-directory: .
         run: |
-          for f in nas-debian.sh nas-synology.sh nas-manager/tests/faux-nas.sh nas-manager/tests/temps-reel.sh; do bash -n "$f"; done
+          for f in nas-debian.sh nas-synology.sh nas-manager/tests/faux-nas.sh nas-manager/tests/temps-reel.sh nas-manager/tests/destinations.sh nas-manager/tests/notifications.sh; do bash -n "$f"; done
           shellcheck -S warning -e SC2034,SC1090,SC2155,SC2015 nas-debian.sh nas-synology.sh
       - name: Versions des scripts (versions-scripts.json a jour)
         working-directory: .

@@ -1,5 +1,66 @@
 # Journal des modifications
 
+## 1.4.0
+
+Étape 4 de la feuille de route : être prévenu et surveiller (scripts nas-debian 2.3.0 et nas-synology 2.2.0).
+
+### Notifications sans Home Assistant
+- Page Alertes & santé, **« Ajouter un canal »** : **ntfy** (application gratuite, sans compte : un nom de sujet secret est proposé), **Telegram** (bouton « Trouver » pour l'identifiant de conversation), **Discord** (webhook du salon), **e-mail** (Gmail, Outlook, Free, Orange, OVH ou autre serveur) et **Home Assistant**, combinables.
+- Pour chaque canal : **alertes seulement** ou **alertes et messages discrets** ; « Tester », « Modifier », « Retirer ». Un message de test part à l'enregistrement.
+- Une alerte dont l'envoi a échoué est renvoyée à la vérification suivante ; les derniers envois en échec sont affichés. Sans aucun canal, les alertes restent visibles dans l'application.
+- Réglages des alertes modifiables : rappel d'une alerte non résolue, seuil « destination presque pleine », délai avant « sauvegarde en retard ».
+- La vérification horaire est toujours installée (état des destinations et des disques), même sans Home Assistant.
+
+### Santé des disques
+- Lecture **SMART** de chaque disque toutes les heures, sur l'OMV/Debian et le Synology : modèle, taille, température, âge, usure des SSD, secteurs réalloués, instables ou illisibles.
+- **Alerte avant la panne** : disque « à surveiller » dès les premiers secteurs réalloués (et quand ils augmentent), « en danger » dès des secteurs instables, un test SMART en échec ou un SSD usé ; erreurs de câble signalées.
+- **RAID** (mdadm, ZFS) : alerte si une grappe est dégradée, avancement de la reconstruction.
+- Les disques en veille ne sont pas réveillés (dernières valeurs gardées).
+- Résumé sur le tableau de bord ; alertes du Synology dans la page Alertes, l'icône de notification et les notifications Windows.
+- smartmontools installé avec les outils (page Installation).
+
+### Rapport de la semaine ou du mois
+- Résumé envoyé sur les canaux choisis : sauvegardes réussies ou en échec, volumes, temps réel, espace des destinations et des disques, santé des disques, alertes de la période.
+- Jour et heure au choix, « Aperçu » et « Envoyer maintenant ».
+
+### Aussi
+- Aide : section « Être prévenu : notifications, disques, rapport ».
+- Correction : adresse de Home Assistant affichée correctement dans la page Installation après un nouvel enregistrement.
+
+## 1.3.0
+
+Étape 3 de la feuille de route : destinations et sécurité des données (script nas-debian 2.2.0).
+
+### Destinations (nouvelle page)
+- **Autres destinations que Google Drive** : OneDrive, Dropbox, pCloud, Box (connexion dans le navigateur, comme Google Drive), disque local ou USB, autre NAS en SFTP, partage réseau SMB, WebDAV (Nextcloud, ownCloud, oCIS), Backblaze B2, stockage S3 (Wasabi, Scaleway, AWS, MinIO…).
+- Ajout depuis l'application avec un **test d'envoi réel** ; état, espace utilisé et sauvegardes qui l'utilisent pour chaque destination ; « Tester », « Reconnecter », « Retirer » (refusé tant qu'une sauvegarde l'utilise).
+- Vérification de chaque destination toutes les heures (connexion, espace) avec alerte si elle devient injoignable ou presque pleine.
+- Disque USB : refusé s'il est sur le disque système ; débranché, la sauvegarde vers lui échoue au lieu de remplir le disque système.
+- Bilan de la **règle 3-2-1** : sauvegardes avec une seule destination, ou sans copie hors de la maison.
+
+### Sauvegardes vers plusieurs destinations
+- Une sauvegarde programmée part vers **une ou plusieurs destinations**, l'une après l'autre, avec le **chiffrement au choix pour chacune** (mêmes mots de passe partout).
+- Avancement « Destination 2/3 », bilan et état par destination ; une destination en échec n'empêche pas les autres.
+- Restauration et parcours depuis la destination choisie ; vérification d'intégrité sur chaque destination.
+
+### Sauvegardes versionnées (type Hyper Backup)
+- Troisième mode à côté de miroir et copie, basé sur **restic** : une version complète à chaque sauvegarde, déduplication (seuls les morceaux modifiés partent), chiffrement intégré, vers n'importe quelle destination.
+- Rotation façon Smart Recycle avec modèles (7 jours / 4 semaines / 12 mois…) : toutes les versions des dernières 24 h, puis une par jour, semaine, mois, année.
+- **Versions et restauration** : choisir la version (date), parcourir son contenu, restaurer un fichier, un dossier ou tout.
+- Nettoyage et contrôle des dépôts chaque dimanche matin, « Vérifier l'intégrité » à la demande ; simulation avant lancement.
+- restic installé et mis à jour par l'application (page Installation > Outils).
+
+### Kit de secours
+- **Tout ce qu'il faut pour reconstruire** si le NAS est perdu (connexions aux destinations, mots de passe de chiffrement, sauvegardes, réglages), chiffré avec un mot de passe unique à noter.
+- Envoyé chaque jour s'il a changé dans le dossier NAS-secours de chaque destination, et **copié automatiquement sur le PC**.
+- Page Installation > **Reconstruire après une panne** : choisir le kit, vérifier, restaurer sur la nouvelle machine ; ou saisir les mots de passe notés si on n'a pas de kit.
+- Aide : guide « **Mon NAS est mort : reconstruire** », destinations et règle 3-2-1, sauvegardes versionnées.
+
+### Aussi
+- Les mots de passe affichés (Alertes > Mots de passe de chiffrement) comprennent ceux des versions et du kit.
+- Google Drive devient facultatif ; erreurs expliquées pour les nouvelles situations (mot de passe des versions refusé, disque débranché, destination retirée…).
+- Raccourcis : Ctrl+4 Destinations, Ctrl+0 Paramètres.
+
 ## 1.2.1
 
 Migration Drive → oCIS : un suivi qui ne prête plus à confusion (script nas-synology 2.1.0).

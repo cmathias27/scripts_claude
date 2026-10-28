@@ -127,6 +127,40 @@ def progress(text):
                                       "vitesse": m.group(4), "reste": m.group(5)})
     return block
 
+def hb(b):
+    b = float(b or 0)
+    for u in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if b < 1024 or u == "TiB":
+            return ("%d %s" % (b, u)) if u == "B" else ("%.3f %s" % (b, u))
+        b /= 1024
+
+def hd(s):
+    try:
+        s = int(s)
+    except (TypeError, ValueError):
+        return "-"
+    h, m, sec = s // 3600, s % 3600 // 60, s % 60
+    return ("%dh" % h if h else "") + ("%dm" % m if h or m else "") + "%ds" % sec
+
+def restic_progress(text):
+    """Dernier etat d'avancement de restic (--json)."""
+    st = None
+    for line in text.splitlines():
+        if line.startswith("{") and '"message_type":"status"' in line:
+            st = line
+    if not st:
+        return None
+    try:
+        j = json.loads(st)
+    except ValueError:
+        return None
+    el = j.get("seconds_elapsed") or 0
+    done = j.get("bytes_done") or 0
+    return {"octets_faits": hb(done), "octets_total": hb(j.get("total_bytes")), "pct": int((j.get("percent_done") or 0) * 100),
+            "vitesse": hb(done / el if el else 0) + "/s", "reste": hd(j.get("seconds_remaining")) if j.get("seconds_remaining") else "-",
+            "fichiers_faits": j.get("files_done") or 0, "fichiers_total": j.get("total_files") or 0, "erreurs": j.get("error_count") or 0,
+            "duree": hd(el), "en_cours": [{"fichier": f, "pct": 0, "taille": "", "vitesse": "", "reste": ""} for f in (j.get("current_files") or [])[:6]]}
+
 def last_lines(text, n, pat=None):
     ls = [l for l in text.splitlines() if l.strip() and (pat is None or re.search(pat, l))]
     return ls[-n:]
@@ -195,17 +229,24 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
     if len(p) < 7:
         continue
     name, src, sub, mode, enc, sched, ret = p[:7]
+    dl = p[9] if len(p) > 9 and p[9] else "gdrive:" + enc
     j = {"nom": name, "source": src, "dossier": sub, "mode": mode, "chiffre": enc == "oui",
          "horaire": sched, "corbeille": int(ret) if ret.isdigit() else 0,
-         "debit": p[7] if len(p) > 7 else "", "memoire": p[8] if len(p) > 8 else "", "source_existe": os.path.isdir(src)}
-    ver = src_vars(f"{S}/{name}.verif.status", ["ETAT", "FIN", "IDENTIQUES", "DIFFERENTS", "MANQUANTS", "EN_TROP", "ERREURS"])
+         "debit": p[7] if len(p) > 7 else "", "memoire": p[8] if len(p) > 8 else "", "source_existe": os.path.isdir(src),
+         "destinations": [{"nom": d.split(":")[0], "chiffre": d.split(":", 1)[-1] == "oui"} for d in dl.split(";") if d],
+         "rotation": p[10] if len(p) > 10 else ""}
+    en = rd(f"{S}/{name}.entretien.json")
+    if en:
+        j["entretien"] = jload(en)
+    ver = src_vars(f"{S}/{name}.verif.status", ["ETAT", "FIN", "IDENTIQUES", "DIFFERENTS", "MANQUANTS", "EN_TROP", "ERREURS", "DESTINATIONS", "TYPE"])
     if ver:
         etat = ver["ETAT"]
         if etat == "en_cours" and rc(f"flock -n /run/nas-backup-verif-{name}.lock true") != 1:
             etat = "interrompue"
         iv = lambda k: int(ver[k]) if ver[k].isdigit() else 0
         j["verification"] = {"etat": etat, "fin": iv("FIN"), "identiques": iv("IDENTIQUES"), "differents": iv("DIFFERENTS"),
-                             "manquants": iv("MANQUANTS"), "en_trop": iv("EN_TROP"), "erreurs": iv("ERREURS")}
+                             "manquants": iv("MANQUANTS"), "en_trop": iv("EN_TROP"), "erreurs": iv("ERREURS"),
+                             "destinations": ver["DESTINATIONS"], "type": ver["TYPE"]}
     sim = src_vars(f"{S}/{name}.simulation.status", ["ETAT", "DEBUT", "FIN", "ENVOIS", "SUPPRESSIONS", "OCTETS"])
     if sim:
         etat = sim["ETAT"]
@@ -236,29 +277,51 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
         running = True
     j["en_cours"] = running
     if running:
-        j["avancement"] = progress(tail(f"{S}/{name}.run.log", 262144))
+        t = tail(f"{S}/{name}.run.log", 262144)
+        j["avancement"] = restic_progress(t) if mode == "versions" else progress(t)
         rss = rd(f"{S}/{name}.rss").split()
         if rss and rss[0].isdigit():
             j["ram_mo"] = int(rss[0])
+        dc = rd(f"{S}/{name}.dest").split("|")
+        if len(dc) >= 3 and dc[0].isdigit():
+            j["dest_en_cours"] = {"i": int(dc[0]), "n": int(dc[1]) if dc[1].isdigit() else 1, "nom": dc[2]}
     elif j.get("dernier_etat") == "ECHEC":
-        errs = [l for l in tail(f"{S}/{name}.run.log", 262144).splitlines()
-                if (" ERROR " in l or "CRITICAL" in l) and "Attempt " not in l]
-        if errs:
-            j["derniere_erreur"] = re.sub(r"^[0-9/ :]+", "", errs[-1])[:300]
+        kos = [d for d in (j.get("bilan") or {}).get("destinations", []) if d.get("code") and d.get("erreur")]
+        if kos:
+            j["derniere_erreur"] = "; ".join("%s : %s" % (d["destination"], d["erreur"]) for d in kos)[:300]
+        else:
+            errs = [l for l in tail(f"{S}/{name}.run.log", 262144).splitlines()
+                    if (" ERROR " in l or "CRITICAL" in l or l.startswith("Fatal:")) and "Attempt " not in l]
+            if errs:
+                j["derniere_erreur"] = re.sub(r"^[0-9/ :]+", "", errs[-1])[:300]
     jobs.append(j)
 out["sauvegardes"] = jobs
 out["verif_auto"] = rd("/etc/nas-backup/verification")
 
+# ---------------- Destinations, kit de secours ----------------
+if ag and int(ag.get("api") or 0) >= 7:
+    dl = jload(sh(AG + " destinations liste", 15)) or []
+    try:
+        de = json.load(open(S + "/destinations.json"))
+    except Exception:
+        de = {}
+    for d in dl:
+        if d.get("nom") in de:
+            d["etat"] = de[d["nom"]]
+    out["destinations"] = dl
+    out["secours"] = jload(sh(AG + " secours etat", 15))
+
 # ---------------- Restauration ----------------
-r = src_vars(S + "/restauration.status", ["ETAT", "NOM", "CIBLE", "DEBUT", "FIN", "CODE", "ELEMENT"])
+r = src_vars(S + "/restauration.status", ["ETAT", "NOM", "CIBLE", "DEBUT", "FIN", "CODE", "ELEMENT", "VERSION"])
 if r:
     rr = {"etat": r["ETAT"], "nom": r["NOM"], "cible": r["CIBLE"], "debut": r["DEBUT"], "fin": r["FIN"], "code": r["CODE"],
-          "element": r["ELEMENT"]}
+          "element": r["ELEMENT"], "version": r["VERSION"]}
     if r["ETAT"] == "en_cours":
         if rc("flock -n /run/nas-backup-restauration.lock true") != 1:
             rr["etat"] = "interrompue"
         else:
-            rr["avancement"] = progress(tail(S + "/restauration.log", 131072))
+            t = tail(S + "/restauration.log", 131072)
+            rr["avancement"] = progress(t) or restic_progress(t)
     out["restauration"] = rr
 
 # ---------------- Cameras ----------------
@@ -374,6 +437,15 @@ if os.path.isdir(ad):
             pass
 out["alertes"] = al
 out["alertes_installees"] = os.path.exists("/etc/nas-backup/notify.conf")
+# ---------------- Canaux de notification, sante des disques (script 2.3+) ----------------
+if ag and int(ag.get("api") or 0) >= 8:
+    out["notif"] = jload(sh(AG + " alertes voir", 15))
+    if out["notif"]:
+        out["alertes_installees"] = bool(out["notif"].get("canaux"))
+    try:
+        out["sante_disques"] = json.load(open(S + "/disques.json"))
+    except Exception:
+        out["sante_disques"] = None
 out["nas_check_en_cours"] = rc("pgrep -f '/usr/local/bin/nas-chec[k]' >/dev/null") == 0
 out["suivi_ha"] = os.path.exists("/etc/cron.d/nas-ha-status") and os.path.exists("/root/.config/mosquitto_pub")
 
@@ -583,6 +655,29 @@ mg["historique"] = [l for l in rd(M + "/historique.log").splitlines() if l.strip
 ev = re.compile(r"^(===|    (dmesg|stderr):)|ERROR|CRITICAL|Attempt \d")
 mg["journal"] = [l for l in tail(M + "/progression.log", 200000).splitlines() if l.strip() and ev.search(l)][-14:]
 out["migration"] = mg
+
+# ---------------- Sante des disques (script 2.2+) : verifiee au plus une fois par heure ----------------
+if api >= 4:
+    D = "/root/.nas-synology/disques.json"
+    try:
+        out["sante_disques"] = json.load(open(D))
+    except Exception:
+        out["sante_disques"] = None
+    try:
+        age = time.time() - os.path.getmtime(D)
+    except OSError:
+        age = 1e9
+    if age > 3600:
+        sh("nohup setsid " + AG + " disques verifier >/dev/null 2>&1 < /dev/null &", 5)
+    al = []
+    ad = "/root/.nas-synology/alertes"
+    if os.path.isdir(ad):
+        for f in sorted(os.listdir(ad)):
+            try:
+                al.append({"tag": f, "depuis": int(os.path.getmtime(os.path.join(ad, f)))})
+            except OSError:
+                pass
+    out["alertes"] = al
 print(json.dumps(out, ensure_ascii=False))
 PYEOF
 "#####;
@@ -641,7 +736,8 @@ pub struct JobForm<'a> {
     pub name: &'a str,
     pub source: &'a str,
     pub folder: &'a str,
-    pub mirror: bool,
+    /// sync (miroir), copy (copie) ou versions (restic)
+    pub mode: &'a str,
     pub encrypt: bool,
     pub schedule: &'a str,
     pub trash_days: u32,
@@ -649,21 +745,27 @@ pub struct JobForm<'a> {
     pub bwlimit: &'a str,
     /// memoire de rclone : "" (reglage de la machine), un profil ou un nombre de Mo
     pub memory: &'a str,
+    /// destinations « remote:oui|non » separees par ; (vide = Google Drive)
+    pub dests: &'a str,
+    /// versions gardees (jours:semaines:mois:annees)
+    pub rotation: &'a str,
 }
 
 pub fn nb_save(new: bool, f: &JobForm) -> String {
     format!(
-        "{NB_BIN} save {} {} {} {} {} {} {} {} {} {} 2>&1\n",
+        "{NB_BIN} save {} {} {} {} {} {} {} {} {} {} {} {} 2>&1\n",
         if new { "nouveau" } else { "modif" },
         sq(f.name),
         sq(f.source),
         sq(f.folder),
-        if f.mirror { "sync" } else { "copy" },
+        sq(f.mode),
         if f.encrypt { "oui" } else { "non" },
         sq(f.schedule),
         f.trash_days,
         sq(f.bwlimit),
-        sq(f.memory)
+        sq(f.memory),
+        sq(f.dests),
+        sq(f.rotation)
     )
 }
 
@@ -686,11 +788,11 @@ pub fn nb_delete(name: &str, purge: bool) -> String {
     )
 }
 
-pub fn nb_restore(name: &str, target: &str, item: &str, trash: bool) -> String {
+pub fn nb_restore(name: &str, target: &str, item: &str, trash: bool, dest: usize) -> String {
     let what = if item.is_empty() { format!("« {name} »") } else { format!("« {item} »") };
     background(
         &format!(
-            "{NB_BIN} restore {} {} {} {}",
+            "{NB_BIN} restore {} {} {} {} {dest}",
             sq(name),
             sq(target),
             sq(item),
@@ -700,8 +802,87 @@ pub fn nb_restore(name: &str, target: &str, item: &str, trash: bool) -> String {
     )
 }
 
-pub fn nb_ls(name: &str, path: &str, trash: bool) -> String {
-    format!("{NB_BIN} ls {} {} {}\n", sq(name), sq(path), if trash { "corbeille" } else { "''" })
+pub fn nb_ls(name: &str, path: &str, trash: bool, dest: usize) -> String {
+    format!("{NB_BIN} ls {} {} {} {dest}\n", sq(name), sq(path), if trash { "corbeille" } else { "''" })
+}
+
+// ---------------- Sauvegardes versionnees ----------------
+pub fn versions_list(name: &str, dest: usize) -> String {
+    format!("{NB_BIN} versions liste {} {dest}\n", sq(name))
+}
+
+pub fn versions_ls(name: &str, dest: usize, snap: &str, path: &str) -> String {
+    format!("{NB_BIN} versions ls {} {dest} {} {}\n", sq(name), sq(snap), sq(path))
+}
+
+pub fn versions_restore(name: &str, dest: usize, snap: &str, target: &str, item: &str) -> String {
+    let what = if item.is_empty() { format!("« {name} »") } else { format!("« {item} »") };
+    background(
+        &format!("{NB_BIN} versions restaurer {} {dest} {} {} {}", sq(name), sq(snap), sq(target), sq(item)),
+        &format!("Restauration de {what} (version {}) lancée vers {target}.", snap.get(..8).unwrap_or(snap)),
+    )
+}
+
+// ---------------- Destinations ----------------
+fn one_line(s: &str) -> String {
+    s.replace(['\n', '\r'], "").trim().to_string()
+}
+
+/// Test d'une destination (connexion, espace) ; resultat dans l'etat
+pub fn dest_check(name: &str) -> String {
+    format!("{NB_BIN} destinations etat {} >/dev/null 2>&1; {NB_BIN} destinations etat {} | tail -n 1\n", sq(name), sq(name))
+}
+
+/// Nouvelle destination (parametres cle=valeur, mots de passe compris, sur l'entree standard)
+pub fn dest_create(name: &str, kind: &str, params: &[(String, String)]) -> String {
+    let body: String = params.iter().filter(|(_, v)| !one_line(v).is_empty()).map(|(k, v)| format!("{k}={}\n", one_line(v))).collect();
+    format!("{NB_BIN} destinations creer {} {} 2>&1 <<'NASMGR_EOF'\n{body}NASMGR_EOF\n", sq(name), sq(kind))
+}
+
+/// Destination connectee par le navigateur (jeton OAuth sur l'entree standard)
+pub fn dest_token(name: &str, kind: &str, token: &str) -> String {
+    format!("{NB_BIN} destinations jeton {} {} 2>&1 <<'NASMGR_EOF'\n{}\nNASMGR_EOF\n", sq(name), sq(kind), one_line(token))
+}
+
+pub fn dest_delete(name: &str) -> String {
+    format!("{NB_BIN} destinations supprimer {} 2>&1\n", sq(name))
+}
+
+// ---------------- Kit de secours ----------------
+pub fn secours_save(force: bool) -> String {
+    background(
+        &format!("{NB_BIN} secours sauvegarder{}", if force { " force" } else { "" }),
+        "Kit de secours : création et envoi vers les destinations lancés.",
+    )
+}
+
+pub fn secours_download() -> String {
+    format!("{NB_BIN} secours telecharger\n")
+}
+
+/// Envoie un kit (fichier du PC) sur la machine puis le restaure (simulation ou application)
+pub fn secours_restore(kit: &[u8], pass: &str, apply: bool) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(kit);
+    let mut wrapped = String::new();
+    for chunk in b64.as_bytes().chunks(76) {
+        wrapped.push_str(std::str::from_utf8(chunk).unwrap_or(""));
+        wrapped.push('\n');
+    }
+    format!(
+        "umask 077; mkdir -p /root/.nas-manager\nbase64 -d > /root/.nas-manager/kit-a-restaurer.enc <<'NASMGR_B64'\n{wrapped}NASMGR_B64\n{NB_BIN} secours restaurer /root/.nas-manager/kit-a-restaurer.enc {} 2>&1 <<'NASMGR_EOF'\n{}\nNASMGR_EOF\nrc=$?\nrm -f /root/.nas-manager/kit-a-restaurer.enc\nexit $rc\n",
+        if apply { "appliquer" } else { "''" },
+        one_line(pass)
+    )
+}
+
+/// Mots de passe notes (reconstruction sans kit) ; vide = inchange
+pub fn secours_passwords(crypt: &str, salt: &str, versions: &str) -> String {
+    format!(
+        "{NB_BIN} secours mots-de-passe 2>&1 <<'NASMGR_EOF'\n{}\n{}\n{}\nNASMGR_EOF\n",
+        one_line(crypt),
+        one_line(salt),
+        one_line(versions)
+    )
 }
 
 pub fn nb_verify(name: &str) -> String {
@@ -855,8 +1036,66 @@ pub fn ack_alert(tag: &str) -> String {
     format!("rm -f /var/lib/nas-backup/alertes/{t} && echo 'Alerte « {t} » acquittée.'\n")
 }
 
+pub fn ack_alert_syno(tag: &str) -> String {
+    let t: String = tag.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+    format!("rm -f /root/.nas-synology/alertes/{t} && echo 'Alerte « {t} » acquittée.'\n")
+}
+
+// ---------------- Notifications (nas-debian 2.3+) ----------------
+fn word(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect()
+}
+
+/// Configure un canal (ha, ntfy, telegram, discord, email) puis envoie un message de test.
+/// Les parametres vides ne sont pas transmis (un secret vide garde l'ancien).
+pub fn canal_set(canal: &str, niveau: &str, params: &[(&str, String)]) -> String {
+    let body: String = params.iter().filter(|(_, v)| !one_line(v).is_empty()).map(|(k, v)| format!("{k}={}\n", one_line(v))).collect();
+    format!("{NB_BIN} alertes canal {} {} 2>&1 <<'NASMGR_EOF'\n{body}NASMGR_EOF\n", word(canal), word(niveau))
+}
+
+pub fn canal_level(canal: &str, niveau: &str) -> String {
+    format!("{NB_BIN} alertes niveau {} {} 2>&1\n", word(canal), word(niveau))
+}
+
+pub fn canal_remove(canal: &str) -> String {
+    format!("{NB_BIN} alertes retirer {} 2>&1\n", word(canal))
+}
+
+pub fn canal_test(canal: &str) -> String {
+    format!("{NB_BIN} alertes tester {} 2>&1\n", word(canal))
+}
+
+/// Conversations Telegram ayant ecrit au bot : lignes « id|nom »
+pub fn telegram_chats(token: &str) -> String {
+    format!("{NB_BIN} alertes telegram 2>&1 <<'NASMGR_EOF'\n{}\nNASMGR_EOF\n", one_line(token))
+}
+
+pub fn alert_thresholds(repeat_h: u32, quota_pct: u32, late_h: u32) -> String {
+    format!("{NB_BIN} alertes seuils {repeat_h} {quota_pct} {late_h} 2>&1\n")
+}
+
+pub fn report_view(freq: &str) -> String {
+    format!("{NB_BIN} rapport voir {} 2>&1\n", word(freq))
+}
+
+pub fn report_send(freq: &str) -> String {
+    format!("{NB_BIN} rapport envoyer {} 2>&1\n", word(freq))
+}
+
+pub fn report_plan(freq: &str, day: u32, time: &str, channels: &[String]) -> String {
+    let ch: Vec<String> = channels.iter().map(|c| word(c)).filter(|c| !c.is_empty()).collect();
+    let t: String = time.chars().filter(|c| c.is_ascii_digit() || *c == ':').collect();
+    format!("{NB_BIN} rapport planifier {} {day} {t} {} 2>&1\n", word(freq), ch.join(" "))
+}
+
+/// Verification immediate de la sante des disques (SMART, RAID)
+pub fn disks_check(syno: bool) -> String {
+    format!("{} disques verifier >/dev/null 2>&1; echo 'Disques vérifiés.'\n", if syno { SYNO_BIN } else { NB_BIN })
+}
+
 pub fn show_passwords() -> String {
-    r#"found=0
+    r#"if /usr/local/bin/nas-debian mots-de-passe 2>/dev/null; then exit 0; fi
+found=0
 for f in /root/nas-backup-motsdepasse.txt /root/cam-crypt-motsdepasse.txt; do
   [ -f "$f" ] || continue; found=1
   echo "=== $f"; cat "$f"; echo
@@ -1052,7 +1291,7 @@ mod live {
         // nouvelle sauvegarde avec apostrophe et espace dans le chemin
         let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Film's d'été";
         run(true, &format!("mkdir -p {}\n", sq(d)));
-        let f = JobForm { name: "Films", source: d, folder: "Films d'été", mirror: true, encrypt: false, schedule: "05:10", trash_days: 14, bwlimit: "", memory: "" };
+        let f = JobForm { name: "Films", source: d, folder: "Films d'été", mode: "sync", encrypt: false, schedule: "05:10", trash_days: 14, bwlimit: "", memory: "", dests: "", rotation: "" };
         let o = run(true, &nb_save(true, &f));
         assert_eq!(o.code, 0, "{}", o.text());
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf; cat /etc/cron.d/nas-backup");
@@ -1062,11 +1301,11 @@ mod live {
         let o = run(true, &nb_save(true, &f));
         assert_ne!(o.code, 0);
         // modification
-        let f2 = JobForm { schedule: "manuel", mirror: false, ..f };
+        let f2 = JobForm { schedule: "manuel", mode: "copy", ..f };
         let o = run(true, &nb_save(false, &f2));
         assert_eq!(o.code, 0);
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf");
-        assert!(o.stdout.trim().ends_with("|copy|non|manuel|0||"), "{}", o.stdout);
+        assert!(o.stdout.trim().ends_with("|copy|non|manuel|0|||gdrive:non|"), "{}", o.stdout);
         // horaires sur certains jours + limite de debit
         let f4 = JobForm { schedule: "03:30/135;22:15", bwlimit: "08:00,2M 23:00,off", ..f2 };
         let o = run(true, &nb_save(false, &f4));
@@ -1079,7 +1318,7 @@ mod live {
         let f5 = JobForm { memory: "econome", ..f4 };
         assert_eq!(run(true, &nb_save(false, &f5)).code, 0);
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf");
-        assert!(o.stdout.trim().ends_with("|08:00,2M 23:00,off|econome"), "{}", o.stdout);
+        assert!(o.stdout.trim().ends_with("|08:00,2M 23:00,off|econome|gdrive:non|"), "{}", o.stdout);
         assert_ne!(run(true, &nb_save(false, &JobForm { memory: "12", ..f4 })).code, 0, "memoire invalide refusee");
         // horaire invalide
         let f3 = JobForm { schedule: "25:00", ..f2 };
@@ -1109,13 +1348,13 @@ mod live {
         let o = run(true, &format!("{NB_BIN} stop Musique 2>&1; cat /var/lib/nas-backup/Musique.status"));
         assert!(o.stdout.contains("ARRETE"), "{}", o.text());
         // parcours du Drive (dechiffre) et chemin interdit
-        let o = run(true, &nb_ls("Photos", "2024", false));
+        let o = run(true, &nb_ls("Photos", "2024", false, 0));
         assert!(o.stdout.contains("IMG_2.jpg"), "{}", o.text());
-        assert_ne!(run(true, &nb_ls("Photos", "../../etc", false)).code, 0);
-        let o = run(true, &nb_ls("Photos", "", true));
+        assert_ne!(run(true, &nb_ls("Photos", "../../etc", false, 0)).code, 0);
+        let o = run(true, &nb_ls("Photos", "", true, 0));
         assert!(o.stdout.contains("2026-10-15_0330"));
         // restauration d'un fichier de la corbeille (en arriere-plan) puis etat
-        run(true, &nb_restore("Photos", "/tmp/restau-test", "2026-10-15_0330/ancien.txt", true));
+        run(true, &nb_restore("Photos", "/tmp/restau-test", "2026-10-15_0330/ancien.txt", true, 0));
         let o = run(true, "for i in $(seq 40); do grep -q 'ETAT=en_cours' /var/lib/nas-backup/restauration.status || break; sleep 1; done; cat /var/lib/nas-backup/restauration.status");
         assert!(o.stdout.contains("ETAT=ok"), "{}", o.text());
         // verification d'integrite et planification
@@ -1136,7 +1375,53 @@ mod live {
         let sim = st.sauvegardes.iter().find(|j| j.nom == "Musique").and_then(|j| j.simulation.clone()).expect("simulation");
         assert_eq!((sim.envois, sim.suppressions), (2, 1));
         assert!(sim.octets > 1_000_000_000);
+        destinations_live();
         temps_reel_live();
+    }
+
+    /// Destinations, sauvegardes vers plusieurs destinations, versions, kit de secours : configuration
+    /// et collecte (faux rclone ; le moteur lui-meme est teste avec les vrais rclone et restic, voir
+    /// tests/destinations.sh)
+    fn destinations_live() {
+        let o = run(true, &format!("{DEBIAN_BIN} destinations liste"));
+        let ds: Vec<crate::model::Destination> = serde_json::from_str(o.stdout.trim()).expect("destinations");
+        assert!(ds.iter().any(|d| d.nom == "gdrive" && d.kind == "drive" && d.chiffre_pret), "{ds:?}");
+        assert!(ds.iter().any(|d| d.nom == "usb" && d.kind == "local" && d.cible.ends_with("/Sauvegardes")), "{ds:?}");
+        assert!(!ds.iter().any(|d| d.nom == "gbackup" || d.nom == "gcrypt"), "remotes chiffres caches : {ds:?}");
+        let src = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Documents";
+        let f = JobForm { name: "Multi", source: src, folder: "Multi", mode: "sync", encrypt: true, schedule: "manuel", trash_days: 7, bwlimit: "", memory: "", dests: "gdrive:oui;usb:non", rotation: "" };
+        let o = run(true, &nb_save(true, &f));
+        assert_eq!(o.code, 0, "{}", o.text());
+        assert!(run(true, "grep '^Multi|' /etc/nas-backup/jobs.conf").stdout.trim().ends_with("|gdrive:oui;usb:non|"));
+        assert_ne!(run(true, &nb_save(false, &JobForm { dests: "nulle:oui", ..f })).code, 0, "destination inconnue refusee");
+        assert_ne!(run(true, &nb_save(false, &JobForm { dests: "gcrypt:oui", ..f })).code, 0, "remote chiffre refuse");
+        let v = JobForm { name: "Vers", folder: "Vers", mode: "versions", encrypt: false, dests: "usb:non", rotation: "7:4:12:0", trash_days: 9, ..f };
+        assert_eq!(run(true, &nb_save(true, &v)).code, 0);
+        let o = run(true, "grep '^Vers|' /etc/nas-backup/jobs.conf; cat /etc/cron.d/nas-backup");
+        assert!(o.stdout.contains("|versions|oui|manuel|0|||usb:oui|7:4:12:0"), "{}", o.stdout);
+        assert!(o.stdout.contains("versions entretien") && o.stdout.contains("secours sauvegarder"), "{}", o.stdout);
+        assert_ne!(run(true, &nb_save(false, &JobForm { rotation: "0:0:0:0", ..v })).code, 0, "rotation vide refusee");
+        // collecte
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        assert!(st.destinations.len() >= 2);
+        let m = st.sauvegardes.iter().find(|j| j.nom == "Multi").expect("Multi");
+        assert_eq!(m.dests(), vec![crate::model::JobDest { nom: "gdrive".into(), chiffre: true }, crate::model::JobDest { nom: "usb".into(), chiffre: false }]);
+        let vj = st.sauvegardes.iter().find(|j| j.nom == "Vers").expect("Vers");
+        assert!(vj.versions() && vj.rotation == "7:4:12:0");
+        let p = st.sauvegardes.iter().find(|j| j.nom == "Photos").expect("Photos");
+        assert_eq!(p.dests(), vec![crate::model::JobDest { nom: "gdrive".into(), chiffre: true }], "ancienne ligne : Google Drive");
+        assert!(st.secours.is_some(), "etat du kit de secours");
+        // destination utilisee : suppression refusee
+        let o = run(true, &dest_delete("usb"));
+        assert!(o.code != 0 && o.text().contains("Multi"), "{}", o.text());
+        assert_eq!(run(true, &nb_delete("Multi", false)).code, 0);
+        assert_eq!(run(true, &nb_delete("Vers", false)).code, 0);
+        // nouvelle destination : nom et type controles
+        assert_ne!(run(true, &dest_create("a-b", "local", &[("chemin".into(), "/tmp".into())])).code, 0);
+        assert_ne!(run(true, &dest_create("od", "onedrive", &[])).code, 0);
+        assert_ne!(run(true, &dest_token("od", "onedrive", "pas un jeton")).code, 0);
+        // mots de passe : la commande du script repond
+        assert_eq!(run(true, &show_passwords()).code, 0);
     }
 
     /// Sauvegardes temps reel sur le faux OMV (faux rclone : seules la configuration et l'etat sont verifies ;
@@ -1184,6 +1469,48 @@ mod live {
         assert_eq!(o.code, 0, "suppression : {}", o.text());
         let o = run(true, "grep -v '^#' /etc/nas-backup/temps-reel.conf; cat /etc/cron.d/nas-temps-reel");
         assert!(!o.stdout.contains("Bureau") && o.stdout.contains("Cameras"), "{}", o.stdout);
+    }
+
+    /// Sante des disques (faux smartctl), canaux de notification, rapport : collecte et commandes
+    #[test]
+    fn sante_disques_live() {
+        if !on() {
+            return;
+        }
+        assert_eq!(run(true, &install_file(DEBIAN_BIN, NAS_DEBIAN_SH)).code, 0);
+        let o = run(true, &disks_check(false));
+        assert_eq!(o.code, 0, "{}", o.text());
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let h = st.sante_disques.expect("sante des disques");
+        assert!(h.smart && h.disques.len() == 3, "{h:?}");
+        assert_eq!(h.problems(), (0, 1), "sdb a surveiller");
+        let n = st.notif.expect("canaux");
+        assert_eq!(n.rapport.frequence, "non");
+        // canaux : adresse invalide refusee, seuils, rapport
+        assert_ne!(run(true, &canal_set("discord", "tout", &[("url", "https://exemple.fr/x".into())])).code, 0);
+        assert_ne!(run(true, &canal_set("pigeon", "tout", &[])).code, 0);
+        assert_ne!(run(true, &telegram_chats("pas-un-jeton")).code, 0);
+        assert_eq!(run(true, &alert_thresholds(8, 85, 40)).code, 0);
+        let o = run(true, &report_view("mensuel"));
+        assert!(o.code == 0 && o.stdout.to_lowercase().contains("rapport"), "{}", o.text());
+        assert_eq!(run(true, &report_plan("hebdo", 7, "09:05", &[])).code, 0);
+        assert!(run(true, "cat /etc/cron.d/nas-backup").stdout.contains("5 9 * * 0 root /usr/local/bin/nas-debian rapport envoyer hebdo"));
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        let n = st.notif.unwrap();
+        assert!(n.rappel_h == 8 && n.quota_pct == 85 && n.retard_h == 40 && n.rapport.jour == 7, "{n:?}");
+        assert_eq!(run(true, &report_plan("non", 1, "08:30", &[])).code, 0);
+        assert_eq!(run(true, &alert_thresholds(12, 90, 50)).code, 0);
+        // Synology : verification, alerte, acquittement
+        assert_eq!(run(false, &install_file(SYNO_BIN, NAS_SYNOLOGY_SH)).code, 0);
+        assert_eq!(run(false, &format!("echo 2 > /tmp/faux-nas/smart-sdb-en-attente; {}", disks_check(true))).code, 0);
+        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        let h = sy.sante_disques.expect("sante des disques Synology");
+        assert_eq!(h.problems(), (1, 0), "{h:?}");
+        assert!(sy.alertes.iter().any(|a| a.tag == "disque-ZDH0USE2"), "{:?}", sy.alertes);
+        assert_eq!(run(false, &ack_alert_syno("disque-ZDH0USE2")).code, 0);
+        assert_eq!(run(false, &format!("rm -f /tmp/faux-nas/smart-sdb-en-attente; {}", disks_check(true))).code, 0);
+        let sy: crate::model::SynoStatus = serde_json::from_str(run(false, SYNO_STATUS).stdout.lines().last().unwrap()).expect("json Synology");
+        assert!(sy.alertes.is_empty(), "{:?}", sy.alertes);
     }
 
     #[test]

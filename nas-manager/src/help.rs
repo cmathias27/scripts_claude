@@ -63,6 +63,45 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         step(ui, 4, tr("Page Sauvegardes programmées : sauvegardes à heure fixe ou à la demande (dossier, mode miroir ou copie, chiffrement, horaire)."));
         step(ui, 5, tr("Page Sauvegardes temps réel : dossiers surveillés en continu (caméras, documents…), chaque changement part au fil de l'eau."));
         step(ui, 6, tr("Note les mots de passe de chiffrement hors du NAS (Alertes > Mots de passe de chiffrement)."));
+        step(ui, 7, tr("Page Destinations : ajoute une deuxième destination (disque USB, autre NAS, OneDrive…) et note le mot de passe du kit de secours."));
+    });
+
+    section(ui, tr("Destinations et règle 3-2-1"), false, |ui| {
+        ui.label(tr("Une destination, c'est l'endroit où partent les sauvegardes : Google Drive, OneDrive, Dropbox, pCloud, Box, un disque USB branché sur le NAS, un autre NAS (SFTP ou partage SMB), un serveur WebDAV (Nextcloud, ownCloud, oCIS), Backblaze B2 ou un stockage S3."));
+        ui.label(tr("Règle 3-2-1 : garder 3 copies des données (le NAS + 2 sauvegardes), sur 2 supports différents, dont 1 hors de la maison. Une sauvegarde programmée peut partir vers plusieurs destinations, l'une après l'autre ; le chiffrement se choisit pour chacune."));
+        ui.label(RichText::new(tr("Exemple : photos → Google Drive (chiffré) + disque USB (en clair, relisible directement en cas de besoin).")).small());
+        ui.label(RichText::new(tr("Un disque USB débranché fait échouer la sauvegarde vers lui (alerte), sans rien écrire sur le disque système ; les autres destinations sont faites quand même.")).small());
+    });
+
+    section(ui, tr("Sauvegardes versionnées"), false, |ui| {
+        ui.label(tr("Le mode « Versionnée » garde des versions datées du dossier, comme Hyper Backup : on peut retrouver un fichier ou tout le dossier tel qu'il était à une date donnée (avant un effacement, un rançongiciel, une mauvaise manipulation)."));
+        ui.label(tr("Seuls les morceaux modifiés sont envoyés et stockés (déduplication) et tout est chiffré. Les versions gardées suivent une rotation (ex. 7 quotidiennes, 4 hebdomadaires, 12 mensuelles) ; le nettoyage des anciennes versions et un contrôle des données ont lieu chaque dimanche matin."));
+        ui.label(tr("Différence avec miroir / copie : les fichiers ne sont pas lisibles un par un sur la destination, on les récupère avec « Versions et restauration » (menu ⋯ de la sauvegarde). Sans le mot de passe des versions, les versions sont illisibles : il est dans le kit de secours et dans les mots de passe de chiffrement."));
+    });
+
+    section(ui, tr("Mon NAS est mort : reconstruire"), false, |ui| {
+        ui.label(tr("Ce qu'il faut : le kit de secours (copié sur ce PC et dans le dossier NAS-secours de chaque destination) et son mot de passe (6 groupes de 4 caractères)."));
+        step(ui, 1, tr("Installe Debian ou OpenMediaVault sur la nouvelle machine, monte les disques de données et active SSH (compte root)."));
+        step(ui, 2, tr("Paramètres : remplace l'adresse de l'OMV par celle de la nouvelle machine, puis « Oublier l'identité » et « Autoriser la clé »."));
+        step(ui, 3, tr("Page Installation, carte 1 : installe le script nas-debian (il installe aussi rclone, restic et les outils)."));
+        step(ui, 4, tr("Page Installation, carte 9 : choisis le kit de secours, tape son mot de passe, « Vérifier le kit » puis « Restaurer sur cette machine ». Connexions aux destinations, mots de passe, sauvegardes et réglages reviennent."));
+        step(ui, 5, tr("Si les disques ont changé de chemin, corrige le dossier source des sauvegardes (bouton Modifier), puis restaure les données : menu ⋯ > Restaurer (ou Versions et restauration)."));
+        step(ui, 6, tr("Page Destinations : « Tout tester ». Une destination refusée (autorisation expirée) se reconnecte avec « Reconnecter »."));
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Kit introuvable sur le PC ? Télécharge-le depuis le site du cloud (dossier NAS-secours) ou depuis le disque USB. Pas de kit du tout ? Reconnecte les destinations, puis saisis les mots de passe notés (Installation, carte 9 > « Pas de kit ? »).")).small());
+        ui.label(RichText::new(tr("Sans NAS Manager, sur un PC Linux ou WSL, le kit s'ouvre avec :")).small());
+        code(ui, "openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -in kit-secours-NAS.tar.gz.enc | tar xzv");
+    });
+
+    section(ui, tr("Être prévenu : notifications, disques, rapport"), false, |ui| {
+        ui.label(tr("Chaque heure, le NAS vérifie les sauvegardes, les destinations, l'espace libre et la santé des disques. Un problème déclenche une alerte, rappelée tant qu'il n'est pas résolu, puis un message « rétabli »."));
+        step(ui, 1, tr("Page Alertes & santé, « Ajouter un canal » : ntfy (le plus simple : application gratuite, sans compte), Telegram, Discord, e-mail ou Home Assistant. Plusieurs canaux peuvent être combinés."));
+        step(ui, 2, tr("Chaque canal reçoit soit les alertes seulement, soit aussi les messages discrets. Un message de test part à l'enregistrement."));
+        step(ui, 3, tr("Rapport : un résumé chaque semaine ou chaque mois (sauvegardes, espace, disques, alertes). « Aperçu » le montre sans l'envoyer."));
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Santé des disques")).strong());
+        ui.label(tr("Les disques préviennent souvent avant de lâcher : secteurs réalloués (à surveiller), secteurs instables ou illisibles, test SMART en échec (à remplacer vite). Un RAID qui perd un disque n'a plus de redondance : remplace le disque en panne au plus vite. Les disques en veille ne sont pas réveillés pour la vérification."));
+        ui.label(RichText::new(tr("Les alertes du Synology (disques, RAID) s'affichent ici et passent par Home Assistant s'il est configuré sur le Synology.")).small());
     });
 
     section(ui, tr("Sauvegardes programmées ou temps réel ?"), false, |ui| {
@@ -107,7 +146,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     });
 
     section(ui, tr("Raccourcis et astuces"), false, |ui| {
-        ui.label(tr("F5 : actualiser · Ctrl+1 à Ctrl+9 : changer de page."));
+        ui.label(tr("F5 : actualiser · Ctrl+1 à Ctrl+9 puis Ctrl+0 : changer de page (Ctrl+0 : Paramètres)."));
         ui.label(tr("Fermer la fenêtre la réduit dans la zone de notification ; clic droit sur l'icône pour Quitter."));
         ui.label(tr("Taille du texte, thème, notifications, démarrage avec Windows : Paramètres > Préférences."));
         ui.label(tr("Plusieurs NAS (le tien, celui d'un proche) : Paramètres > Sites."));

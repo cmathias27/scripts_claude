@@ -391,6 +391,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         Page::Dashboard,
         Page::Backups,
         Page::Realtime,
+        Page::Destinations,
         Page::History,
         Page::Alerts,
         Page::Copy,
@@ -409,6 +410,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         egui::Key::Num7,
         egui::Key::Num8,
         egui::Key::Num9,
+        egui::Key::Num0,
     ];
     ctx.input_mut(|i| {
         if i.consume_key(egui::Modifiers::NONE, egui::Key::F5) {

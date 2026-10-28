@@ -22,11 +22,12 @@
 #    reglages voir | ram <auto|econome|equilibre|performant> [Mo] [transferts] [verifs]
 #             | omv <adresse> | ha <adresse> <webhook>
 #    migrer simulation | appliquer   reprise d'une installation avec les anciens scripts
+#    disques verifier | etat         sante des disques (SMART) et du RAID, alertes
 # =====================================================================
 set -o pipefail
 
-SCRIPT_VERSION="2.1.1"
-API_VERSION=3
+SCRIPT_VERSION="2.2.0"
+API_VERSION=4
 
 # --------------------------- Reglages --------------------------------
 # Valeurs par defaut, modifiables avec « nas-synology reglages » (fichier SYNO_CONF)
@@ -1727,9 +1728,9 @@ outils_etat() {
   local rc="" b
   command -v rclone >/dev/null && rc=$(rclone version 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d 'v')
   b() { command -v "$1" >/dev/null && echo true || echo false; }
-  printf '{"machine":"synology","arch":"%s","ram_total_mo":%s,"ram_dispo_mo":%s,"python3":%s,"rsync":%s,"curl":%s,"ssh":%s,"rclone":"%s","rclone_derniere":"%s","cle_omv":%s}\n' \
+  printf '{"machine":"synology","arch":"%s","ram_total_mo":%s,"ram_dispo_mo":%s,"python3":%s,"rsync":%s,"curl":%s,"ssh":%s,"rclone":"%s","rclone_derniere":"%s","cle_omv":%s,"smartctl":%s}\n' \
     "$(uname -m)" "$(ram_total_mo)" "$(ram_dispo_mo)" "$(b python3)" "$(b rsync)" "$(b curl)" "$(b ssh)" "$rc" \
-    "$(cat "$SYNO_DIR/rclone-derniere" 2>/dev/null)" "$( [ -f "$CP_KEY" ] && echo true || echo false)"
+    "$(cat "$SYNO_DIR/rclone-derniere" 2>/dev/null)" "$( [ -f "$CP_KEY" ] && echo true || echo false)" "$(b smartctl)"
 }
 
 outils_installer() {
@@ -1850,6 +1851,292 @@ menu_principal() {
 }
 
 # =========================== Point d'entree ==========================
+# =========================== Sante des disques =======================
+# Sante des disques (SMART) et des grappes RAID (mdadm, ZFS) -> JSON + lignes d'alerte :
+#   ALERTE|tag|titre|message   probleme durable (disque critique, RAID degrade)
+#   OK|tag|titre|message       plus de probleme pour ce tag
+#   EVENEMENT|titre|message    evenement ponctuel (secteurs realloues en hausse, nouvelle anomalie...)
+# Les disques en veille ne sont pas reveilles (smartctl -n standby) : leurs dernieres valeurs sont gardees.
+disk_health_py() {  # disk_health_py <fichier json> <smartctl> <nom de la machine>
+  python3 - "$1" "$2" "$3" <<'PYDISK'
+import glob, json, os, re, subprocess, sys, time
+out_path, smart, host = sys.argv[1], sys.argv[2], sys.argv[3]
+MDSTAT = os.environ.get("NAS_MDSTAT", "/proc/mdstat")
+try:
+    prev = json.load(open(out_path))
+except (OSError, ValueError):
+    prev = {}
+prevd = {(d.get("serie") or d.get("dev")): d for d in prev.get("disques", [])}
+lines = []
+
+def run(args, t=90):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=t)
+        return p.returncode, p.stdout + p.stderr
+    except Exception:
+        return -1, ""
+
+def scan():
+    devs = []
+    if smart:
+        _, o = run([smart, "--scan"])
+        for l in o.splitlines():
+            m = re.match(r"^(/dev/\S+)\s+-d\s+(\S+)", l)
+            if m and m.group(1) not in [d[0] for d in devs]:
+                devs.append((m.group(1), m.group(2)))
+    if not devs:
+        for p in sorted(glob.glob("/dev/sd[a-z]") + glob.glob("/dev/sata[0-9]*") + glob.glob("/dev/nvme[0-9]n1")):
+            if re.match(r"^/dev/(sd[a-z]|sata\d+|nvme\d+n1)$", p):
+                devs.append((p, ""))
+    return devs
+
+def num(x):
+    try:
+        return int(str(x).replace(",", "").split()[0])
+    except (ValueError, IndexError, TypeError):
+        return None
+
+def from_json(j):
+    d = {"modele": j.get("model_name") or j.get("model_family") or "", "serie": j.get("serial_number", ""),
+         "taille": (j.get("user_capacity") or {}).get("bytes") or j.get("nvme_total_capacity")}
+    proto = (j.get("device") or {}).get("protocol", "")
+    d["type"] = "nvme" if proto == "NVMe" else ("ssd" if j.get("rotation_rate") == 0 else "hdd")
+    st = j.get("smart_status") or {}
+    d["smart_ok"] = st.get("passed")
+    d["temp"] = (j.get("temperature") or {}).get("current")
+    d["heures"] = (j.get("power_on_time") or {}).get("hours")
+    tab = (j.get("ata_smart_attributes") or {}).get("table", [])
+    raw = {a.get("id"): (a.get("raw") or {}).get("value") for a in tab}
+    norm = {a.get("id"): a.get("value") for a in tab}
+    d.update(realloues=raw.get(5), en_attente=raw.get(197), irreparables=raw.get(198), crc=raw.get(199), non_corriges=raw.get(187))
+    nv = j.get("nvme_smart_health_information_log")
+    if nv:
+        d.update(usure=nv.get("percentage_used"), alerte_nvme=nv.get("critical_warning"), erreurs_media=nv.get("media_errors"),
+                 reserve=nv.get("available_spare"), reserve_seuil=nv.get("available_spare_threshold"))
+        if d["temp"] is None:
+            d["temp"] = nv.get("temperature")
+        if d["heures"] is None:
+            d["heures"] = nv.get("power_on_hours")
+    elif d["type"] == "ssd":
+        for i in (177, 231, 233, 202):        # usure des SSD SATA (selon les marques)
+            if norm.get(i) is not None and 0 < norm[i] <= 100:
+                d["usure"] = 100 - norm[i]
+                break
+    return d
+
+def from_text(t):
+    g = lambda rx: (lambda m: m.group(1).strip() if m else None)(re.search(rx, t, re.M))
+    d = {"modele": g(r"^(?:Device Model|Model Number|Product):\s*(.+)$") or "", "serie": g(r"^Serial [Nn]umber:\s*(.+)$") or ""}
+    cap = g(r"^(?:User Capacity|Total NVM Capacity|Namespace 1 Size/Capacity):\s*([\d,.\s]+) bytes")
+    d["taille"] = num(re.sub(r"[^\d]", "", cap)) if cap else None
+    h = g(r"SMART overall-health self-assessment test result:\s*(\S+)") or g(r"SMART Health Status:\s*(\S+)")
+    d["smart_ok"] = None if h is None else h.upper() in ("PASSED", "OK")
+    rot = g(r"^Rotation Rate:\s*(.+)$")
+    nvme = bool(re.search(r"^(NVMe Version|PCI Vendor/Subsystem ID)", t, re.M))
+    d["type"] = "nvme" if nvme else ("ssd" if rot and "Solid State" in rot else "hdd")
+    attrs = {}
+    for m in re.finditer(r"^\s*(\d{1,3})\s+\S+\s+0x[0-9a-fA-F]+\s+(\d+)\s+\d+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\d+)", t, re.M):
+        attrs[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
+    raw = lambda i: attrs[i][1] if i in attrs else None
+    d.update(realloues=raw(5), en_attente=raw(197), irreparables=raw(198), crc=raw(199), non_corriges=raw(187))
+    tmp = num(g(r"^(?:Temperature|Current Drive Temperature):\s*(\d+)")) or raw(194) or raw(190)
+    d["temp"] = tmp if tmp is not None and tmp < 120 else None
+    d["heures"] = raw(9) if raw(9) is not None else num(g(r"^Power On Hours:\s*([\d,]+)"))
+    if nvme:
+        d.update(usure=num(g(r"^Percentage Used:\s*(\d+)%")), alerte_nvme=(lambda v: int(v, 16) if v else None)(g(r"^Critical Warning:\s*(0x[0-9a-fA-F]+)")),
+                 erreurs_media=num(g(r"^Media and Data Integrity Errors:\s*([\d,]+)")), reserve=num(g(r"^Available Spare:\s*(\d+)%")),
+                 reserve_seuil=num(g(r"^Available Spare Threshold:\s*(\d+)%")))
+    elif d["type"] == "ssd":
+        for i in (177, 231, 233, 202):
+            if i in attrs and 0 < attrs[i][0] <= 100:
+                d["usure"] = 100 - attrs[i][0]
+                break
+    return d
+
+def read_disk(dev, typ):
+    base = [smart] + (["-d", typ] if typ else [])
+    rc, o = run(base + ["-a", "-j", "-n", "standby", dev])
+    j = None
+    if o.lstrip().startswith("{"):
+        try:
+            j = json.loads(o)
+        except ValueError:
+            j = None
+    if j is not None:
+        msgs = " ".join(m.get("string", "") for m in (j.get("smartctl") or {}).get("messages", []))
+        if "STANDBY" in msgs.upper() or "SLEEP" in msgs.upper():
+            return "veille"
+        if not j.get("serial_number") and not j.get("model_name") and rc & 2:
+            return None
+        return from_json(j)
+    rc, o = run(base + ["-a", "-n", "standby", dev])
+    if re.search(r"STANDBY|SLEEP", o) and "SMART" not in o[200:]:
+        return "veille"
+    if "Serial" not in o and "Model" not in o:
+        return None
+    return from_text(o)
+
+def evaluate(d, p):
+    crit, att, ev = [], [], []
+    if d.get("smart_ok") is False:
+        crit.append("test SMART en échec : le disque annonce sa panne, remplace-le")
+    if d.get("en_attente"):
+        crit.append("%d secteur(s) instable(s) en attente de réallocation" % d["en_attente"])
+    if d.get("irreparables"):
+        crit.append("%d secteur(s) illisible(s)" % d["irreparables"])
+    r, pr = d.get("realloues") or 0, (p or {}).get("realloues") or 0
+    if r:
+        att.append("%d secteur(s) réalloué(s)" % r)
+        if p and r > pr:
+            ev.append("secteurs réalloués en hausse : %d (avant : %d). Signe d'usure : vérifie les sauvegardes et prévois le remplacement." % (r, pr))
+    if d.get("non_corriges"):
+        att.append("%d erreur(s) non corrigée(s)" % d["non_corriges"])
+    c, pc = d.get("crc") or 0, (p or {}).get("crc") or 0
+    if p and c > pc:
+        ev.append("erreurs de transmission en hausse (%d) : câble SATA ou connecteur à vérifier." % c)
+    if d.get("alerte_nvme"):
+        crit.append("le SSD signale un problème (avertissement critique %d)" % d["alerte_nvme"])
+    if d.get("reserve") is not None and d.get("reserve_seuil") is not None and d["reserve"] <= d["reserve_seuil"]:
+        crit.append("réserve du SSD épuisée (%d %%)" % d["reserve"])
+    u = d.get("usure")
+    if u is not None and u >= 100:
+        crit.append("SSD usé (%d %%)" % u)
+    elif u is not None and u >= 80:
+        att.append("SSD usé à %d %%" % u)
+    if d.get("erreurs_media"):
+        att.append("%d erreur(s) d'intégrité des données" % d["erreurs_media"])
+    t = d.get("temp")
+    hot = (60, 50) if d.get("type") == "hdd" else (75, 65)
+    if t is not None and t >= hot[0]:
+        crit.append("température élevée : %d °C (ventilation ?)" % t)
+    elif t is not None and t >= hot[1]:
+        att.append("température : %d °C" % t)
+    d["etat"] = "critique" if crit else ("attention" if att else "ok")
+    d["raisons"] = crit + att
+    return ev
+
+def nom(d):
+    return "%s (%s%s)" % (d["dev"], d.get("modele") or "disque", ", n° " + d["serie"] if d.get("serie") else "")
+
+disques = []
+present = bool(smart)
+for dev, typ in (scan() if present else []):
+    r = read_disk(dev, typ)
+    if r is None:
+        continue
+    key_prev = None
+    if r == "veille":
+        p = next((x for x in prevd.values() if x.get("dev") == dev), None)
+        if not p:
+            disques.append({"dev": dev, "veille": True, "etat": "inconnu", "raisons": []})
+            continue
+        d = dict(p); d["veille"] = True
+        disques.append(d)
+        continue
+    d = r; d["dev"] = dev; d["veille"] = False
+    p = prevd.get(d.get("serie") or dev)
+    for e in evaluate(d, p):
+        lines.append("EVENEMENT|Disque %s : à surveiller|%s" % (d["dev"], e))
+    tag = "disque-" + re.sub(r"[^A-Za-z0-9_-]", "_", d.get("serie") or dev.split("/")[-1])[:40]
+    d["tag"] = tag
+    if d["etat"] == "critique":
+        lines.append("ALERTE|%s|Disque %s en danger|%s : %s. Vérifie les sauvegardes et prévois de remplacer le disque." % (tag, d["dev"], nom(d), " ; ".join(d["raisons"])))
+    else:
+        lines.append("OK|%s|Disque %s|Le disque %s ne signale plus de problème grave." % (tag, d["dev"], nom(d)))
+        norm = lambda v: {re.sub(r"\d+", "#", x) for x in v}
+        if d["etat"] == "attention" and norm(d["raisons"]) - norm((p or {}).get("raisons", [])) and not any(l.startswith("EVENEMENT|Disque %s " % d["dev"]) for l in lines):
+            lines.append("EVENEMENT|Disque %s : à surveiller|%s : %s." % (d["dev"], nom(d), " ; ".join(d["raisons"])))
+    disques.append(d)
+
+# grappes RAID logicielles (mdadm)
+raid = []
+try:
+    t = open(MDSTAT).read()
+except OSError:
+    t = ""
+for b in re.split(r"\n(?=md\d+\s*:)", t):
+    m = re.match(r"(md\d+)\s*:\s*(\S+)\s+(?:\((?:auto-)?read-only\)\s+)?(raid\d+|linear)?\s*([^\n]*)", b)
+    if not m:
+        continue
+    name, active, level, rest = m.groups()
+    members = re.findall(r"(\w+)\[\d+\](\([FS]\))?", rest)
+    st = re.search(r"\[(\d+)/(\d+)\]\s*\[([U_]+)\]", b)
+    etat, pct = "ok", None
+    if active not in ("active", "active-idle"):
+        etat = "arrete"
+    if (st and (int(st.group(2)) < int(st.group(1)) or "_" in st.group(3))) or any(f == "(F)" for _, f in members):
+        etat = "degrade"
+    pr = re.search(r"(recovery|resync|reshape|check)\s*=\s*([\d.]+)%", b)
+    if pr:
+        pct = float(pr.group(2))
+        if pr.group(1) in ("recovery", "reshape"):
+            etat = "reconstruction" if etat != "arrete" else etat
+    raid.append({"nom": name, "type": level or "", "etat": etat, "disques": [x for x, _ in members],
+                 "en_panne": [x for x, f in members if f == "(F)"], "avancement": pct, "operation": pr.group(1) if pr else None})
+# pools ZFS
+if subprocess.run(["sh", "-c", "command -v zpool >/dev/null"]).returncode == 0:
+    _, o = run(["zpool", "list", "-H", "-o", "name,health"])
+    for l in o.splitlines():
+        p = l.split("\t")
+        if len(p) == 2:
+            raid.append({"nom": p[0], "type": "zfs", "etat": "ok" if p[1] == "ONLINE" else "degrade", "disques": [], "en_panne": [],
+                         "avancement": None, "operation": None})
+prevr = {x["nom"]: x for x in prev.get("raid", [])}
+for a in raid:
+    tag = "raid-" + a["nom"]
+    if a["etat"] in ("degrade", "reconstruction", "arrete"):
+        extra = " (reconstruction : %.0f %%)" % a["avancement"] if a.get("avancement") is not None and a["etat"] == "reconstruction" else ""
+        lines.append("ALERTE|%s|RAID %s dégradé|La grappe %s (%s) fonctionne sans redondance%s%s. Un disque de plus en panne = données perdues : remplace le disque en défaut au plus vite." % (
+            tag, a["nom"], a["nom"], a["type"], extra, (" ; disque(s) en panne : " + ", ".join(a["en_panne"])) if a["en_panne"] else ""))
+    else:
+        lines.append("OK|%s|RAID %s|La grappe %s est de nouveau complète." % (tag, a["nom"], a["nom"]))
+    pa = prevr.get(a["nom"])
+    if a["etat"] == "reconstruction" and (not pa or pa.get("etat") != "reconstruction"):
+        lines.append("EVENEMENT|RAID %s : reconstruction en cours|La grappe %s se reconstruit (%.0f %%). Évite d'arrêter le NAS d'ici la fin." % (a["nom"], a["nom"], a.get("avancement") or 0))
+
+for gone in set(prevr) - {a["nom"] for a in raid}:   # grappe supprimee : son alerte est levee
+    lines.append("OK|raid-%s|RAID %s|La grappe %s n'existe plus." % (gone, gone, gone))
+res = {"verifie": int(time.time()), "machine": host, "smart": present, "disques": disques, "raid": raid}
+tmp = out_path + ".new"
+json.dump(res, open(tmp, "w"), ensure_ascii=False)
+os.replace(tmp, out_path)
+print("\n".join(lines))
+PYDISK
+}
+
+DISQUES_JSON="$SYNO_DIR/disques.json"
+
+# Alerte Home Assistant suivie (rappel toutes les 12 h, « retabli » a la fin) : syno_alert <critique|ok|evenement> <tag> <titre> <message>
+syno_alert() {
+  local f="$SYNO_DIR/alertes/$2"
+  mkdir -p "$SYNO_DIR/alertes"
+  case "$1" in
+    critique)
+      if [ -f "$f" ] && [ $(( $(date +%s) - $(stat -c %Y "$f") )) -lt 43200 ]; then return 0; fi
+      notify critique "$3" "$4"; touch "$f" ;;
+    ok) [ -f "$f" ] || return 0; rm -f "$f"; notify info "✅ Rétabli : $3" "$4" ;;
+    evenement) notify critique "$3" "$4" ;;
+  esac
+}
+
+disques_verifier() {
+  need_root
+  mkdir -p "$SYNO_DIR"
+  exec 4>"/tmp/nas-synology-disques.lock"
+  flock -n 4 || return 0   # verification deja en cours (lancee par NAS Manager)
+  local kind a b c sm
+  sm=$(command -v smartctl 2>/dev/null || { [ -x /usr/sbin/smartctl ] && echo /usr/sbin/smartctl; } || true)
+  while IFS='|' read -r kind a b c; do
+    case "$kind" in
+      ALERTE)    syno_alert critique "$a" "Synology : $b" "$c" ;;
+      OK)        syno_alert ok "$a" "Synology : $b" "$c" ;;
+      EVENEMENT) syno_alert evenement disques "Synology : $a" "$b" ;;
+    esac
+  done < <(disk_health_py "$DISQUES_JSON" "$sm" "$(hostname 2>/dev/null)")
+  exec 4>&-
+  return 0
+}
+
 syno_main() {
   case "${1:-}" in
     "")        need_root; menu_principal ;;
@@ -1867,7 +2154,13 @@ syno_main() {
       esac ;;
     reglages)  shift; reglages "$@" ;;
     migrer)    migrer "${2:-simulation}" ;;
-    *)         die "commande inconnue : $1 (copie, migration, version, outils, reglages, migrer)" ;;
+    disques)
+      case "${2:-etat}" in
+        verifier) disques_verifier; cat "$DISQUES_JSON" 2>/dev/null ;;
+        etat)     cat "$DISQUES_JSON" 2>/dev/null || echo '{}' ;;
+        *) die "usage : nas-synology disques verifier | etat" ;;
+      esac ;;
+    *)         die "commande inconnue : $1 (copie, migration, version, outils, reglages, migrer, disques)" ;;
   esac
 }
 
