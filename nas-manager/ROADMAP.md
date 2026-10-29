@@ -101,6 +101,8 @@ Une version testable par étape (1.1, 1.2…).
    · autres clouds *(1.7.0)*.
 7. **Confort et finitions** *(1.7.0)* : débit selon l'heure, estimation, doublons · actions depuis Home
    Assistant · page d'aide avec exemples de configuration.
+8. **Transferts entre machines** *(1.8.0)* : transferts PC → OMV / Debian · transferts OMV / Debian →
+   autre serveur (machine suivie ou serveur SSH) · copie Synology → OMV d'un seul fichier.
 
 #### Détail
 - [x] **Distinguer deux types de sauvegardes** dans l'application :
@@ -203,7 +205,7 @@ Une version testable par étape (1.1, 1.2…).
       si l'utilisateur le demande.
 
 #### Transferts
-- [ ] **Copie Synology → OMV d'un seul fichier** (ex. une archive compressée .zip / .7z / .tar.gz),
+- [ ] **Copie Synology → OMV d'un seul fichier** *(1.8.0)* (ex. une archive compressée .zip / .7z / .tar.gz),
       et plus seulement d'un dossier entier :
   - l'explorateur permet de choisir un fichier ou un dossier ;
   - le fichier est copié dans le dossier de destination choisi sur l'OMV, sous le même nom ;
@@ -228,6 +230,33 @@ Une version testable par étape (1.1, 1.2…).
       file d'attente et suivi comme la migration, notification à la fin.
       **Deux modes au choix** : transfert ponctuel, ou transfert **programmé** (sauvegarde régulière
       de l'oCIS vers le NAS, avec les mêmes options que les sauvegardes programmées).
+- [ ] **Transferts PC → OMV / Debian** *(1.8.0)* : sur le modèle de la migration PC → oCIS, envoyer un
+      dossier (ou un fichier) du PC vers un dossier de l'OMV / Debian, en une fois — à distinguer de la
+      « Sauvegarde du PC », qui est récurrente.
+  - Source choisie avec l'explorateur du PC (dossier local Windows, disque USB branché au PC) ;
+    destination choisie avec l'explorateur de dossiers de l'OMV / Debian.
+  - Envoi depuis l'application par le même moteur que la sauvegarde du PC (rclone en SFTP avec la
+    clé de l'application) : rien à installer sur le NAS.
+  - Mêmes options que la migration oCIS : **copie ou déplacement**, file d'attente, suivi sur la vraie
+    taille de la source, reprise après interruption, dates conservées, contrôle de chaque fichier
+    puis suppression des originaux en option (renvoi des fichiers en défaut), bilan de fin,
+    notification Windows.
+  - Prévenir que le PC doit rester allumé (PC tenu éveillé pendant l'envoi) ; reprise automatique
+    au redémarrage de l'application ; Wake-on-LAN de l'OMV si besoin.
+- [ ] **Transferts OMV / Debian → autre serveur** *(1.8.0)* : sur le modèle des transferts oCIS → NAS,
+      envoyer un dossier de l'OMV / Debian vers :
+  - une autre machine suivie par l'application (Synology, autre OMV / Debian, y compris sur un
+    autre site via Tailscale / WireGuard) ;
+  - ou un serveur quelconque accessible en SSH / SFTP (adresse, compte, clé déposée depuis
+    l'application, empreinte vérifiée à la première connexion comme pour les NAS).
+  - Exécuté par le script de l'OMV / Debian : **rsync** si la destination le permet (plus léger,
+    reprise native), sinon rclone en SFTP. Limite de débit et RAM réglables comme les autres
+    opérations.
+  - **Deux modes au choix** : transfert ponctuel (copie ou déplacement, avec contrôle puis
+    suppression des originaux en option), ou transfert **programmé** (copie régulière / miroir
+    avec corbeille datée, mêmes options que les sauvegardes programmées).
+  - File d'attente, suivi, reprise, dates et droits conservés, historique, notification à la fin ;
+    disponible aussi dans NAS Manager en mode texte.
 
 #### Surveillance
 - [x] **Santé des disques** *(1.4.0)* : état SMART, température, secteurs défectueux, état du RAID,
