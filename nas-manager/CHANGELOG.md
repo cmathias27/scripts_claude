@@ -2,7 +2,7 @@
 
 ## 1.7.0
 
-Étapes 7 et 8 de la feuille de route : nouvelles fonctions, confort et finitions (scripts nas-debian 2.6.0 et nas-synology 2.5.0).
+Étapes 7 et 8 de la feuille de route : nouvelles fonctions, confort et finitions (scripts nas-debian 2.6.1 et nas-synology 2.5.0).
 
 ### Sauvegarde de ce PC vers le NAS
 - Nouvelle page **« Sauvegarde du PC »** : des dossiers du PC (Documents, Bureau, Images… ou n'importe quel dossier) envoyés dans un dossier de l'**OMV / Debian** ou du **Synology**. rclone tourne sur le PC (téléchargé en un clic s'il manque) et passe par **SFTP avec la clé de l'application** : rien à installer sur le NAS.
