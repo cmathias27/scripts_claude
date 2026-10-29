@@ -104,6 +104,7 @@ Une version testable par étape (1.1, 1.2…).
 8. **Transferts entre machines** *(1.8.0)* : transferts PC → OMV / Debian · transferts OMV / Debian →
    autre serveur (machine suivie ou serveur SSH) · choix du nombre de transferts simultanés (nouveaux et
    existants : Synology → OMV, oCIS) · copie Synology → OMV d'un seul fichier.
+   *Fait en avance (1.7.1) : fichiers en parallèle au choix pour les sauvegardes programmées et temps réel.*
 
 #### Détail
 - [x] **Distinguer deux types de sauvegardes** dans l'application :
@@ -231,6 +232,9 @@ Une version testable par étape (1.1, 1.2…).
       file d'attente et suivi comme la migration, notification à la fin.
       **Deux modes au choix** : transfert ponctuel, ou transfert **programmé** (sauvegarde régulière
       de l'oCIS vers le NAS, avec les mêmes options que les sauvegardes programmées).
+- [x] **Fichiers en parallèle pour les sauvegardes programmées et temps réel** *(1.7.1)* : réglage
+      propre à chaque sauvegarde (réglage de la machine par défaut, ou 1 à 32), versionnées comprises,
+      avertissement si la valeur est trop haute pour la mémoire de la machine.
 - [ ] **Nombre de transferts simultanés pour les transferts existants** *(1.8.0)* : copie Synology → OMV,
       migrations vers oCIS (depuis le Synology, l'OMV / Debian ou le PC) et transferts oCIS →
       Synology / Debian, avec les mêmes réglages que les nouveaux transferts ci-dessous.

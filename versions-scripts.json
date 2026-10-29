@@ -1,15 +1,10 @@
 {
   "nas-debian": {
-    "version": "2.6.0",
+    "version": "2.7.0",
     "fichier": "nas-debian.sh",
-    "sha256": "7ee9ea309c9a24fdd64bd2511597e1f0da45cf3da90b3cb1d6120824852c7289",
+    "sha256": "402643937fa1b6bbed216af0ad599d75a9afe5b394b3eea9a995c425a75a8faf",
     "nouveautes": [
-      "Débit selon l'heure : limite commune à toutes les sauvegardes de la machine, différente le jour et la nuit (reglages debit)",
-      "Estimation avant la première sauvegarde : volume et durée selon le débit réel vers la destination (estimer)",
-      "Doublons : recherche des fichiers identiques, corbeille des doublons vidée après 30 jours (doublons)",
-      "Actions depuis Home Assistant : boutons Lancer / Arrêter / Vérifier et interrupteurs pause / reprise du temps réel (suivi actions)",
-      "Nouvelles destinations : Yandex Disk, HiDrive, MEGA, Koofr, Proton Drive",
-      "Installation de NAS Manager en mode texte (tui installer)"
+      "Fichiers en parallèle au choix pour chaque sauvegarde programmée ou temps réel (par défaut : réglage de la machine), y compris pour les sauvegardes versionnées"
     ]
   },
   "nas-synology": {

@@ -58,8 +58,8 @@
 # =====================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="2.6.0"
-API_VERSION=11
+SCRIPT_VERSION="2.7.0"
+API_VERSION=12
 
 # --------------------------- Parametres ------------------------------
 GDRIVE="gdrive"                  # remote Google Drive deja configure
@@ -182,11 +182,13 @@ agent_conf_set() {  # agent_conf_set <CLE> <valeur> (les autres reglages sont ga
   mv -f "$AGENT_CONF.new" "$AGENT_CONF"
 }
 
-# perf_load [surcharge]  surcharge = "" (reglage de la machine), un profil, ou un nombre de Mo
-#  -> PERF_PROFIL, PERF_MEM (ex. 256MiB), PERF_FLAGS (options rclone)
+# perf_load [surcharge] [fichiers]
+#   surcharge = "" (reglage de la machine), un profil, ou un nombre de Mo
+#   fichiers  = "" (selon le profil / la machine) ou nombre de fichiers envoyes en parallele (1 a 32)
+#  -> PERF_PROFIL, PERF_MEM (ex. 256MiB), PERF_FLAGS (options rclone), PERF_T (fichiers en parallele)
 perf_load() {
   agent_conf_load
-  local over="${1:-}" prof="$RAM_PROFIL" mo="$RAM_MO" tot t c b lo hi div
+  local over="${1:-}" own_t="${2:-}" prof="$RAM_PROFIL" mo="$RAM_MO" tot t c b lo hi div
   if [[ "$over" =~ ^[0-9]+$ ]]; then mo="$over"
   elif [[ "$over" =~ ^(auto|econome|equilibre|performant)$ ]]; then prof="$over"; mo=""; fi
   tot=$(ram_total_mo)
@@ -205,10 +207,15 @@ perf_load() {
   [[ "${TRANSFERTS:-}" =~ ^[0-9]+$ ]] && [ -z "$over" ] && t=$TRANSFERTS
   [[ "${VERIFS:-}" =~ ^[0-9]+$ ]] && [ -z "$over" ] && c=$VERIFS
   [ -n "${TAMPON:-}" ] && [ -z "$over" ] && b=$TAMPON
-  PERF_PROFIL="$prof"; PERF_MO="$mo"; PERF_MEM="${mo}MiB"
+  # nombre de fichiers en parallele propre a la sauvegarde / au transfert
+  if valid_tr "$own_t" && [ -n "$own_t" ]; then t=$own_t; [ "$c" -lt "$t" ] && c=$t; fi
+  PERF_PROFIL="$prof"; PERF_MO="$mo"; PERF_MEM="${mo}MiB"; PERF_T="$t"
   PERF_FLAGS=(--transfers "$t" --checkers "$c" --buffer-size "$b")
   PERF_BW="${DEBIT:-}"
 }
+
+# Fichiers en parallele : vide (reglage de la machine) ou 1 a 32
+valid_tr() { [ -z "${1:-}" ] || { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 32 ]; }; }
 
 # Limite de debit d'une sauvegarde : la sienne, sinon celle de la machine (« Debit selon
 # l'heure », reglages debit) ; « off » = sans limite. Vide en sortie = aucune option.
@@ -2739,19 +2746,20 @@ rt_exists() { [ -f "$RT_CONF" ] && grep -q "^$1|" "$RT_CONF"; }
 
 rt_get() {  # rt_get <nom> -> R_*
   local line; line=$(grep -m1 "^$1|" "$RT_CONF" 2>/dev/null) || return 1
-  IFS='|' read -r R_NAME R_DIRS R_DEST R_DEL R_RET R_EXCL R_TYPES R_DELAY R_CATCH R_ANOM R_PERF R_BW <<< "$line"
+  IFS='|' read -r R_NAME R_DIRS R_DEST R_DEL R_RET R_EXCL R_TYPES R_DELAY R_CATCH R_ANOM R_PERF R_BW R_TR _ <<< "$line"
   R_RET=${R_RET:-0}; R_DELAY=${R_DELAY:-10}; R_CATCH=${R_CATCH:-15}; R_ANOM=${R_ANOM:-0}
-  R_EXCL=${R_EXCL:-}; R_TYPES=${R_TYPES:-}; R_PERF=${R_PERF:-}; R_BW=${R_BW:-}
+  R_EXCL=${R_EXCL:-}; R_TYPES=${R_TYPES:-}; R_PERF=${R_PERF:-}; R_BW=${R_BW:-}; R_TR=${R_TR:-}
+  valid_tr "$R_TR" || R_TR=""
   IFS=';' read -ra R_SRCS <<< "$R_DIRS"
   return 0
 }
 
 rt_save_line() {
   mkdir -p "$CONF_DIR"
-  [ -f "$RT_CONF" ] || echo "# NOM|DOSSIERS|DESTINATION|SUPPRESSION|CORBEILLE_JOURS|EXCLUSIONS|TYPES|DELAI_S|RATTRAPAGE_MIN|ANOMALIE|MEMOIRE|DEBIT" > "$RT_CONF"
+  [ -f "$RT_CONF" ] || echo "# NOM|DOSSIERS|DESTINATION|SUPPRESSION|CORBEILLE_JOURS|EXCLUSIONS|TYPES|DELAI_S|RATTRAPAGE_MIN|ANOMALIE|MEMOIRE|DEBIT|FICHIERS" > "$RT_CONF"
   local tmp; tmp=$(mktemp)
   grep -v "^$R_NAME|" "$RT_CONF" > "$tmp"
-  echo "$R_NAME|$R_DIRS|$R_DEST|$R_DEL|$R_RET|$R_EXCL|$R_TYPES|$R_DELAY|$R_CATCH|$R_ANOM|$R_PERF|$R_BW" >> "$tmp"
+  echo "$R_NAME|$R_DIRS|$R_DEST|$R_DEL|$R_RET|$R_EXCL|$R_TYPES|$R_DELAY|$R_CATCH|$R_ANOM|$R_PERF|$R_BW|${R_TR:-}" >> "$tmp"
   cat "$tmp" > "$RT_CONF"; rm -f "$tmp"
 }
 
@@ -2834,7 +2842,7 @@ rt_pause() {  # rt_pause <raison>
 rt_watch() {
   rt_get "$1" || die "sauvegarde temps reel '$1' introuvable."
   command -v inotifywait >/dev/null || die "inotifywait absent (nas-debian outils installer)."
-  perf_load "$R_PERF"; rt_filters
+  perf_load "$R_PERF" "${R_TR:-}"; rt_filters
   mkdir -p "$RT_LOG_DIR" "$STATE_DIR"
   local -a ok=() ; local s
   for s in "${R_SRCS[@]}"; do
@@ -3008,7 +3016,7 @@ rt_catchup() {  # rt_catchup <nom> [initial]
   if rt_paused; then echo "Sauvegarde « $R_NAME » en pause : pas de rattrapage."; return 0; fi
   exec 6>"/run/nas-temps-reel-$R_NAME.lock"
   flock -n 6 || { echo "Un rattrapage de « $R_NAME » est deja en cours."; return 0; }
-  perf_load "$R_PERF"; rt_filters
+  perf_load "$R_PERF" "${R_TR:-}"; rt_filters
   local log="$RT_LOG_DIR/$R_NAME.log" tmp src d tr rc=0 r jour n nd now f o=0 nc=0
   mkdir -p "$RT_LOG_DIR"; tmp=$(mktemp); jour=$(date +%Y-%m-%d_%H%M%S)
   local -a min=(--min-age 2m) common=(--log-level INFO --retries 3)
@@ -3142,10 +3150,10 @@ rt_gen_cron() {
 }
 
 # --------------------------- configuration ---------------------------
-rt_api_save() {  # nouveau|modif NOM DOSSIERS DESTINATION SUPPRESSION CORBEILLE EXCLUSIONS TYPES DELAI RATTRAPAGE ANOMALIE [MEMOIRE] [DEBIT]
+rt_api_save() {  # nouveau|modif NOM DOSSIERS DESTINATION SUPPRESSION CORBEILLE EXCLUSIONS TYPES DELAI RATTRAPAGE ANOMALIE [MEMOIRE] [DEBIT] [FICHIERS]
   local kind="$1"; shift
-  [ $# -ge 10 ] && [ $# -le 12 ] || die "usage : nas-debian temps-reel save <nouveau|modif> NOM DOSSIERS DESTINATION SUPPRESSION CORBEILLE EXCLUSIONS TYPES DELAI RATTRAPAGE ANOMALIE [MEMOIRE] [DEBIT]"
-  R_NAME="$1" R_DIRS="$2" R_DEST="$3" R_DEL="$4" R_RET="$5" R_EXCL="$6" R_TYPES="$7" R_DELAY="$8" R_CATCH="$9" R_ANOM="${10}" R_PERF="${11:-}" R_BW="${12:-}"
+  [ $# -ge 10 ] && [ $# -le 13 ] || die "usage : nas-debian temps-reel save <nouveau|modif> NOM DOSSIERS DESTINATION SUPPRESSION CORBEILLE EXCLUSIONS TYPES DELAI RATTRAPAGE ANOMALIE [MEMOIRE] [DEBIT] [FICHIERS]"
+  R_NAME="$1" R_DIRS="$2" R_DEST="$3" R_DEL="$4" R_RET="$5" R_EXCL="$6" R_TYPES="$7" R_DELAY="$8" R_CATCH="$9" R_ANOM="${10}" R_PERF="${11:-}" R_BW="${12:-}" R_TR="${13:-}"
   [[ "$R_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || die "nom invalide (lettres, chiffres, - et _)."
   case "$kind" in
     nouveau) rt_exists "$R_NAME" && die "une sauvegarde temps reel '$R_NAME' existe deja." ;;
@@ -3175,6 +3183,7 @@ rt_api_save() {  # nouveau|modif NOM DOSSIERS DESTINATION SUPPRESSION CORBEILLE 
   [[ " ${RT_CATCH_OK[*]} " == *" $R_CATCH "* ]] || die "rattrapage invalide (${RT_CATCH_OK[*]} minutes)."
   [[ "$R_ANOM" =~ ^[0-9]+$ ]] || die "seuil d'anomalie invalide (nombre de fichiers, 0 = desactive)."
   valid_perf "$R_PERF" || die "reglage memoire invalide."
+  valid_tr "$R_TR" || die "nombre de fichiers en parallele invalide (1 a 32, vide = reglage de la machine)."
   [[ -z "$R_BW" || "$R_BW" =~ ^[0-9A-Za-z:.,\ -]+$ ]] || die "limite de debit invalide (ex. 5M)."
   need_rclone
   [ "${R_DEST%%:*}" = "$CRYPT" ] && ensure_crypt
@@ -3261,7 +3270,7 @@ temps_reel_main() {
 # =========================== Installation / migration ================
 install_base() {
   mkdir -p "$CONF_DIR" "$STATE_DIR/alertes"
-  [ -f "$JOBS" ] || echo "# NOM|SOURCE|DOSSIER|MODE(sync/copy/versions)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|CORBEILLE_JOURS|DEBIT|MEMOIRE|DESTINATIONS|ROTATION" > "$JOBS"
+  [ -f "$JOBS" ] || echo "# NOM|SOURCE|DOSSIER|MODE(sync/copy/versions)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|CORBEILLE_JOURS|DEBIT|MEMOIRE|DESTINATIONS|ROTATION|FICHIERS" > "$JOBS"
   touch "$LOG"
   [ -f /etc/logrotate.d/nas-backup ] || printf "%s {\n  weekly\n  rotate 8\n  compress\n  missingok\n  notifempty\n  copytruncate\n}\n" "$LOG" > /etc/logrotate.d/nas-backup
   # anciens noms : liens vers ce script (sauf anciens scripts encore en place : voir « migrer »)
@@ -3307,7 +3316,7 @@ cam_legacy_migrate() {  # cam_legacy_migrate <dossier des anciens fichiers>
     [ -e "$f" ] && mv -f "$f" "$dest/"
   done
   has_systemd && systemctl daemon-reload
-  R_NAME="$CAM_NEW" R_DIRS="${CAM_SRC%/}" R_DEST="$CAM_DEST" R_DEL=directe R_RET=0 R_EXCL="" R_TYPES="" R_DELAY=5 R_CATCH="$CAM_MIN" R_ANOM=0 R_PERF="" R_BW=""
+  R_NAME="$CAM_NEW" R_DIRS="${CAM_SRC%/}" R_DEST="$CAM_DEST" R_DEL=directe R_RET=0 R_EXCL="" R_TYPES="" R_DELAY=5 R_CATCH="$CAM_MIN" R_ANOM=0 R_PERF="" R_BW="" R_TR=""
   R_SRCS=("$R_DIRS")
   rt_save_line; rt_gen_cron
   cat "$STATE_DIR/cam-transferts.log.1" "$STATE_DIR/cam-transferts.log" 2>/dev/null >> "$STATE_DIR/rt-$CAM_NEW.transferts.log"
@@ -3370,7 +3379,7 @@ need_gdrive() {
 nb_init() {
   [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
   mkdir -p "$CONF_DIR" "$STATE_DIR"
-  [ -f "$JOBS" ] || echo "# NOM|SOURCE|DOSSIER|MODE(sync/copy/versions)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|CORBEILLE_JOURS|DEBIT|MEMOIRE|DESTINATIONS|ROTATION" > "$JOBS"
+  [ -f "$JOBS" ] || echo "# NOM|SOURCE|DOSSIER|MODE(sync/copy/versions)|CHIFFRE(oui/non)|HORAIRE(HH:MM/manuel)|CORBEILLE_JOURS|DEBIT|MEMOIRE|DESTINATIONS|ROTATION|FICHIERS" > "$JOBS"
   touch "$LOG"
   if [ ! -f /etc/logrotate.d/nas-backup ]; then
     printf "%s {\n  weekly\n  rotate 8\n  compress\n  missingok\n  notifempty\n  copytruncate\n}\n" "$LOG" > /etc/logrotate.d/nas-backup
@@ -3393,13 +3402,15 @@ job_names() { grep -v '^#' "$JOBS" | grep -v '^$' | cut -d'|' -f1; }
 job_exists() { grep -q "^$1|" "$JOBS"; }
 
 # Une sauvegarde = une ligne de jobs.conf :
-#   NOM|SOURCE|DOSSIER|MODE(sync, copy, versions)|CHIFFRE|HORAIRE|CORBEILLE_JOURS|DEBIT|MEMOIRE|DESTINATIONS|ROTATION
+#   NOM|SOURCE|DOSSIER|MODE(sync, copy, versions)|CHIFFRE|HORAIRE|CORBEILLE_JOURS|DEBIT|MEMOIRE|DESTINATIONS|ROTATION|FICHIERS
+# FICHIERS : fichiers envoyes en parallele (vide = reglage de la machine)
 # DESTINATIONS : « remote:oui|non » separes par ; (vide = Google Drive, chiffre selon CHIFFRE)
 # ROTATION (versions) : jours:semaines:mois:annees de versions gardees
 job_get() {
   local line; line=$(grep -m1 "^$1|" "$JOBS") || return 1
-  IFS='|' read -r J_NAME J_SRC J_SUB J_MODE J_ENC J_SCHED J_RET J_BW J_PERF J_DESTS J_ROT _ <<< "$line"
-  J_BW="${J_BW:-}"; J_PERF="${J_PERF:-}"; J_DESTS="${J_DESTS:-}"; J_ROT="${J_ROT:-}"
+  IFS='|' read -r J_NAME J_SRC J_SUB J_MODE J_ENC J_SCHED J_RET J_BW J_PERF J_DESTS J_ROT J_TR _ <<< "$line"
+  J_BW="${J_BW:-}"; J_PERF="${J_PERF:-}"; J_DESTS="${J_DESTS:-}"; J_ROT="${J_ROT:-}"; J_TR="${J_TR:-}"
+  valid_tr "$J_TR" || J_TR=""
   [ "$J_MODE" = versions ] && [ -z "$J_ROT" ] && J_ROT="$DEFAULT_ROT"
   return 0
 }
@@ -3407,7 +3418,7 @@ job_get() {
 job_save() {
   local tmp; tmp=$(mktemp)
   grep -v "^$J_NAME|" "$JOBS" > "$tmp"
-  echo "$J_NAME|$J_SRC|$J_SUB|$J_MODE|$J_ENC|$J_SCHED|$J_RET|${J_BW:-}|${J_PERF:-}|${J_DESTS:-}|${J_ROT:-}" >> "$tmp"
+  echo "$J_NAME|$J_SRC|$J_SUB|$J_MODE|$J_ENC|$J_SCHED|$J_RET|${J_BW:-}|${J_PERF:-}|${J_DESTS:-}|${J_ROT:-}|${J_TR:-}" >> "$tmp"
   cat "$tmp" > "$JOBS"; rm -f "$tmp"
 }
 
@@ -3652,7 +3663,7 @@ choose_job() {
 
 add_job() {
   gras "== Nouvelle sauvegarde =="
-  J_NAME="" J_SRC="" J_SUB="" J_MODE="" J_ENC="" J_SCHED="" J_RET="" J_BW="" J_PERF="" J_DESTS="" J_ROT=""
+  J_NAME="" J_SRC="" J_SUB="" J_MODE="" J_ENC="" J_SCHED="" J_RET="" J_BW="" J_PERF="" J_DESTS="" J_ROT="" J_TR=""
   need_gdrive
   while true; do
     ask "Nom (lettres, chiffres, - et _)"
@@ -3873,7 +3884,7 @@ run_rclone_dest() {  # run_rclone_dest <remote> <oui|non> <jour> <journal>
   dest=$(dest_path "$r" "$e" "$J_SUB"); trash=$(trash_path "$r" "$e" "$J_NAME")
   local -a opts=("${EXCLUDES[@]}" --log-file "$runlog" --log-level INFO)
   if [ -t 1 ]; then opts+=(-P); else opts+=(--stats 30s); fi
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
   local bw; bw=$(bw_of "${J_BW:-}")
   [ -n "$bw" ] && opts+=(--bwlimit "$bw")
   nb_transfer "$dest" "$trash" "$jour" "$runlog" "${opts[@]}"; rc=$?
@@ -3887,7 +3898,7 @@ run_rclone_dest() {  # run_rclone_dest <remote> <oui|non> <jour> <journal>
     perf_load econome
     nb_transfer "$dest" "$trash" "$jour" "$runlog" "${opts[@]}"; rc=$?
     [ "$RCL_MAX" -gt "$RD_RAM" ] && RD_RAM=$RCL_MAX
-    perf_load "$J_PERF"
+    perf_load "$J_PERF" "${J_TR:-}"
   fi
   if [ "$J_MODE" = sync ] && [ "${J_RET:-0}" -gt 0 ] && [ ! -f "$STOPF" ] && [ ! -f "$jstop" ]; then
     trash_purge "$trash" "$J_RET"
@@ -3918,6 +3929,9 @@ restic_prep() {  # restic_prep <remote>
   bw=$(bw_of "${J_BW:-}")
   [ -n "$bw" ] && a="$a --bwlimit \"$bw\""
   RST=(-r "$(repo_path "$1" "$J_SUB")" -o "rclone.args=$a")
+  # fichiers en parallele propres a la sauvegarde : connexions de restic vers rclone (5 par defaut)
+  [ -n "${J_TR:-}" ] && RST+=(-o "rclone.connections=$J_TR")
+  return 0
 }
 
 # Depot pret (cree s'il n'existe pas) -> 0 ; messages sur la sortie
@@ -4009,11 +4023,11 @@ run_job() {
     return 1
   fi
   job_dests; n=${#JD_R[@]}
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
 
   t0=$(date +%s)
   gras "-> $J_NAME : $(short "$J_SRC")  =>  ${JD_R[*]}"
-  logl "$J_NAME : debut ($J_MODE, $n destination(s) : ${JD_R[*]}, memoire $PERF_PROFIL $PERF_MO Mo) $J_SRC"
+  logl "$J_NAME : debut ($J_MODE, $n destination(s) : ${JD_R[*]}, memoire $PERF_PROFIL $PERF_MO Mo, $PERF_T fichier(s) en parallele) $J_SRC"
 
   : > "$runlog"; : > "$allf"; rm -rf "$dd"; mkdir -p "$dd"
   echo "$$ $t0" > "$runf"
@@ -4115,7 +4129,7 @@ api_simulate() {
   exec 8>"/run/nas-backup-simulation-$J_NAME.lock"
   flock -n 8 || die "une simulation de '$J_NAME' est deja en cours."
   [ -d "$J_SRC" ] || die "dossier source introuvable : $J_SRC"
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
   printf 'ETAT=en_cours\nDEBUT=%s\n' "$(date +%s)" > "$out.status"
   : > "$out.log"
   if [ "$J_MODE" = versions ]; then
@@ -4273,7 +4287,7 @@ restore_job() {
     ask_yn "Continuer ?" n || return
   fi
   mkdir -p "$target"
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
   rcl "" copy "$dest" "$target" "${EXCLUDES[@]}" -P && vert "Restauration terminee : $target" || rouge "Echec de la restauration."
 }
 
@@ -4329,10 +4343,10 @@ menu() {
 }
 
 # --------------------------- Commandes sans question -----------------
-api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER MODE CHIFFRE HORAIRE CORBEILLE [DEBIT] [MEMOIRE] [DESTINATIONS] [ROTATION]
+api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER MODE CHIFFRE HORAIRE CORBEILLE [DEBIT] [MEMOIRE] [DESTINATIONS] [ROTATION] [FICHIERS]
   local kind="$1"; shift
-  [ $# -ge 7 ] && [ $# -le 11 ] || die "usage : nas-backup save <nouveau|modif> NOM SOURCE DOSSIER MODE CHIFFRE HORAIRE CORBEILLE [DEBIT] [MEMOIRE] [DESTINATIONS] [ROTATION]"
-  J_NAME="$1" J_SRC="${2%/}" J_SUB="$3" J_MODE="$4" J_ENC="$5" J_SCHED="$6" J_RET="$7" J_BW="${8:-}" J_PERF="${9:-}" J_DESTS="${10:-}" J_ROT="${11:-}"
+  [ $# -ge 7 ] && [ $# -le 12 ] || die "usage : nas-backup save <nouveau|modif> NOM SOURCE DOSSIER MODE CHIFFRE HORAIRE CORBEILLE [DEBIT] [MEMOIRE] [DESTINATIONS] [ROTATION] [FICHIERS]"
+  J_NAME="$1" J_SRC="${2%/}" J_SUB="$3" J_MODE="$4" J_ENC="$5" J_SCHED="$6" J_RET="$7" J_BW="${8:-}" J_PERF="${9:-}" J_DESTS="${10:-}" J_ROT="${11:-}" J_TR="${12:-}"
   J_SUB="${J_SUB#/}"; J_SUB="${J_SUB%/}"
   [[ "$J_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || die "nom invalide (lettres, chiffres, - et _)."
   case "$kind" in
@@ -4348,6 +4362,7 @@ api_save() {  # api_save <nouveau|modif> NOM SOURCE DOSSIER MODE CHIFFRE HORAIRE
   [[ -z "$J_BW" || "$J_BW" =~ ^[0-9A-Za-z:.,\ -]+$ ]] || die "limite de debit invalide (ex. 5M)."
   [[ "$J_RET" =~ ^[0-9]+$ ]] || die "nombre de jours de corbeille invalide."
   valid_perf "$J_PERF" || die "reglage memoire invalide (auto, econome, equilibre, performant ou un nombre de Mo >= 64)."
+  valid_tr "$J_TR" || die "nombre de fichiers en parallele invalide (1 a 32, vide = reglage de la machine)."
   [ "$J_MODE" = sync ] || J_RET=0
   if [ "$J_MODE" = versions ]; then
     J_ROT="${J_ROT:-$DEFAULT_ROT}"
@@ -4462,7 +4477,7 @@ api_restore() {  # api_restore <nom> <dossier> [element] [corbeille] [destinatio
   exec 9>/run/nas-backup-restauration.lock
   flock -n 9 || die "une restauration est deja en cours."
   mkdir -p "$target" || die "impossible de creer $target"
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
   : > "$rlog"
   printf 'ETAT=en_cours\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nDEBUT=%s\n' "$J_NAME" "$target" "$rel" "$(date +%s)" > "$st"
   logl "$J_NAME : restauration depuis $DI_R vers $target"
@@ -4513,7 +4528,7 @@ api_verify() {
   exec 7>"/run/nas-backup-verif-$J_NAME.lock"
   flock -n 7 || die "une verification de '$J_NAME' est deja en cours."
   [ -d "$J_SRC" ] || die "dossier source introuvable : $J_SRC"
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
   mkdir -p "$out.d"; find "$out.d" -mindepth 1 -maxdepth 1 -type f -delete 2>/dev/null
   printf 'ETAT=en_cours\nDEBUT=%s\n' "$(date +%s)" > "$out.status"
   : > "$out.log"
@@ -4689,7 +4704,7 @@ test_restore() {  # test_restore <nom> [nb]
     sleep 30
   done
   job_dests; n=${#JD_R[@]}
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
   tmp=$(mktemp -d /var/tmp/nas-test-restauration.XXXXXX) || die "dossier temporaire impossible."
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
@@ -5035,7 +5050,7 @@ date_restore() {  # date_restore <nom> <destination> <date> <dossier cible> [ele
   if ! msg=$(dest_wake "$DI_R"); then
     echo "$(date '+%Y/%m/%d %H:%M:%S') ERROR : $msg" >> "$rlog"; restore_done 1 "$target" "$REL"; return 1
   fi
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
   w=$(mktemp -d)
   if ! date_plan "$w" "$D" "$REL" > "$w/resume.json" 2>> "$rlog"; then
     rm -rf "$w"; restore_done 1 "$target" "$REL"; return 1
@@ -5153,7 +5168,7 @@ versions_restore() {  # versions_restore <nom> <destination> <version> <dossier 
   flock -n 9 || die "une restauration est deja en cours."
   root=$(snap_root "$snap"); [ -n "$root" ] || die "version introuvable : $snap"
   mkdir -p "$target" || die "impossible de creer $target"
-  perf_load "$J_PERF"
+  perf_load "$J_PERF" "${J_TR:-}"
   : > "$rlog"
   printf 'ETAT=en_cours\nNOM=%q\nCIBLE=%q\nELEMENT=%q\nDEBUT=%s\nVERSION=%s\nDATE=%s\n' "$J_NAME" "$target" "$REL" "$(date +%s)" "$snap" "${RESTAU_DATE:-}" > "$st"
   logl "$J_NAME : restauration de la version $snap ($DI_R) vers $target"
@@ -5183,7 +5198,7 @@ versions_maint() {  # versions_maint [nom]
         restic_prep "${JD_R[i]}"
         restic "${RST[@]}" cat config >/dev/null 2>&1 < /dev/null || continue
         restic "${RST[@]}" unlock >/dev/null 2>&1 < /dev/null
-        perf_load "$J_PERF"
+        perf_load "$J_PERF" "${J_TR:-}"
         { echo "== $(date '+%Y/%m/%d %H:%M:%S') entretien $n -> ${JD_R[i]}"
           gorun "" restic "${RST[@]}" prune 2>&1 < /dev/null; } >> "$LOG" || { rc=1; out="$out ${JD_R[i]} (nettoyage)"; }
         gorun "" restic "${RST[@]}" check --read-data-subset=2% >> "$LOG" 2>&1 < /dev/null || { rc=1; out="$out ${JD_R[i]} (controle)"; }
@@ -7519,7 +7534,7 @@ estimer() {  # estimer <NOM> | <SOURCE> <DESTINATION> [oui|non]
     nb_init
     job_get "$1" || die "sauvegarde '$1' introuvable."
     name="$1"; src="$J_SRC"; job_dests; dest="${JD_R[0]}"; enc="${JD_E[0]}"
-    perf_load "$J_PERF"; bw=$(bw_of "${J_BW:-}")
+    perf_load "$J_PERF" "${J_TR:-}"; bw=$(bw_of "${J_BW:-}")
   else
     src="${1%/}"; dest="${2:-$GDRIVE}"; enc="${3:-oui}"
     perf_load; bw=$(bw_of "")
