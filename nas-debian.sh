@@ -1320,6 +1320,10 @@ PYE
 }
 
 # =========================== Home Assistant (nas-ha-status) ==========
+# Clients MQTT (mosquitto_pub / mosquitto_sub) : options lues dans /root/.config/<client>,
+# quel que soit le HOME herite (sudo qui garde celui de l'utilisateur, service systemd...)
+mqtt() { HOME=/root XDG_CONFIG_HOME=/root/.config "$@"; }
+
 ha_slug() {
   if [ "$MACHINE" = omv ]; then echo omv; else hostname -s 2>/dev/null | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '_' | head -c 30; fi
 }
@@ -1328,7 +1332,7 @@ ha_status_cmd() {
   [ -f /root/.config/mosquitto_pub ] || return 0
   command -v mosquitto_pub >/dev/null || return 0
   agent_conf_load
-  NAS_HA_ACTIONS="${HA_ACTIONS:-}" NAS_HA_SLUG="$(ha_slug)" NAS_HA_NOM="$( [ "$MACHINE" = omv ] && echo "NAS OMV Sauvegardes" || echo "NAS $(hostname -s) Sauvegardes")" \
+  HOME=/root XDG_CONFIG_HOME=/root/.config NAS_HA_ACTIONS="${HA_ACTIONS:-}" NAS_HA_SLUG="$(ha_slug)" NAS_HA_NOM="$( [ "$MACHINE" = omv ] && echo "NAS OMV Sauvegardes" || echo "NAS $(hostname -s) Sauvegardes")" \
   NAS_HA_MODELE="$( [ "$MACHINE" = omv ] && echo OpenMediaVault || echo Debian)" python3 - <<'PYEOF'
 # Publie l'etat et la synthese des transferts vers Home Assistant (MQTT discovery).
 import json, os, re, subprocess, time
@@ -1789,7 +1793,7 @@ suivi_configurer() {  # suivi_configurer <serveur MQTT>   (utilisateur / mot de 
   outils_requis mosquitto_pub python3 || die "outils manquants : lance d'abord « nas-debian outils installer suivi »."
   if [ ! -t 0 ]; then read -r mu || true; read -r mp || true; fi
   echo "== Connexion au serveur MQTT de Home Assistant ($host) =="
-  if [ -z "$mu" ] && [ -f /root/.config/mosquitto_pub ] && mosquitto_pub -t "nas-$(ha_slug)/test" -m ok 2>/dev/null; then
+  if [ -z "$mu" ] && [ -f /root/.config/mosquitto_pub ] && mqtt mosquitto_pub -t "nas-$(ha_slug)/test" -m ok 2>/dev/null; then
     vert "OK : connexion MQTT deja configuree (conservee)"
   else
     [ -n "$mu" ] || die "utilisateur MQTT manquant."
@@ -1797,7 +1801,7 @@ suivi_configurer() {  # suivi_configurer <serveur MQTT>   (utilisateur / mot de 
     printf -- "-h %s\n-p %s\n-u %s\n-P %s\n" "$host" "$port" "$mu" "$mp" > /root/.config/mosquitto_pub.new
     chmod 600 /root/.config/mosquitto_pub.new
     mv -f /root/.config/mosquitto_pub.new /root/.config/mosquitto_pub
-    if mosquitto_pub -t "nas-$(ha_slug)/test" -m ok; then
+    if mqtt mosquitto_pub -t "nas-$(ha_slug)/test" -m ok; then
       vert "OK : connexion MQTT"
     else
       rm -f /root/.config/mosquitto_pub
@@ -1923,7 +1927,7 @@ ha_actions_listen() {
       if [ "$line" = "$last" ] && [ $((now - last_t)) -lt 10 ]; then continue; fi
       last="$line"; last_t=$now
       ha_action_do "$line" || true
-    done < <(mosquitto_sub -t "$topic" -q 1 2>/dev/null)
+    done < <(mqtt mosquitto_sub -t "$topic" -q 1 2>/dev/null)
     sleep 15
   done
 }
