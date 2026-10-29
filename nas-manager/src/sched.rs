@@ -3,6 +3,8 @@
 #[allow(unused_imports)]
 use crate::i18n::{tf, tr};
 use eframe::egui::{self, RichText};
+pub use crate::fmt::parse_day_night;
+use crate::fmt::valid_time;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SchedEdit {
@@ -21,14 +23,6 @@ impl Default for SchedEdit {
     }
 }
 
-fn valid_time(t: &str) -> bool {
-    let b = t.as_bytes();
-    b.len() == 5
-        && b[2] == b':'
-        && b.iter().enumerate().all(|(i, c)| i == 2 || c.is_ascii_digit())
-        && t[..2].parse::<u32>().map(|v| v < 24).unwrap_or(false)
-        && t[3..].parse::<u32>().map(|v| v < 60).unwrap_or(false)
-}
 
 /// Meme regle que valid_sched de nas-backup
 pub fn valid_sched(s: &str) -> bool {
@@ -141,45 +135,75 @@ impl SchedEdit {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BwEdit {
-    /// 0 aucune, 1 toujours, 2 en journee seulement (8 h - 23 h), 3 personnalisee
+    /// 0 reglage de la machine (ou aucune limite hors NAS Debian), 1 toujours,
+    /// 2 selon l'heure (jour / nuit), 3 personnalisee, 4 sans limite
     pub mode: u8,
-    /// Mo/s
+    /// Mo/s (toujours, ou en journee)
     pub value: String,
+    /// debut et fin de la journee (HH:MM)
+    pub day_start: String,
+    pub day_end: String,
+    /// Mo/s la nuit (vide = sans limite)
+    pub night: String,
     pub raw: String,
 }
+
+impl Default for BwEdit {
+    fn default() -> Self {
+        Self { mode: 0, value: String::new(), day_start: "08:00".into(), day_end: "23:00".into(), night: String::new(), raw: String::new() }
+    }
+}
+
+/// Debit en Mo/s lisible par rclone ("2.5"), ou erreur
+fn mo_s(v: &str) -> Result<String, String> {
+    let x: f64 = v.trim().replace(',', ".").parse().map_err(|_| tr("Débit invalide (en Mo/s, ex : 5).").to_string())?;
+    if x <= 0.0 || x > 100_000.0 {
+        return Err(tr("Débit invalide (en Mo/s, ex : 5).").into());
+    }
+    Ok(format!("{}", (x * 10.0).round() / 10.0))
+}
+
 
 impl BwEdit {
     pub fn parse(s: &str) -> Self {
         let s = s.trim();
-        if s.is_empty() || s == "off" {
+        if s.is_empty() {
             return BwEdit::default();
         }
+        if s == "off" {
+            return BwEdit { mode: 4, raw: s.into(), ..Default::default() };
+        }
         if let Some(v) = s.strip_suffix('M').filter(|v| v.parse::<f64>().is_ok()) {
-            return BwEdit { mode: 1, value: v.to_string(), raw: s.into() };
+            return BwEdit { mode: 1, value: v.to_string(), raw: s.into(), ..Default::default() };
         }
-        if let Some(v) = s.strip_prefix("08:00,").and_then(|r| r.strip_suffix("M 23:00,off")) {
-            return BwEdit { mode: 2, value: v.to_string(), raw: s.into() };
+        if let Some((t1, day, t2, night)) = parse_day_night(s) {
+            return BwEdit { mode: 2, value: day, day_start: t1, day_end: t2, night, raw: s.into() };
         }
-        BwEdit { mode: 3, value: String::new(), raw: s.into() }
+        BwEdit { mode: 3, raw: s.into(), ..Default::default() }
     }
 
     pub fn build(&self) -> Result<String, String> {
-        let v = || -> Result<String, String> {
-            let x: f64 = self.value.trim().replace(',', ".").parse().map_err(|_| tr("Débit invalide (en Mo/s, ex : 5).").to_string())?;
-            if x <= 0.0 {
-                return Err(tr("Débit invalide (en Mo/s, ex : 5).").into());
-            }
-            Ok(format!("{}", (x * 10.0).round() / 10.0))
-        };
         match self.mode {
             0 => Ok(String::new()),
-            1 => Ok(format!("{}M", v()?)),
-            2 => Ok(format!("08:00,{}M 23:00,off", v()?)),
+            4 => Ok("off".into()),
+            1 => Ok(format!("{}M", mo_s(&self.value)?)),
+            2 => {
+                let norm = |t: &str| {
+                    let t = t.trim();
+                    if t.len() == 4 && t.as_bytes()[1] == b':' { format!("0{t}") } else { t.to_string() }
+                };
+                let (t1, t2) = (norm(&self.day_start), norm(&self.day_end));
+                if !valid_time(&t1) || !valid_time(&t2) || t1 == t2 {
+                    return Err(tr("Heures de la journée invalides (format HH:MM, début et fin différents).").into());
+                }
+                let night = if self.night.trim().is_empty() { "off".to_string() } else { format!("{}M", mo_s(&self.night)?) };
+                Ok(format!("{t1},{}M {t2},{night}", mo_s(&self.value)?))
+            }
             _ => {
                 let r = self.raw.trim();
-                if r.chars().all(|c| c.is_ascii_alphanumeric() || ":., -".contains(c)) {
+                if !r.is_empty() && r.chars().all(|c| c.is_ascii_alphanumeric() || ":., -".contains(c)) {
                     Ok(r.to_string())
                 } else {
                     Err(tr("Limite de débit invalide.").into())
@@ -188,32 +212,65 @@ impl BwEdit {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    /// Editeur ; `machine` : le choix « vide » suit le réglage de la machine (NAS Debian),
+    /// sinon il veut dire « aucune limite »
+    pub fn ui_with(&mut self, ui: &mut egui::Ui, machine: bool) {
         ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.mode, 0, tr("Aucune"));
+            ui.horizontal_wrapped(|ui| {
+                if machine {
+                    ui.radio_value(&mut self.mode, 0, tr("Réglage de la machine"));
+                    ui.radio_value(&mut self.mode, 4, tr("Sans limite"));
+                } else {
+                    if self.mode == 4 {
+                        self.mode = 0;
+                    }
+                    ui.radio_value(&mut self.mode, 0, tr("Aucune"));
+                }
                 ui.radio_value(&mut self.mode, 1, tr("Toujours"));
-                ui.radio_value(&mut self.mode, 2, tr("En journée (8 h – 23 h)"));
+                ui.radio_value(&mut self.mode, 2, tr("Selon l'heure"));
                 ui.radio_value(&mut self.mode, 3, tr("Avancée"));
             });
             match self.mode {
-                1 | 2 => {
+                1 => {
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(&mut self.value).desired_width(60.0).hint_text("5"));
                         ui.label("Mo/s");
-                        if self.mode == 2 {
-                            ui.label(RichText::new(tr("pleine vitesse la nuit")).small().weak());
-                        }
                     });
                 }
+                2 => day_night_ui(ui, &mut self.day_start, &mut self.day_end, &mut self.value, &mut self.night),
                 3 => {
                     ui.add(egui::TextEdit::singleline(&mut self.raw).desired_width(260.0).hint_text("08:00,2M 23:00,off"));
                     ui.label(RichText::new(tr("Format --bwlimit de rclone")).small().weak());
                 }
                 _ => {}
             }
+            if self.mode == 0 && machine {
+                ui.label(RichText::new(tr("Limite commune de la machine (page Installation > Débit selon l'heure).")).small().weak());
+            }
         });
     }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui) {
+        self.ui_with(ui, false)
+    }
+}
+
+/// Champs « de HH:MM à HH:MM : X Mo/s, la nuit : Y Mo/s (vide = sans limite) »
+pub fn day_night_ui(ui: &mut egui::Ui, start: &mut String, end: &mut String, day: &mut String, night: &mut String) {
+    ui.horizontal(|ui| {
+        ui.label(tr("De"));
+        ui.add(egui::TextEdit::singleline(start).desired_width(48.0).hint_text("08:00"));
+        ui.label(tr("à"));
+        ui.add(egui::TextEdit::singleline(end).desired_width(48.0).hint_text("23:00"));
+        ui.label(":");
+        ui.add(egui::TextEdit::singleline(day).desired_width(48.0).hint_text("2"));
+        ui.label("Mo/s");
+    });
+    ui.horizontal(|ui| {
+        ui.label(tr("Le reste du temps :"));
+        ui.add(egui::TextEdit::singleline(night).desired_width(48.0).hint_text(tr("aucune")));
+        ui.label(tr("Mo/s (vide = sans limite)"));
+    });
 }
 
 #[cfg(test)]
@@ -237,9 +294,16 @@ mod tests {
     }
     #[test]
     fn debit() {
-        for s in ["", "5M", "08:00,2.5M 23:00,off", "10M:1M"] {
+        for s in ["", "off", "5M", "08:00,2.5M 23:00,off", "07:30,1M 22:00,10M", "10M:1M"] {
             assert_eq!(BwEdit::parse(s).build().unwrap(), s);
         }
-        assert_eq!(BwEdit { mode: 1, value: "2,5".into(), raw: String::new() }.build().unwrap(), "2.5M");
+        assert_eq!(BwEdit { mode: 1, value: "2,5".into(), ..Default::default() }.build().unwrap(), "2.5M");
+        let e = BwEdit::parse("08:00,2M 23:00,off");
+        assert_eq!((e.mode, e.day_start.as_str(), e.value.as_str(), e.day_end.as_str(), e.night.as_str()), (2, "08:00", "2", "23:00", ""));
+        let e = BwEdit { mode: 2, value: "3".into(), day_start: "7:00".into(), day_end: "21:30".into(), night: "8".into(), raw: String::new() };
+        assert_eq!(e.build().unwrap(), "07:00,3M 21:30,8M");
+        assert!(BwEdit { day_end: "07:00".into(), ..e.clone() }.build().is_err());
+        assert!(BwEdit { value: "0".into(), ..e }.build().is_err());
+        assert_eq!(BwEdit::parse("Mon-08:00,1M").mode, 3);
     }
 }

@@ -83,6 +83,9 @@ pub struct RamEdit {
     pub transferts: String,
     pub verifs: String,
     pub tampon: String,
+    /// limite de debit commune (nas-debian 2.6+)
+    pub bw: crate::sched::BwEdit,
+    pub bw_loaded: bool,
 }
 
 impl RamEdit {
@@ -95,6 +98,8 @@ impl RamEdit {
             transferts: p.transferts.clone(),
             verifs: p.verifs.clone(),
             tampon: p.tampon.clone(),
+            bw: crate::sched::BwEdit::parse(&p.debit),
+            bw_loaded: false,
         }
     }
 }
@@ -114,7 +119,12 @@ pub fn card(app: &mut App, ui: &mut egui::Ui, h: HostId) {
         return;
     };
     if !app.install.ram[i].loaded {
+        // le debit se recharge a part (carte « Débit selon l'heure ») : edition en cours gardee
+        let keep = (app.install.ram[i].bw.clone(), app.install.ram[i].bw_loaded);
         app.install.ram[i] = RamEdit::from(&perf);
+        if keep.1 {
+            (app.install.ram[i].bw, app.install.ram[i].bw_loaded) = keep;
+        }
     }
     let total = if total > 0 { total } else { perf.ram_total_mo };
     ui.label(tf(
@@ -193,4 +203,52 @@ pub fn card(app: &mut App, ui: &mut egui::Ui, h: HostId) {
         }
     });
     let _ = OK;
+}
+
+/// « Débit selon l'heure » d'une machine Debian / OMV : limite commune à toutes les
+/// sauvegardes (programmées, temps réel, versionnées) qui n'ont pas la leur
+pub fn bw_card(app: &mut App, ui: &mut egui::Ui) {
+    let api = app.omv.status.as_ref().map(|s| s.nb_api).unwrap_or(0);
+    let Some((perf, _)) = perf_of(app, HostId::Omv) else {
+        ui.label(RichText::new(tr("Disponible une fois le script de la machine installé.")).weak());
+        return;
+    };
+    if api < 11 {
+        ui.label(RichText::new(tr("Mets à jour le script de la machine (carte 1) pour régler le débit selon l'heure.")).weak());
+        return;
+    }
+    let e = &mut app.install.ram[0];
+    if !e.bw_loaded {
+        e.bw = crate::sched::BwEdit::parse(&perf.debit);
+        e.bw_loaded = true;
+    }
+    ui.label(match perf.debit.as_str() {
+        "" | "off" => tr("Actuellement : aucune limite commune.").to_string(),
+        d => tf("Actuellement : {0}", &[&(crate::fmt::bw_human(d))]),
+    });
+    if e.bw.mode == 0 && perf.debit.is_empty() {
+        // premier reglage : proposer le cas courant (2 Mo/s de 8 h a 23 h)
+        e.bw.value = if e.bw.value.is_empty() { "2".into() } else { e.bw.value.clone() };
+    }
+    e.bw.ui(ui);
+    ui.label(
+        RichText::new(tr("S'applique aux sauvegardes programmées et temps réel de la machine qui n'ont pas leur propre limite (formulaire de chaque sauvegarde : « Réglage de la machine »). Les restaurations et vérifications restent à pleine vitesse."))
+            .small()
+            .weak(),
+    );
+    let built = e.bw.build();
+    if let Err(m) = &built {
+        ui.colored_label(ERR, m);
+    }
+    ui.horizontal(|ui| {
+        if ui.add_enabled(built.is_ok(), egui::Button::new(tr("Appliquer"))).clicked() {
+            let v = built.clone().unwrap_or_default();
+            let script = format!("{} reglages debit {} 2>&1\n", crate::remote::DEBIAN_BIN, sq(if v.is_empty() { "-" } else { &v }));
+            app.install.ram[0].bw_loaded = false;
+            app.action_toast(HostId::Omv, tr("Débit selon l'heure"), script, 30);
+        }
+        if ui.small_button(tr("Annuler les modifications")).clicked() {
+            app.install.ram[0].bw_loaded = false;
+        }
+    });
 }

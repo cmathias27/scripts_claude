@@ -97,8 +97,9 @@ Une version testable par étape (1.1, 1.2…).
 5. **Fiabilité et restauration** *(1.5.0)* : test de restauration à blanc · retour à une date précise ·
    Wake-on-LAN.
 6. **Nouvelles fonctions** : migration vers oCIS depuis l'OMV / Debian ou le PC et transferts
-   oCIS → Synology / Debian *(1.6.0)* · sauvegarde du PC Windows · version SSH de NAS Manager.
-7. **Confort et finitions** : débit selon l'heure, estimation, doublons · actions depuis Home
+   oCIS → Synology / Debian *(1.6.0)* · sauvegarde du PC Windows · version SSH de NAS Manager
+   · autres clouds *(1.7.0)*.
+7. **Confort et finitions** *(1.7.0)* : débit selon l'heure, estimation, doublons · actions depuis Home
    Assistant · page d'aide avec exemples de configuration.
 
 #### Détail
@@ -115,7 +116,7 @@ Une version testable par étape (1.1, 1.2…).
 - [x] **Installation automatique de TOUS les outils nécessaires** : l'application détecte ce qui manque
       sur le NAS et l'installe elle-même (rclone, `inotify-tools`, remotes, service systemd, cron,
       limite `inotify`, logrotate…), sans aucune commande à taper.
-- [ ] **Page d'aide dédiée avec des exemples de configuration** (programmées et temps réel), par exemple :
+- [x] **Page d'aide dédiée avec des exemples de configuration** *(1.7.0)* (programmées et temps réel), par exemple :
       caméras en miroir chiffré, documents en temps réel, photos en copie hebdomadaire.
 - [x] **Un seul script par type de machine** au lieu des scripts actuels :
   - **OMV** : remplace `nas-backup`, `cam-sync`, `nas-check`, `nas-notify`, `nas-ha-status`
@@ -151,7 +152,7 @@ Une version testable par étape (1.1, 1.2…).
     l'ancienne version jusqu'à sa fin (remplacement atomique, comme aujourd'hui).
   - Ancienne version gardée sur la machine pour **revenir en arrière** en un clic.
 
-- [ ] **Version SSH de NAS Manager (interface en mode texte)** : utilisable directement dans un terminal
+- [x] **Version SSH de NAS Manager (interface en mode texte)** *(1.7.0 : programme `nas-manager`)* : utilisable directement dans un terminal
   SSH sur le NAS (ou depuis Linux / Mac / téléphone avec un client SSH), sans PC Windows.
   - Menus au clavier en plein écran (tableau de bord, sauvegardes programmées et temps réel,
     historique, alertes, transferts, journaux, installation), mêmes textes FR / EN que l'application.
@@ -254,7 +255,7 @@ Une version testable par étape (1.1, 1.2…).
       dans un dossier temporaire, comparés aux originaux puis effacés ; alerte en cas d'écart.
 
 #### PC Windows
-- [ ] **Sauvegarde du PC vers le NAS** depuis l'application : dossiers au choix (Documents, Bureau…),
+- [x] **Sauvegarde du PC vers le NAS** *(1.7.0)* depuis l'application : dossiers au choix (Documents, Bureau…),
       programmée ou en temps réel, mêmes options que les autres sauvegardes.
 
 #### Notifications
@@ -262,22 +263,22 @@ Une version testable par étape (1.1, 1.2…).
       Home Assistant devient une option : l'outil doit fonctionner sans lui.
 
 #### Plus aucune ligne de commande
-- [x] **Connexion aux clouds depuis l'application** *(Google Drive : 1.0 ; OneDrive, Dropbox, pCloud, Box : 1.3.0)* : la page de connexion (Google, OneDrive,
+- [x] **Connexion aux clouds depuis l'application** *(Google Drive : 1.0 ; OneDrive, Dropbox, pCloud, Box : 1.3.0 ; Yandex Disk, HiDrive, MEGA, Koofr, Proton Drive : 1.7.0)* : la page de connexion (Google, OneDrive,
       Dropbox…) s'ouvre sur le PC, l'application récupère le jeton et l'envoie au NAS.
       Remplace `rclone config reconnect gdrive:` en SSH.
 - [x] **Entretien des outils** : vérification de la version de rclone sur chaque machine avec mise à
       jour proposée ; alerte avant l'expiration d'un jeton (Google, mot de passe d'application oCIS…).
 
 #### Confort
-- [ ] **Débit selon l'heure** : limites différentes jour / nuit (ex. 2 Mo/s de 8 h à 23 h,
+- [x] **Débit selon l'heure** *(1.7.0)* : limites différentes jour / nuit (ex. 2 Mo/s de 8 h à 23 h,
       sans limite la nuit), réglées une fois pour toutes.
-- [ ] **Estimation avant la première sauvegarde** : volume à envoyer et durée estimée selon
+- [x] **Estimation avant la première sauvegarde** *(1.7.0)* : volume à envoyer et durée estimée selon
       le débit réel de la connexion.
-- [ ] **Détection des doublons** sur le NAS (photos notamment), pour libérer de la place et
+- [x] **Détection des doublons** *(1.7.0)* sur le NAS (photos notamment), pour libérer de la place et
       réduire le volume envoyé. Suppression uniquement après confirmation.
 - [x] **Réglages fins du temps réel** : exclusions par dossier, filtre par type de fichier,
       regroupement des envois d'un fichier modifié en boucle (document en cours d'édition).
-- [ ] **Actions depuis Home Assistant** : boutons MQTT pour lancer une sauvegarde, mettre en pause
+- [x] **Actions depuis Home Assistant** *(1.7.0)* : boutons MQTT pour lancer une sauvegarde, mettre en pause
       ou reprendre le temps réel (utilisables dans des automatisations).
 
 ### Plus tard

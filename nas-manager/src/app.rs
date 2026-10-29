@@ -36,6 +36,8 @@ pub enum Page {
     Alerts,
     Copy,
     Migration,
+    PcBackup,
+    Duplicates,
     Logs,
     Install,
     Help,
@@ -112,6 +114,8 @@ pub enum BrowsePurpose {
     PermsDir,
     RtSource,
     DestPath,
+    PcDest,
+    DupDir,
 }
 
 pub struct Browser {
@@ -260,6 +264,13 @@ pub struct App {
     pub fiab: crate::fiabilite::FiabUi,
     pub ocis_ui: crate::ocis::OcisUi,
     pub pcmig: crate::pcmig::PcMig,
+    /// sauvegarde de ce PC vers le NAS (etape 7)
+    pub pcbackup: crate::pcbackup::PcBackup,
+    /// doublons sur le NAS (etape 8)
+    pub dups: crate::dups::DupUi,
+    /// estimations d'un envoi complet : sauvegarde (nom) ou formulaire ("\u{1}form")
+    pub nas_est: std::collections::HashMap<String, Result<NasEstimate, String>>,
+    pub nas_est_busy: Option<String>,
 }
 
 impl App {
@@ -330,6 +341,10 @@ impl App {
             fiab: Default::default(),
             ocis_ui: Default::default(),
             pcmig: crate::pcmig::PcMig::load(),
+            pcbackup: crate::pcbackup::PcBackup::load(),
+            dups: Default::default(),
+            nas_est: Default::default(),
+            nas_est_busy: None,
         };
         crate::i18n::set_language(&app.settings.language);
         if !app.settings.wizard_done {
@@ -387,6 +402,8 @@ impl App {
                     app.ocis_ui.tr_host = Some(HostId::Omv);
                     Page::Migration
                 }
+                "pc" | "sauvegarde-pc" => Page::PcBackup,
+                "doublons" => Page::Duplicates,
                 "journaux" => Page::Logs,
                 "installation" => Page::Install,
                 "aide" => Page::Help,
@@ -538,6 +555,34 @@ impl App {
                     }
                 }
                 app.refresh(host);
+            }),
+        );
+    }
+
+    /// Estimation d'un envoi complet sur le NAS : `args` = NOM, ou SOURCE DESTINATION oui|non
+    pub fn nas_estimate(&mut self, key: &str, args: &[&str]) {
+        if self.nas_est_busy.is_some() {
+            return;
+        }
+        let a: Vec<String> = args.iter().map(|x| crate::ssh::sq(x)).collect();
+        let script = format!("{} estimer {} 2>&1\n", remote::DEBIAN_BIN, a.join(" "));
+        let k = key.to_string();
+        self.nas_est_busy = Some(k.clone());
+        self.exec(
+            HostId::Omv,
+            tr("Estimation"),
+            script,
+            900,
+            Box::new(move |app, r| {
+                app.nas_est_busy = None;
+                let v = match r {
+                    Ok(o) => match serde_json::from_str::<NasEstimate>(o.stdout.lines().last().unwrap_or("")) {
+                        Ok(e) => Ok(e),
+                        Err(_) => Err(o.text().lines().last().unwrap_or("").replace("ERREUR : ", "")),
+                    },
+                    Err(e) => Err(e.to_string()),
+                };
+                app.nas_est.insert(k, v);
             }),
         );
     }
@@ -981,6 +1026,17 @@ impl App {
                 }
             }
             BrowsePurpose::PermsDir => self.perms.dir = path,
+            BrowsePurpose::PcDest => {
+                if let Some(f) = &mut self.pcbackup.form {
+                    f.dest = path.trim_end_matches('/').to_string();
+                }
+            }
+            BrowsePurpose::DupDir => {
+                let p = path.trim_end_matches('/').to_string();
+                if !self.dups.dirs.contains(&p) {
+                    self.dups.dirs.push(p);
+                }
+            }
             BrowsePurpose::DestPath => {
                 if let Some(f) = &mut self.dests.form {
                     f.values.insert("chemin".into(), path.trim_end_matches('/').to_string());
@@ -1236,6 +1292,7 @@ impl App {
         crate::fiabilite::reveil_window(self, ctx);
         crate::ocis::tr_form_window(self, ctx);
         crate::pcmig::dialogs(self, ctx);
+        crate::pcbackup::form_window(self, ctx);
         crate::pages::restore_window(self, ctx);
         crate::pages::passwords_window(self, ctx);
         crate::extras::fingerprint_window(self, ctx);
@@ -1315,6 +1372,7 @@ impl eframe::App for App {
             self.maybe_poll(HostId::Syno);
         }
         crate::tray::update(self, ctx);
+        crate::pcbackup::tick(self, ctx);
         if self.wizard.is_none() {
             crate::scripts::auto_check(self);
             crate::dests::auto_kit(self);
@@ -1349,6 +1407,8 @@ impl eframe::App for App {
                     Page::Alerts => crate::pages::alerts(self, ui),
                     Page::Copy => crate::pages::copy(self, ui),
                     Page::Migration => crate::ocis::page(self, ui),
+                    Page::PcBackup => crate::pcbackup::page(self, ui),
+                    Page::Duplicates => crate::dups::page(self, ui),
                     Page::Logs => crate::pages::logs(self, ui),
                     Page::Install => crate::install::page(self, ui),
                     Page::Help => crate::help::page(self, ui),

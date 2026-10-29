@@ -195,6 +195,7 @@ fn clean_list(s: &str) -> String {
 
 pub fn form_window(app: &mut App, ctx: &egui::Context) {
     let Some(mut f) = app.rt_form.take() else { return };
+    let api11 = app.omv.status.as_ref().map(|s| s.nb_api >= 11).unwrap_or(false);
     let mut open = true;
     let mut save = false;
     let mut cancel = false;
@@ -326,7 +327,7 @@ pub fn form_window(app: &mut App, ctx: &egui::Context) {
                     ui.end_row();
 
                     ui.label(tr("Limite de débit"));
-                    f.bw.ui(ui);
+                    f.bw.ui_with(ui, api11);
                     ui.end_row();
                 });
             });

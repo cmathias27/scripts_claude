@@ -239,13 +239,79 @@ pub fn next_run_sched(s: &str) -> Option<String> {
 /// Limite de debit rclone en clair
 pub fn bw_human(s: &str) -> String {
     let s = s.trim();
-    if let Some(v) = s.strip_suffix('M').filter(|v| v.parse::<f64>().is_ok()) {
-        return tf("{0} Mo/s", &[&(v.replace('.', ","))]);
+    let mo = |v: &str| v.replace('.', if crate::i18n::is_english() { "." } else { "," });
+    if s == "off" {
+        return tr("sans limite").into();
     }
-    if let Some(v) = s.strip_prefix("08:00,").and_then(|r| r.strip_suffix("M 23:00,off")) {
-        return tf("{0} Mo/s de 8 h à 23 h, sans limite la nuit", &[&(v.replace('.', ","))]);
+    if let Some(v) = s.strip_suffix('M').filter(|v| v.parse::<f64>().is_ok()) {
+        return tf("{0} Mo/s", &[&(mo(v))]);
+    }
+    if let Some((t1, day, t2, night)) = parse_day_night(s) {
+        let h = |t: &str| t.strip_suffix(":00").map(|x| format!("{} h", x.trim_start_matches('0').if_empty("0"))).unwrap_or_else(|| t.to_string());
+        return if night.is_empty() {
+            tf("{0} Mo/s de {1} à {2}, sans limite la nuit", &[&(mo(&day)), &(h(&t1)), &(h(&t2))])
+        } else {
+            tf("{0} Mo/s de {1} à {2}, {3} Mo/s la nuit", &[&(mo(&day)), &(h(&t1)), &(h(&t2)), &(mo(&night))])
+        };
     }
     s.to_string()
+}
+
+trait IfEmpty {
+    fn if_empty(self, d: &str) -> String;
+}
+impl IfEmpty for &str {
+    fn if_empty(self, d: &str) -> String {
+        if self.is_empty() { d.to_string() } else { self.to_string() }
+    }
+}
+
+/// Estimation d'un envoi complet (sauvegarde du NAS) en clair
+pub fn estimate_human(e: &crate::model::NasEstimate) -> String {
+    let mut t = tf("{0} à envoyer ({1} fichier(s))", &[&(bytes(e.octets)), &(count(e.fichiers))]);
+    if e.debit_effectif > 0 {
+        let how = match e.methode.as_str() {
+            "historique" => tr("moyenne des sauvegardes vers cette destination"),
+            _ => tr("mesuré par un envoi de test"),
+        };
+        t.push_str(&tf(" · débit {0}/s ({1})", &[&(bytes(e.debit_effectif)), &how]));
+        if !e.limite.is_empty() {
+            t.push_str(&tf(", limite {0} comprise", &[&(bw_human(&e.limite))]));
+        }
+    }
+    match e.duree_s {
+        Some(s) => t.push_str(&tf(" · durée estimée ≈ {0}", &[&(duration(s.max(60)))])),
+        None => t.push_str(tr(" · débit non mesuré (destination injoignable ?)")),
+    }
+    t
+}
+
+/// Heure HH:MM valide
+pub fn valid_time(t: &str) -> bool {
+    let b = t.as_bytes();
+    b.len() == 5
+        && b[2] == b':'
+        && b.iter().enumerate().all(|(i, c)| i == 2 || c.is_ascii_digit())
+        && t[..2].parse::<u32>().map(|v| v < 24).unwrap_or(false)
+        && t[3..].parse::<u32>().map(|v| v < 60).unwrap_or(false)
+}
+
+/// Plage jour / nuit : "08:00,2M 23:00,off" -> (debut, jour, fin, nuit) ; nuit vide = sans limite
+pub fn parse_day_night(s: &str) -> Option<(String, String, String, String)> {
+    let mut it = s.split_whitespace();
+    let (a, b) = (it.next()?, it.next()?);
+    if it.next().is_some() {
+        return None;
+    }
+    let (t1, v1) = a.split_once(',')?;
+    let (t2, v2) = b.split_once(',')?;
+    let num = |v: &str| v.strip_suffix('M').filter(|n| n.parse::<f64>().map(|x| x > 0.0).unwrap_or(false)).map(String::from);
+    if !valid_time(t1) || !valid_time(t2) || t1 == t2 {
+        return None;
+    }
+    let day = num(v1)?;
+    let night = if v2 == "off" { String::new() } else { num(v2)? };
+    Some((t1.to_string(), day, t2.to_string(), night))
 }
 
 pub fn now() -> i64 {

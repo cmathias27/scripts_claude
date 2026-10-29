@@ -166,6 +166,22 @@ pub struct PerfEffective {
     pub options: String,
 }
 
+/// Estimation d'un envoi complet (`nas-debian estimer`, script 2.6+)
+#[derive(Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct NasEstimate {
+    pub fichiers: u64,
+    pub octets: u64,
+    /// debit vers la destination (octets / s) : historique des sauvegardes, ou envoi de test
+    pub debit_mesure: u64,
+    /// historique, test, aucune
+    pub methode: String,
+    pub limite: String,
+    /// debit moyen sur 24 h, limite de debit comprise
+    pub debit_effectif: u64,
+    pub duree_s: Option<i64>,
+}
+
 /// Reglage memoire de rclone d'une machine (`reglages voir`)
 #[derive(Deserialize, Default, Clone, Debug)]
 #[serde(default)]
@@ -185,6 +201,11 @@ pub struct Perf {
     /// Synology : reveil de l'OMV avant les copies (nas-synology 2.3+)
     pub omv_mac: String,
     pub omv_apres: String,
+    /// limite de debit commune des sauvegardes (nas-debian 2.6+, format --bwlimit)
+    pub debit: String,
+    /// actions depuis Home Assistant autorisees (nas-debian 2.6+) et ecoute active
+    pub ha_actions: bool,
+    pub ha_actions_actif: bool,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]

@@ -231,7 +231,7 @@ pub fn running(app: &App) -> bool {
 //  Outils : rclone, curl
 // =====================================================================
 
-fn command(p: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(crate) fn command(p: impl AsRef<std::ffi::OsStr>) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(p);
     #[cfg(windows)]
@@ -269,7 +269,7 @@ pub fn find_rclone() -> Option<(PathBuf, String)> {
 }
 
 /// Telecharge rclone (Windows) dans le dossier de l'application, avec curl.exe et tar.exe
-fn download_rclone() -> Result<(), String> {
+pub(crate) fn download_rclone() -> Result<(), String> {
     let bin = app_dir().join("bin");
     let tmp = bin.join("telechargement");
     let _ = std::fs::remove_dir_all(&tmp);
@@ -750,7 +750,7 @@ fn process(sh: &Sh, rc: &Path, c: &PcConf, obs: &str, it: &PcItem) -> Outcome {
 }
 
 #[cfg(windows)]
-fn keep_awake(on: bool) {
+pub(crate) fn keep_awake(on: bool) {
     use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED};
     // SAFETY: appel sans pointeur ; tient le PC eveille tant que ce fil le demande
     unsafe {
@@ -758,7 +758,7 @@ fn keep_awake(on: bool) {
     }
 }
 #[cfg(not(windows))]
-fn keep_awake(_on: bool) {}
+pub(crate) fn keep_awake(_on: bool) {}
 
 /// Traite la file d'attente (bloquant : a lancer dans un fil)
 pub fn worker(sh: Sh) {
