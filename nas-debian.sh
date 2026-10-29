@@ -20,6 +20,10 @@
 #    installer                      dossiers, liens nas-backup/nas-notify/..., journaux
 #    outils etat | installer | rclone-maj
 #    reglages voir | ram <auto|econome|equilibre|performant> [Mo] [transferts] [verifs] [tampon]
+#            | debit <limite rclone | ->   limite commune des sauvegardes (ex. 08:00,2M 23:00,off)
+#    estimer <NOM> | <SOURCE> <DESTINATION> [chiffre]   volume et duree estimee d'un envoi complet
+#    doublons analyser <DOSSIER>... [--min Ko] | etat | voir [N] | arreter | supprimer | vider
+#                                   fichiers en double (suppression = corbeille des doublons)
 #    racines | dossiers             disques de donnees | sous-dossiers proposes comme sources
 #    migrer simulation | appliquer  reprise d'une installation avec les anciens scripts
 #    alertes configurer <ip HA> <webhook> [o|n : alerte critique de test]
@@ -29,6 +33,8 @@
 #    disques verifier | etat        sante des disques (SMART) et du RAID
 #    rapport voir | envoyer [hebdo|mensuel] | planifier <hebdo|mensuel|non> [jour] [HH:MM] [canaux]
 #    suivi configurer <serveur MQTT>   (utilisateur et mot de passe sur l'entree standard)
+#    suivi actions <oui|non>        actions depuis Home Assistant (boutons et interrupteurs MQTT)
+#    tui installer | etat | supprimer   interface texte NAS Manager (nas-manager-tui)
 #    notify <critique|info|succes|ok> <tag> <titre> <message>
 #    check                          verification (comme nas-check)
 #    ha-status                      publication Home Assistant (comme nas-ha-status)
@@ -52,8 +58,8 @@
 # =====================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="2.5.0"
-API_VERSION=10
+SCRIPT_VERSION="2.6.0"
+API_VERSION=11
 
 # --------------------------- Parametres ------------------------------
 GDRIVE="gdrive"                  # remote Google Drive deja configure
@@ -78,7 +84,7 @@ LOG="/var/log/nas-backup.log"
 CRON_FILE="/etc/cron.d/nas-backup"
 STOPF="$STATE_DIR/stop"          # present = arret demande (nas-backup stop)
 OLD_DIR="/root/.nas-manager/ancien"   # anciens scripts gardes par la migration
-EXCLUDES=(--exclude '@eaDir/**' --exclude '\#recycle/**' --exclude '.Trash-*/**')
+EXCLUDES=(--exclude '@eaDir/**' --exclude '\#recycle/**' --exclude '.Trash-*/**' --exclude '.corbeille-doublons/**')
 LEGACY_NAMES=(nas-backup nas-notify nas-check nas-ha-status)
 # destinations, sauvegardes versionnees, kit de secours
 VERSIONS_FOLDER="NAS-versions"   # depots restic sur chaque destination
@@ -163,7 +169,7 @@ ram_total_mo() { awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo 2>/dev/nul
 ram_dispo_mo() { awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0; }
 
 agent_conf_load() {
-  RAM_PROFIL=auto RAM_MO="" TRANSFERTS="" VERIFS="" TAMPON="" CAM_JOB=""
+  RAM_PROFIL=auto RAM_MO="" TRANSFERTS="" VERIFS="" TAMPON="" CAM_JOB="" DEBIT="" HA_ACTIONS=""
   # shellcheck disable=SC1090
   [ -f "$AGENT_CONF" ] && . "$AGENT_CONF"
   return 0
@@ -201,6 +207,17 @@ perf_load() {
   [ -n "${TAMPON:-}" ] && [ -z "$over" ] && b=$TAMPON
   PERF_PROFIL="$prof"; PERF_MO="$mo"; PERF_MEM="${mo}MiB"
   PERF_FLAGS=(--transfers "$t" --checkers "$c" --buffer-size "$b")
+  PERF_BW="${DEBIT:-}"
+}
+
+# Limite de debit d'une sauvegarde : la sienne, sinon celle de la machine (« Debit selon
+# l'heure », reglages debit) ; « off » = sans limite. Vide en sortie = aucune option.
+bw_of() {  # bw_of <limite de la sauvegarde>
+  local own="${1:-}"
+  if [ -n "$own" ]; then [ "$own" = off ] || echo "$own"; return 0; fi
+  [ -n "${PERF_MEM:-}" ] || perf_load
+  [ -z "${PERF_BW:-}" ] || [ "$PERF_BW" = off ] || echo "$PERF_BW"
+  return 0
 }
 
 # rcl <etiquette> <arguments rclone...>
@@ -725,6 +742,10 @@ except Exception: print("")' "$DEST_JSON" "$d" | cut -c1-200) Disque débranché
 
   # 4 bis. Sante des disques (SMART, RAID) : alerte avant la panne
   disques_verifier
+
+  # 4 ter. Corbeille des doublons videe apres 30 jours ; ecoute des actions Home Assistant
+  dup_purge >/dev/null 2>&1 || true
+  ha_actions_ensure >/dev/null 2>&1 || true
 
   # 5. Etat pour le tableau de bord Home Assistant
   python3 -c '
@@ -1306,7 +1327,8 @@ ha_slug() {
 ha_status_cmd() {
   [ -f /root/.config/mosquitto_pub ] || return 0
   command -v mosquitto_pub >/dev/null || return 0
-  NAS_HA_SLUG="$(ha_slug)" NAS_HA_NOM="$( [ "$MACHINE" = omv ] && echo "NAS OMV Sauvegardes" || echo "NAS $(hostname -s) Sauvegardes")" \
+  agent_conf_load
+  NAS_HA_ACTIONS="${HA_ACTIONS:-}" NAS_HA_SLUG="$(ha_slug)" NAS_HA_NOM="$( [ "$MACHINE" = omv ] && echo "NAS OMV Sauvegardes" || echo "NAS $(hostname -s) Sauvegardes")" \
   NAS_HA_MODELE="$( [ "$MACHINE" = omv ] && echo OpenMediaVault || echo Debian)" python3 - <<'PYEOF'
 # Publie l'etat et la synthese des transferts vers Home Assistant (MQTT discovery).
 import json, os, re, subprocess, time
@@ -1707,18 +1729,55 @@ for key, j in rt.items():
         "icon": "mdi:sync",
     })
 
-# Retire les entites des sauvegardes supprimees
+# Actions depuis Home Assistant (nas-debian suivi actions oui) : boutons et interrupteurs
+# qui publient sur CMD ; « nas-debian ha-actions ecouter » les execute (liste fermee).
+CMD = f"nas-{SLUG}/commande"
+ACTIONS = os.environ.get("NAS_HA_ACTIONS") == "oui"
+buttons, switches = {}, {}
+
+
+def command_entity(domain, key, name, extra):
+    cfg = {"name": name, "unique_id": f"{OBJ}_{key}", "default_entity_id": f"{domain}.{EID}_{key}",
+           "command_topic": CMD, "device": DEVICE}
+    cfg.update(extra)
+    pub(f"{DISC}/{domain}/{OBJ}/{key}/config", json.dumps(cfg))
+
+
+if ACTIONS:
+    buttons["arreter_sauvegardes"] = ("Arrêter les sauvegardes", "arreter", "mdi:stop-circle-outline")
+    buttons["verifier"] = ("Vérifier maintenant", "verifier", "mdi:stethoscope")
+    for key, j in jobs.items():
+        buttons[f"lancer_{key}"] = (f"Lancer {j['nom']}", f"lancer|{j['nom']}", "mdi:play-circle-outline")
+    for key, j in rt.items():
+        switches[f"temps_reel_actif_{key}"] = (key, j["nom"])
+    for key, (name, payload, icon) in buttons.items():
+        command_entity("button", key, name, {"payload_press": payload, "icon": icon})
+    for key, (k, name) in switches.items():
+        command_entity("switch", key, f"Temps réel {name} actif", {
+            "state_topic": TOPIC,
+            "value_template": "{{ 'ON' if '%s' in value_json.temps_reel and value_json.temps_reel['%s'].etat == 'Actif' else 'OFF' }}" % (k, k),
+            "payload_on": f"reprendre|{name}", "payload_off": f"pause|{name}",
+            "state_on": "ON", "state_off": "OFF", "icon": "mdi:sync",
+        })
+
+# Retire les entites des sauvegardes supprimees (et les actions retirees)
 try:
     old = json.load(open(PUBLISHED))
 except (OSError, ValueError):
     old = []
 old_jobs, old_rt = (set(old), set()) if isinstance(old, list) else (set(old.get("jobs", [])), set(old.get("temps_reel", [])))
+old_btn = set() if isinstance(old, list) else set(old.get("boutons", []))
+old_sw = set() if isinstance(old, list) else set(old.get("interrupteurs", []))
 for key in old_jobs - set(jobs):
     pub(f"{DISC}/sensor/{OBJ}/sauvegarde_{key}/config", "")
 for key in old_rt - set(rt):
     pub(f"{DISC}/sensor/{OBJ}/temps_reel_{key}/config", "")
+for key in old_btn - set(buttons):
+    pub(f"{DISC}/button/{OBJ}/{key}/config", "")
+for key in old_sw - set(switches):
+    pub(f"{DISC}/switch/{OBJ}/{key}/config", "")
 with open(PUBLISHED, "w") as f:
-    json.dump({"jobs": sorted(jobs), "temps_reel": sorted(rt)}, f)
+    json.dump({"jobs": sorted(jobs), "temps_reel": sorted(rt), "boutons": sorted(buttons), "interrupteurs": sorted(switches)}, f)
 
 pub(TOPIC, json.dumps(state, ensure_ascii=False))
 PYEOF
@@ -1749,6 +1808,132 @@ suivi_configurer() {  # suivi_configurer <serveur MQTT>   (utilisateur / mot de 
   chmod 644 /etc/cron.d/nas-ha-status
   vert "OK : publication toutes les 5 minutes (toutes les minutes pendant une sauvegarde)"
   if ha_status_cmd; then vert "OK : les entites sont visibles dans Home Assistant."; else rouge "Echec de la publication."; fi
+}
+
+# --------------------------- Actions depuis Home Assistant -----------
+# Boutons « Lancer <sauvegarde> », « Arreter les sauvegardes », « Verifier maintenant » et
+# interrupteurs « Temps reel <nom> actif » publies par ha-status ; leurs commandes arrivent
+# sur nas-<machine>/commande et sont executees ici. Seules ces actions sont acceptees, et
+# seulement pour des sauvegardes qui existent (nom compare a la liste, jamais interprete).
+HA_ACT_UNIT="/etc/systemd/system/nas-ha-actions.service"
+HA_ACT_PID="$STATE_DIR/ha-actions.pid"
+
+ha_actions_actif() {
+  if has_systemd; then systemctl is-active --quiet nas-ha-actions 2>/dev/null; return; fi
+  local p; p=$(cat "$HA_ACT_PID" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null
+}
+
+ha_actions_start() {
+  if has_systemd; then
+    local want
+    want=$(printf '[Unit]\nDescription=Actions Home Assistant (nas-debian)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nEnvironment=HOME=/root\nExecStart=%s ha-actions ecouter\nRestart=always\nRestartSec=15\n\n[Install]\nWantedBy=multi-user.target\n' "$SELF")
+    if [ "$(cat "$HA_ACT_UNIT" 2>/dev/null)" != "$want" ]; then printf '%s\n' "$want" > "$HA_ACT_UNIT"; systemctl daemon-reload; fi
+    systemctl enable --now nas-ha-actions >/dev/null 2>&1
+    systemctl restart nas-ha-actions >/dev/null 2>&1
+  else
+    ha_actions_actif || { nohup setsid "$SELF" ha-actions ecouter >/dev/null 2>&1 < /dev/null & }
+  fi
+}
+
+ha_actions_stop() {
+  if has_systemd && [ -f "$HA_ACT_UNIT" ]; then
+    systemctl disable --now nas-ha-actions >/dev/null 2>&1; rm -f "$HA_ACT_UNIT"; systemctl daemon-reload
+  fi
+  local p; p=$(cat "$HA_ACT_PID" 2>/dev/null)
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null && pkill -TERM -s "$(ps -o sid= -p "$p" | tr -d ' ')" 2>/dev/null
+  rm -f "$HA_ACT_PID"
+  return 0
+}
+
+ha_actions_ensure() {  # verification horaire : ecoute relancee si elle s'est arretee
+  agent_conf_load
+  [ "${HA_ACTIONS:-}" = oui ] || return 0
+  ha_actions_actif || ha_actions_start
+}
+
+ha_actions_set() {  # ha_actions_set <oui|non>
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  case "${1:-}" in
+    oui)
+      outils_requis mosquitto_sub mosquitto_pub || die "outils manquants : lance d'abord « nas-debian outils installer suivi »."
+      [ -f /root/.config/mosquitto_pub ] || die "connexion MQTT non configuree : installe d'abord le suivi Home Assistant (nas-debian suivi configurer)."
+      # mosquitto_sub lit ses options dans son propre fichier : memes adresse et compte
+      install -m 600 /root/.config/mosquitto_pub /root/.config/mosquitto_sub
+      agent_conf_set HA_ACTIONS oui
+      ha_actions_start
+      sleep 1
+      ha_actions_actif || die "l'ecoute des actions ne demarre pas (journalctl -u nas-ha-actions -n 30)."
+      ha_status_cmd >/dev/null 2>&1 || true
+      logl "actions depuis Home Assistant activees"
+      vert "Actions depuis Home Assistant activees : boutons et interrupteurs ajoutes a l'appareil du NAS." ;;
+    non)
+      agent_conf_set HA_ACTIONS ""
+      ha_actions_stop
+      ha_status_cmd >/dev/null 2>&1 || true
+      logl "actions depuis Home Assistant desactivees"
+      vert "Actions depuis Home Assistant desactivees (boutons retires)." ;;
+    *) die "usage : nas-debian suivi actions <oui|non>" ;;
+  esac
+}
+
+ha_action_do() {  # ha_action_do <commande recue>
+  local p="$1" act name
+  act="${p%%|*}"; name=""; [[ "$p" == *"|"* ]] && name="${p#*|}"
+  case "$act" in
+    lancer)
+      job_names 2>/dev/null | grep -qxF -- "$name" || { logl "Home Assistant : sauvegarde inconnue refusee ($name)"; return 1; }
+      logl "Home Assistant : lancement de $name"
+      rm -f "$STOPF"
+      nohup setsid "$SELF" run "$name" >/dev/null 2>&1 < /dev/null & ;;
+    arreter)
+      logl "Home Assistant : arret des sauvegardes"
+      "$SELF" stop >/dev/null 2>&1 ;;
+    verifier)
+      logl "Home Assistant : verification demandee"
+      nohup setsid "$SELF" check >/dev/null 2>&1 < /dev/null & ;;
+    pause|reprendre)
+      rt_names | grep -qxF -- "$name" || { logl "Home Assistant : sauvegarde temps reel inconnue refusee ($name)"; return 1; }
+      logl "Home Assistant : temps reel $name -> $act"
+      if [ "$act" = pause ]; then
+        "$SELF" temps-reel pause "$name" >/dev/null 2>&1
+      elif [ -f "$STATE_DIR/rt-$name.pause" ]; then
+        "$SELF" temps-reel reprendre "$name" >/dev/null 2>&1
+      else
+        "$SELF" temps-reel demarrer "$name" >/dev/null 2>&1
+      fi ;;
+    *) logl "Home Assistant : commande refusee ($(printf '%s' "$p" | tr -cd '[:print:]' | cut -c1-60))"; return 1 ;;
+  esac
+  # etat a jour dans Home Assistant quelques secondes apres
+  ( sleep 4; ha_status_cmd >/dev/null 2>&1 ) &
+  return 0
+}
+
+ha_actions_listen() {
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  nb_init
+  echo $$ > "$HA_ACT_PID"
+  local topic line last="" last_t=0 now
+  topic="nas-$(ha_slug)/commande"
+  while true; do
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      line="${line:0:200}"
+      now=$(date +%s)
+      # meme commande repetee dans les 10 s (double appui) : ignoree
+      if [ "$line" = "$last" ] && [ $((now - last_t)) -lt 10 ]; then continue; fi
+      last="$line"; last_t=$now
+      ha_action_do "$line" || true
+    done < <(mosquitto_sub -t "$topic" -q 1 2>/dev/null)
+    sleep 15
+  done
+}
+
+ha_actions_main() {
+  case "${1:-}" in
+    ecouter) ha_actions_listen ;;
+    executer) shift; nb_init; ha_action_do "${1:-}" ;;
+    *) die "usage : nas-debian ha-actions ecouter | executer <commande>" ;;
+  esac
 }
 
 # =========================== Outils ==================================
@@ -1939,8 +2124,8 @@ trash_purge() {  # trash_purge <corbeille> <jours>
 #   <remote>:NAS-secours/              kit de secours
 # Destinations sur un bucket (B2, S3), un partage (SMB) ou un sous-dossier : remote
 # « <nom>-base » + alias « <nom> » vers <nom>-base:<bucket/dossier>.
-DEST_TYPES=" drive onedrive dropbox pcloud box b2 s3 sftp webdav smb local "
-DEST_OAUTH=" drive onedrive dropbox pcloud box "
+DEST_TYPES=" drive onedrive dropbox pcloud box yandex hidrive mega koofr protondrive b2 s3 sftp webdav smb local "
+DEST_OAUTH=" drive onedrive dropbox pcloud box yandex hidrive "
 
 remote_exists() { rclone listremotes 2>/dev/null | grep -qxF "$1:"; }
 crypt_of() { if [ "$1" = "$GDRIVE" ]; then echo "$CRYPT"; else echo "$1-chiffre"; fi; }
@@ -2002,6 +2187,7 @@ except Exception:
     pass
 secs = {s: dict(cp.items(s)) for s in cp.sections()}
 NOMS = {"drive": "Google Drive", "onedrive": "OneDrive", "dropbox": "Dropbox", "pcloud": "pCloud", "box": "Box",
+        "yandex": "Yandex Disk", "hidrive": "HiDrive", "mega": "MEGA", "koofr": "Koofr", "protondrive": "Proton Drive",
         "b2": "Backblaze B2", "s3": "S3", "sftp": "SFTP", "webdav": "WebDAV", "smb": "SMB", "local": "Disque local"}
 def describe(t, c):
     if t == "onedrive":
@@ -2014,6 +2200,10 @@ def describe(t, c):
         return re.sub(r"//[^/@]*@", "//", c.get("url", ""))
     if t == "smb":
         return "%s@%s" % (c.get("user", ""), c.get("host", ""))
+    if t in ("mega", "koofr"):
+        return "%s (%s)" % (NOMS[t], c.get("user", ""))
+    if t == "protondrive":
+        return "Proton Drive (%s)" % c.get("username", "")
     return NOMS.get(t, t)
 bases = {r.split(":", 1)[0] for r in (c.get("remote", "") for c in secs.values() if c.get("type") == "alias") if ":" in r}
 out = []
@@ -2537,7 +2727,7 @@ RT_MAXWAIT=60          # un fichier modifie en boucle part au plus tard apres 60
 RT_FENETRE=600         # detection d'anomalie : nombre de fichiers sur 10 minutes
 RT_CATCH_OK=(0 5 10 15 20 30 60 120 180 240 360 720 1440)
 # toujours exclus : dossiers techniques, fichiers temporaires
-RT_EXCL_DIRS=('@eaDir' '#recycle' '.Trash-*' '#snapshot' '.SynologyWorkingDirectory')
+RT_EXCL_DIRS=('@eaDir' '#recycle' '.Trash-*' '#snapshot' '.SynologyWorkingDirectory' '.corbeille-doublons')
 RT_EXCL_FILES=('*.tmp' '*.part' '*.swp' '*.crdownload' '.~lock.*' '~$*' '.DS_Store' 'Thumbs.db' 'desktop.ini')
 
 rt_names() { [ -f "$RT_CONF" ] && grep -v '^#' "$RT_CONF" | grep -v '^$' | cut -d'|' -f1; return 0; }
@@ -2751,7 +2941,8 @@ rt_flush() {
   RT_PEND=(); RT_MOD=(); RT_FIRST=0
   dest_wake "$R_DEST" >/dev/null || true      # destination en veille (reveil configure)
   local -a common=(--log-file "$log" --log-level INFO --retries 3)
-  [ -n "$R_BW" ] && common+=(--bwlimit "$R_BW")
+  local bw; bw=$(bw_of "$R_BW")
+  [ -n "$bw" ] && common+=(--bwlimit "$bw")
   local n o f fail=0
   for i in "${!R_SRCS[@]}"; do
     src="${R_SRCS[i]}"; d=$(rt_dest_of "$src"); tr="$(rt_trash_of "$src")/$jour"
@@ -2820,7 +3011,8 @@ rt_catchup() {  # rt_catchup <nom> [initial]
   # envoi complet, ou reprise confirmee : etat actuel repercute tout de suite (sans attendre 2 min)
   [ "${2:-}" = initial ] && min=()
   [ -f "$STATE_DIR/rt-$R_NAME.autorise" ] && min=()
-  [ -n "$R_BW" ] && common+=(--bwlimit "$R_BW")
+  local bw; bw=$(bw_of "$R_BW")
+  [ -n "$bw" ] && common+=(--bwlimit "$bw")
   # destination en veille (reveil configure) : on ne la reveille que s'il y a du nouveau
   # (les suppressions sont repercutees au fil de l'eau, ce qui la reveille aussi)
   local mk="$STATE_DIR/rt-$R_NAME.rattrapage" wa=""
@@ -3677,8 +3869,9 @@ run_rclone_dest() {  # run_rclone_dest <remote> <oui|non> <jour> <journal>
   dest=$(dest_path "$r" "$e" "$J_SUB"); trash=$(trash_path "$r" "$e" "$J_NAME")
   local -a opts=("${EXCLUDES[@]}" --log-file "$runlog" --log-level INFO)
   if [ -t 1 ]; then opts+=(-P); else opts+=(--stats 30s); fi
-  [ -n "${J_BW:-}" ] && opts+=(--bwlimit "$J_BW")
   perf_load "$J_PERF"
+  local bw; bw=$(bw_of "${J_BW:-}")
+  [ -n "$bw" ] && opts+=(--bwlimit "$bw")
   nb_transfer "$dest" "$trash" "$jour" "$runlog" "${opts[@]}"; rc=$?
   RD_RAM=$RCL_MAX
   # manque de memoire : nouvel essai avec un seul fichier a la fois
@@ -3717,8 +3910,9 @@ restic_prep() {  # restic_prep <remote>
   restic_pass_ensure
   mkdir -p "$RESTIC_CACHE"
   export RESTIC_PASSWORD_FILE="$RESTIC_PASS" RESTIC_CACHE_DIR="$RESTIC_CACHE" RESTIC_PROGRESS_FPS=0.2
-  local a="serve restic --stdio --b2-hard-delete"
-  [ -n "${J_BW:-}" ] && a="$a --bwlimit \"$J_BW\""
+  local a="serve restic --stdio --b2-hard-delete" bw
+  bw=$(bw_of "${J_BW:-}")
+  [ -n "$bw" ] && a="$a --bwlimit \"$bw\""
   RST=(-r "$(repo_path "$1" "$J_SUB")" -o "rclone.args=$a")
 }
 
@@ -6997,12 +7191,35 @@ tr_main() {
 # <<< commun/ocis.sh
 
 # =========================== Reglages ================================
-reglages() {  # reglages voir | ram <profil> [Mo] [transferts] [verifs] [tampon]
+# Limite de debit au format --bwlimit de rclone : « 5M », « off », ou plages horaires
+# « 08:00,2M 23:00,off » (jours possibles : Mon-08:00,2M...)
+valid_bw() { [ -z "$1" ] || [[ "$1" =~ ^[0-9A-Za-z:.,\ -]+$ ]]; }
+
+reglages() {  # reglages voir | ram <profil> [Mo] [transferts] [verifs] [tampon] | debit <limite|->
   case "${1:-voir}" in
     voir)
       agent_conf_load; perf_load
-      printf '{"profil":"%s","mo":"%s","transferts":"%s","verifs":"%s","tampon":"%s","effectif":{"profil":"%s","mo":%s,"options":"%s"},"ram_total_mo":%s,"ram_dispo_mo":%s}\n' \
-        "$RAM_PROFIL" "$RAM_MO" "$TRANSFERTS" "$VERIFS" "$TAMPON" "$PERF_PROFIL" "$PERF_MO" "${PERF_FLAGS[*]}" "$(ram_total_mo)" "$(ram_dispo_mo)" ;;
+      local haa=false hac=false
+      [ "${HA_ACTIONS:-}" = oui ] && haa=true
+      ha_actions_actif && hac=true
+      printf '{"profil":"%s","mo":"%s","transferts":"%s","verifs":"%s","tampon":"%s","effectif":{"profil":"%s","mo":%s,"options":"%s"},"ram_total_mo":%s,"ram_dispo_mo":%s,"debit":"%s","ha_actions":%s,"ha_actions_actif":%s}\n' \
+        "$RAM_PROFIL" "$RAM_MO" "$TRANSFERTS" "$VERIFS" "$TAMPON" "$PERF_PROFIL" "$PERF_MO" "${PERF_FLAGS[*]}" "$(ram_total_mo)" "$(ram_dispo_mo)" "${DEBIT:-}" "$haa" "$hac" ;;
+    debit)
+      local v="${2:-}"
+      [ "$v" = - ] && v=""
+      valid_bw "$v" || die "limite de debit invalide (ex. 5M, ou 08:00,2M 23:00,off)."
+      [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+      if [ -n "$v" ] && command -v rclone >/dev/null; then
+        # rclone valide le format (plages horaires comprises) sans rien envoyer
+        local vd out; vd=$(mktemp -d)
+        out=$(rclone lsf --bwlimit "$v" "$vd" 2>&1 < /dev/null); rmdir "$vd"
+        if echo "$out" | grep -q -- '--bwlimit'; then die "limite refusee par rclone : $(echo "$out" | grep -- '--bwlimit' | sed 's/.*flag: //' | head -n 1)"; fi
+      fi
+      agent_conf_set DEBIT "$v"
+      if [ -z "$v" ] || [ "$v" = off ]; then vert "Debit des sauvegardes : aucune limite commune."
+      else vert "Debit des sauvegardes : $v (sauf celles qui ont leur propre limite)."; fi
+      # les surveillances temps reel relisent leurs reglages a chaque envoi : rien a relancer
+      ;;
     ram)
       local p="${2:-auto}" mo="${3:-}" t="${4:-}" c="${5:-}" b="${6:-}"
       [[ "$p" =~ ^(auto|econome|equilibre|performant)$ ]] || die "profil invalide (auto, econome, equilibre, performant)."
@@ -7019,13 +7236,442 @@ reglages() {  # reglages voir | ram <profil> [Mo] [transferts] [verifs] [tampon]
       agent_conf_set VERIFS "$c"; agent_conf_set TAMPON "$b"
       perf_load
       vert "Memoire de rclone : profil $PERF_PROFIL, limite $PERF_MO Mo (${PERF_FLAGS[*]})." ;;
-    *) die "usage : nas-debian reglages voir | ram <profil> [Mo] [transferts] [verifs] [tampon]" ;;
+    *) die "usage : nas-debian reglages voir | ram <profil> [Mo] [transferts] [verifs] [tampon] | debit <limite|->" ;;
   esac
 }
 
 version_json() {
   printf '{"script":"nas-debian","version":"%s","api":%s,"machine":"%s"}\n' "$SCRIPT_VERSION" "$API_VERSION" "$MACHINE"
 }
+
+# =========================== Doublons ================================
+# Recherche des fichiers identiques (meme taille puis meme empreinte SHA-1) dans les
+# dossiers choisis, en arriere-plan (priorite basse). Resultat dans doublons.json.
+# Rien n'est supprime sans demande : « supprimer » deplace les fichiers choisis dans
+# <dossier analyse>/.corbeille-doublons/<date>/ (meme disque : instantane), apres avoir
+# verifie qu'une copie identique reste en place ; corbeille videe apres 30 jours.
+DUP_JSON="$STATE_DIR/doublons.json"
+DUP_PID="$STATE_DIR/doublons.pid"
+DUP_TRASH=".corbeille-doublons"
+DUP_KEEP_DAYS=30
+
+dup_running() { local p; p=$(cat "$DUP_PID" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+
+dup_valid_dir() {  # dossier de donnees, chemin complet, sans ..
+  [[ "$1" == /* && "$1" != *..* && "$1" != *"|"* ]] || die "dossier invalide : $1"
+  [ -d "$1" ] || die "dossier introuvable : $1"
+  case "$(readlink -f "$1")" in /|/etc*|/usr*|/bin*|/sbin*|/lib*|/boot*|/proc*|/sys*|/dev*|/run*|/var/lib*|/root) die "dossier systeme refuse : $1" ;; esac
+}
+
+dup_analyse() {  # dup_analyse [--min Ko] <dossier>...
+  local minko=100 d
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  mkdir -p "$STATE_DIR"
+  if [ "${1:-}" = --min ]; then minko="${2:-}"; shift 2; fi
+  [[ "$minko" =~ ^[0-9]+$ ]] || die "taille minimale invalide (en Ko)."
+  [ $# -gt 0 ] || die "usage : nas-debian doublons analyser [--min Ko] <DOSSIER>..."
+  for d in "$@"; do dup_valid_dir "$d"; done
+  dup_running && die "une analyse est deja en cours (nas-debian doublons arreter)."
+  rm -f "$DUP_JSON"
+  dup_py > "$STATE_DIR/doublons.py"
+  local -a io=(); command -v ionice >/dev/null && io=(ionice -c3)
+  nohup setsid nice -n 19 "${io[@]}" python3 "$STATE_DIR/doublons.py" "$DUP_JSON" "$minko" "$@" > /dev/null 2>&1 < /dev/null &
+  echo $! > "$DUP_PID"
+  sleep 1
+  vert "Analyse des doublons lancee en arriere-plan ($* ; fichiers de plus de $minko Ko)."
+}
+
+dup_py() {
+  cat <<'PYDUP'
+import hashlib, json, os, sys, time
+out, min_kb, roots = sys.argv[1], int(sys.argv[2]), [os.path.realpath(r) for r in sys.argv[3:]]
+SKIP = {"@eaDir", "#recycle", "#snapshot", ".corbeille-doublons", ".SynologyWorkingDirectory", "lost+found"}
+st = {"etat": "en_cours", "etape": "liste", "debut": int(time.time()), "dossiers": roots, "min_ko": min_kb,
+      "fichiers_vus": 0, "octets_vus": 0, "pct": 0, "pid": os.getpid()}
+last = [0.0]
+def save(force=False):
+    now = time.time()
+    if not force and now - last[0] < 2:
+        return
+    last[0] = now
+    with open(out + ".tmp", "w") as f:
+        json.dump(st, f, ensure_ascii=False)
+    os.replace(out + ".tmp", out)
+try:
+    save(True)
+    by_size, seen = {}, set()
+    for r in roots:
+        for root, dirs, files in os.walk(r):
+            dirs[:] = [d for d in dirs if d not in SKIP and not d.startswith(".Trash-") and not d.startswith(".corbeille")]
+            for f in files:
+                p = os.path.join(root, f)
+                try:
+                    s = os.lstat(p)
+                except OSError:
+                    continue
+                if not os.path.isfile(p) or os.path.islink(p) or s.st_size < min_kb * 1024:
+                    continue
+                key = (s.st_dev, s.st_ino)
+                if key in seen:          # lien physique : un seul fichier
+                    continue
+                seen.add(key)
+                st["fichiers_vus"] += 1; st["octets_vus"] += s.st_size
+                by_size.setdefault(s.st_size, []).append((p, int(s.st_mtime)))
+                save()
+    cands = {k: v for k, v in by_size.items() if len(v) > 1}
+    total = sum(k * len(v) for k, v in cands.items()) or 1
+    done = 0
+    st["etape"] = "empreintes"; st["candidats"] = sum(len(v) for v in cands.values()); save(True)
+    def h(p, limit=None):
+        x = hashlib.sha1()
+        with open(p, "rb") as f:
+            n = 0
+            while True:
+                c = f.read(1 << 20 if limit is None else min(65536, limit - n))
+                if not c:
+                    break
+                x.update(c); n += len(c)
+                if limit is not None and n >= limit:
+                    break
+        return x.hexdigest()
+    groups = []
+    for size, files in sorted(cands.items(), reverse=True):
+        part = {}
+        for p, m in files:
+            try:
+                part.setdefault(h(p, 65536), []).append((p, m))
+            except OSError:
+                pass
+        for lst in part.values():
+            if len(lst) < 2:
+                done += size * len(lst); continue
+            full = {}
+            for p, m in lst:
+                try:
+                    full.setdefault(h(p) if size > 65536 else "", []).append((p, m))
+                except OSError:
+                    pass
+                done += size
+                st["pct"] = min(99, int(done * 100 / total)); save()
+            for k, g in full.items():
+                if len(g) > 1:
+                    g.sort(key=lambda x: (x[1], len(x[0]), x[0]))
+                    groups.append({"taille": size, "empreinte": k or "petit", "fichiers": [{"chemin": p, "date": m} for p, m in g]})
+    groups.sort(key=lambda g: -g["taille"] * (len(g["fichiers"]) - 1))
+    st.update({"etat": "fini", "fin": int(time.time()), "pct": 100, "groupes": groups,
+               "nb_groupes": len(groups), "fichiers_en_trop": sum(len(g["fichiers"]) - 1 for g in groups),
+               "recuperable": sum(g["taille"] * (len(g["fichiers"]) - 1) for g in groups)})
+    save(True)
+except Exception as e:
+    st.update({"etat": "erreur", "erreur": str(e)[:300], "fin": int(time.time())})
+    save(True)
+PYDUP
+}
+
+dup_trash_info() {  # JSON : contenu des corbeilles des doublons
+  python3 - "$DUP_TRASH" "$@" <<'PYT'
+import json, os, sys
+name, roots = sys.argv[1], sys.argv[2:]
+n = b = 0; dates = []
+for r in roots:
+    t = os.path.join(r, name)
+    if not os.path.isdir(t):
+        continue
+    for d in os.listdir(t):
+        dates.append(d)
+        for root, _, files in os.walk(os.path.join(t, d)):
+            for f in files:
+                try:
+                    b += os.lstat(os.path.join(root, f)).st_size; n += 1
+                except OSError:
+                    pass
+print(json.dumps({"fichiers": n, "octets": b, "dates": sorted(set(dates))}))
+PYT
+}
+
+dup_roots() {  # dossiers de la derniere analyse
+  python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("dossiers", [])))' "$DUP_JSON" 2>/dev/null
+}
+
+dup_etat() {  # resume (sans la liste des groupes) + corbeille
+  local -a roots=(); mapfile -t roots < <(dup_roots)
+  local tr; tr=$(dup_trash_info "${roots[@]}")
+  local run=false; dup_running && run=true
+  python3 - "$DUP_JSON" "$run" "$tr" "${1:-0}" <<'PYV'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    d = {"etat": "aucune"}
+if d.get("etat") == "en_cours" and sys.argv[2] != "true":
+    d["etat"] = "interrompue"
+n = int(sys.argv[4])
+g = d.pop("groupes", [])
+if n > 0:
+    d["groupes"] = g[:n]
+d["corbeille"] = json.loads(sys.argv[3])
+print(json.dumps(d, ensure_ascii=False))
+PYV
+}
+
+dup_supprimer() {  # chemins sur l'entree standard, un par ligne
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  dup_running && die "analyse en cours : attends la fin."
+  [ -f "$DUP_JSON" ] || die "aucune analyse : lance d'abord nas-debian doublons analyser."
+  local list; list=$(mktemp)
+  cat > "$list"
+  python3 - "$DUP_JSON" "$list" "$DUP_TRASH" "$(date +%Y-%m-%d_%H%M%S)" <<'PYS'
+import hashlib, json, os, shutil, sys
+data, lst, trash, stamp = sys.argv[1:5]
+d = json.load(open(data))
+roots = [os.path.realpath(r) for r in d.get("dossiers", [])]
+want = {l.rstrip("\n") for l in open(lst) if l.strip()}
+def sha(p):
+    x = hashlib.sha1()
+    with open(p, "rb") as f:
+        for c in iter(lambda: f.read(1 << 20), b""):
+            x.update(c)
+    return x.hexdigest()
+moved = skipped = 0; freed = 0; msgs = []
+for g in d.get("groupes", []):
+    files = [f["chemin"] for f in g["fichiers"]]
+    chosen = [p for p in files if p in want]
+    if not chosen:
+        continue
+    keep = [p for p in files if p not in want and os.path.isfile(p)]
+    if not keep:
+        msgs.append("groupe de %s : au moins une copie doit rester, rien deplace" % os.path.basename(files[0])); skipped += len(chosen); continue
+    try:
+        ref = sha(keep[0]) if g["taille"] > 0 else None
+    except OSError:
+        skipped += len(chosen); continue
+    for p in chosen:
+        rp = os.path.realpath(p)
+        root = next((r for r in roots if rp.startswith(r + os.sep)), None)
+        if root is None or not os.path.isfile(p) or os.path.islink(p):
+            skipped += 1; continue
+        try:
+            if os.path.getsize(p) != g["taille"] or sha(p) != ref:
+                msgs.append("%s : modifie depuis l'analyse, garde" % p); skipped += 1; continue
+            dst = os.path.join(root, trash, stamp, os.path.relpath(rp, root))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(p, dst)
+            moved += 1; freed += g["taille"]
+        except OSError as e:
+            msgs.append("%s : %s" % (p, e)); skipped += 1
+    g["fichiers"] = [f for f in g["fichiers"] if os.path.isfile(f["chemin"])]
+d["groupes"] = [g for g in d.get("groupes", []) if len(g["fichiers"]) > 1]
+d["nb_groupes"] = len(d["groupes"])
+d["fichiers_en_trop"] = sum(len(g["fichiers"]) - 1 for g in d["groupes"])
+d["recuperable"] = sum(g["taille"] * (len(g["fichiers"]) - 1) for g in d["groupes"])
+json.dump(d, open(data + ".tmp", "w"), ensure_ascii=False); os.replace(data + ".tmp", data)
+for m in msgs[:20]:
+    print(m)
+print("%d fichier(s) deplace(s) dans %s/%s (%.1f Mo), %d garde(s)." % (moved, trash, stamp, freed / 1048576, skipped))
+sys.exit(0 if moved or not skipped else 1)
+PYS
+  local rc=$?
+  rm -f "$list"
+  [ $rc -eq 0 ] && logl "doublons : fichiers deplaces dans la corbeille des doublons"
+  return $rc
+}
+
+dup_purge() {  # dup_purge [jours] : corbeilles des doublons plus vieilles que X jours (0 = tout)
+  local days="${1:-$DUP_KEEP_DAYS}" r t d lim
+  lim=$(date -d "-$days days" +%Y-%m-%d 2>/dev/null || date +%Y-%m-%d)
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    t="$r/$DUP_TRASH"; [ -d "$t" ] || continue
+    for d in "$t"/*; do
+      [ -d "$d" ] || continue
+      if [ "$days" -eq 0 ] || [[ "$(basename "$d" | cut -c1-10)" < "$lim" ]]; then rm -rf -- "$d"; fi
+    done
+    rmdir "$t" 2>/dev/null || true
+  done < <(dup_roots)
+  return 0
+}
+
+doublons_main() {
+  case "${1:-etat}" in
+    analyser)  shift; dup_analyse "$@" ;;
+    etat)      dup_etat 0 ;;
+    voir)      dup_etat "${2:-300}" ;;
+    arreter)   if dup_running; then kill "$(cat "$DUP_PID")" 2>/dev/null; rm -f "$DUP_PID" "$DUP_JSON"; vert "Analyse arretee."; else jaune "Aucune analyse en cours."; fi ;;
+    supprimer) dup_supprimer ;;
+    vider)     [ "$(id -u)" -eq 0 ] || die "lance ce script en root."; dup_purge 0; vert "Corbeille des doublons videe." ;;
+    purger)    dup_purge "${2:-$DUP_KEEP_DAYS}" ;;
+    *) die "usage : nas-debian doublons analyser [--min Ko] <DOSSIER>... | etat | voir [N] | arreter | supprimer (chemins sur l'entree standard) | vider" ;;
+  esac
+}
+
+# =========================== Estimation (premiere sauvegarde) =========
+# Volume a envoyer (taille de la source, memes exclusions que les sauvegardes) et duree
+# estimee selon le debit reel vers la destination : moyenne des sauvegardes deja faites
+# vers elle, sinon envoi d'un fichier de test de 16 Mo ; la limite de debit compte.
+estimer() {  # estimer <NOM> | <SOURCE> <DESTINATION> [oui|non]
+  need_root_rclone
+  local src dest enc bw="" name=""
+  if [ -n "${1:-}" ] && [ -z "${2:-}" ]; then
+    nb_init
+    job_get "$1" || die "sauvegarde '$1' introuvable."
+    name="$1"; src="$J_SRC"; job_dests; dest="${JD_R[0]}"; enc="${JD_E[0]}"
+    perf_load "$J_PERF"; bw=$(bw_of "${J_BW:-}")
+  else
+    src="${1%/}"; dest="${2:-$GDRIVE}"; enc="${3:-oui}"
+    perf_load; bw=$(bw_of "")
+  fi
+  [ -d "$src" ] || die "dossier source introuvable : $src"
+  remote_exists "$dest" || die "destination introuvable : $dest"
+  local test_bps="" tmp t0 t1 r
+  # debit deja connu (sauvegardes vers cette destination) ?
+  r=$(python3 - "$STATE_DIR/historique.jsonl" "$dest" <<'PYH' 2>/dev/null
+import json, sys
+vol = dur = 0
+try:
+    for l in open(sys.argv[1]):
+        try:
+            d = json.loads(l)
+        except ValueError:
+            continue
+        for x in d.get("destinations") or []:
+            if x.get("destination") == sys.argv[2] and x.get("code") == 0 and x.get("volume_octets", 0) >= 50e6 and x.get("fin", 0) - x.get("debut", 0) >= 60:
+                vol += x["volume_octets"]; dur += x["fin"] - x["debut"]
+except OSError:
+    pass
+print(int(vol / dur) if dur else 0)
+PYH
+)
+  if [ "${r:-0}" -gt 0 ]; then
+    test_bps="$r historique"
+  else
+    dest_ready "$dest" >/dev/null || die "destination non prete : $(dest_ready "$dest")"
+    tmp=$(mktemp); head -c 16777216 /dev/urandom > "$tmp"
+    local target; target="$(crypt_of "$dest")"
+    { [ "$enc" = oui ] && remote_exists "$target"; } || target="$dest"
+    t0=$(date +%s%N)
+    if timeout 600 rclone copyto "$tmp" "$target:.nas-manager-test-debit" ${bw:+--bwlimit "$bw"} --retries 1 < /dev/null >/dev/null 2>&1; then
+      t1=$(date +%s%N)
+      test_bps="$(( 16777216 * 1000000000 / ( (t1 - t0) > 0 ? (t1 - t0) : 1 ) )) test"
+      timeout 120 rclone deletefile "$target:.nas-manager-test-debit" < /dev/null >/dev/null 2>&1
+    fi
+    rm -f "$tmp"
+  fi
+  python3 - "$src" "${test_bps:-0 aucune}" "$bw" "$name" "$dest" <<'PYE'
+import json, os, re, sys, fnmatch
+src, mes, bw, name, dest = sys.argv[1:6]
+bps, methode = mes.split()
+bps = int(bps)
+EXCL = ("@eaDir", "#recycle", ".corbeille-doublons")
+n = b = 0
+for root, dirs, files in os.walk(src):
+    dirs[:] = [d for d in dirs if d not in EXCL and not d.startswith(".Trash-")]
+    for f in files:
+        try:
+            st = os.lstat(os.path.join(root, f))
+        except OSError:
+            continue
+        if os.path.isfile(os.path.join(root, f)) and not os.path.islink(os.path.join(root, f)):
+            n += 1; b += st.st_size
+def rate(v):
+    """'2M' -> octets/s ; 'off' -> None"""
+    v = v.strip().split(":")[0]
+    if v in ("off", ""):
+        return None
+    m = re.match(r"^([\d.]+)([BKMGT]?)$", v, re.I)
+    if not m:
+        return None
+    mult = {"": 1024, "B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}[m.group(2).upper()]
+    return float(m.group(1)) * mult
+# debit moyen sur 24 h avec la limite (plages horaires : moyenne ponderee)
+eff = bps
+if bw and bps:
+    parts = bw.split()
+    if len(parts) == 1 and "," not in parts[0]:
+        r = rate(parts[0]); eff = min(bps, r) if r else bps
+    else:
+        slots = []
+        for p in parts:
+            t, _, v = p.partition(",")
+            t = t.split("-")[-1]
+            try:
+                h, m = t.split(":"); slots.append((int(h) * 60 + int(m), rate(v)))
+            except ValueError:
+                pass
+        slots.sort()
+        if slots:
+            tot = 0.0
+            for i, (t, r) in enumerate(slots):
+                nxt = slots[(i + 1) % len(slots)][0] + (1440 if i + 1 == len(slots) else 0)
+                tot += (nxt - t) * (min(bps, r) if r else bps)
+            # avant la premiere plage : limite de la derniere (cycle sur 24 h)
+            eff = tot / 1440
+dur = int(b / eff) + n // 50 if eff else None
+print(json.dumps({"nom": name, "source": src, "destination": dest, "fichiers": n, "octets": b,
+                  "debit_mesure": bps, "methode": methode, "limite": bw, "debit_effectif": int(eff or 0),
+                  "duree_s": dur}, ensure_ascii=False))
+PYE
+}
+
+# >>> commun/tui.sh (copie generee par maj-versions-scripts.py : modifier commun/tui.sh)
+# shellcheck shell=bash
+# =====================================================================
+#  commun/tui.sh : interface texte de NAS Manager (nas-manager), partage par
+#  nas-synology et nas-debian. Binaire unique (amd64, arm64, armv7) publie avec chaque
+#  version de l'application sur GitHub ; empreinte SHA-256 verifiee avant installation.
+#  Ce bloc est recopie tel quel dans les deux scripts par maj-versions-scripts.py :
+#  le modifier dans commun/tui.sh, puis relancer python3 maj-versions-scripts.py.
+#  A fournir par le script qui l'inclut : BIN_DIR, die.
+# =====================================================================
+TUI_BIN="$BIN_DIR/nas-manager"
+tui_ok() { echo -e "\e[32m$*\e[0m"; }
+TUI_URL="${NAS_TUI_URL:-https://github.com/cmathias27/scripts_claude/releases/latest/download}"
+
+tui_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo x86_64 ;;
+    aarch64|arm64) echo aarch64 ;;
+    armv7*|armv8l) echo armv7 ;;
+    *) return 1 ;;
+  esac
+}
+
+tui_version() { [ -x "$TUI_BIN" ] && "$TUI_BIN" --version 2>/dev/null | awk '{print $NF; exit}'; }
+
+tui_etat() {
+  local a v
+  a=$(tui_arch || echo inconnue); v=$(tui_version || true)
+  printf '{"installe":%s,"version":"%s","architecture":"%s","commande":"%s"}\n' \
+    "$( [ -n "$v" ] && echo true || echo false)" "$v" "$a" "$TUI_BIN"
+}
+
+tui_installer() {
+  [ "$(id -u)" -eq 0 ] || die "lance ce script en root."
+  command -v curl >/dev/null || die "curl est necessaire."
+  local a tmp sum got
+  a=$(tui_arch) || die "architecture non prise en charge : $(uname -m)"
+  tmp=$(mktemp -d)
+  echo "== Telechargement de nas-manager ($a)"
+  curl -fsSL --retry 2 -o "$tmp/nas-manager" "$TUI_URL/nas-manager-tui-$a" || { rm -rf "$tmp"; die "telechargement impossible ($TUI_URL)."; }
+  curl -fsSL --retry 2 -o "$tmp/sha256" "$TUI_URL/nas-manager-tui-$a.sha256" || { rm -rf "$tmp"; die "empreinte introuvable."; }
+  sum=$(awk '{print $1; exit}' "$tmp/sha256")
+  got=$(sha256sum "$tmp/nas-manager" | awk '{print $1}')
+  [ -n "$sum" ] && [ "$sum" = "$got" ] || { rm -rf "$tmp"; die "empreinte incorrecte : fichier refuse."; }
+  chmod 755 "$tmp/nas-manager"
+  "$tmp/nas-manager" --version >/dev/null 2>&1 || { rm -rf "$tmp"; die "le programme telecharge ne se lance pas sur cette machine."; }
+  mv -f "$tmp/nas-manager" "$TUI_BIN"
+  rm -rf "$tmp"
+  tui_ok "nas-manager $(tui_version) installe : lance « nas-manager » dans un terminal SSH (sudo sur le Synology)."
+}
+
+tui_main() {
+  case "${1:-etat}" in
+    etat)      tui_etat ;;
+    installer) tui_installer ;;
+    supprimer) [ "$(id -u)" -eq 0 ] || die "lance ce script en root."; rm -f "$TUI_BIN"; tui_ok "nas-manager retire." ;;
+    *) die "usage : tui etat | installer | supprimer" ;;
+  esac
+}
+# <<< commun/tui.sh
 
 # =========================== Point d'entree ==========================
 backup_main() {
@@ -7065,11 +7711,20 @@ agent_main() {
         *) die "usage : nas-debian outils etat | installer [suivi] | rclone-maj" ;;
       esac ;;
     reglages)  shift; reglages "$@" ;;
+    estimer)   shift; estimer "$@" ;;
+    doublons)  shift; doublons_main "$@" ;;
+    tui)       shift; tui_main "$@" ;;
+    ha-actions) shift; ha_actions_main "$@" ;;
     racines)   data_roots ;;
     dossiers)  data_dirs ;;
     migrer)    migrer "${2:-simulation}" ;;
     alertes)   shift; [ "$(id -u)" -eq 0 ] || die "lance ce script en root."; alertes_main "$@" ;;
-    suivi)     [ "${2:-}" = configurer ] || die "usage : nas-debian suivi configurer <serveur MQTT>"; suivi_configurer "${3:-}" ;;
+    suivi)
+      case "${2:-}" in
+        configurer) suivi_configurer "${3:-}" ;;
+        actions)    ha_actions_set "${3:-}" ;;
+        *) die "usage : nas-debian suivi configurer <serveur MQTT> | actions <oui|non>" ;;
+      esac ;;
     notify)    shift; notify_cmd "$@" ;;
     check)     check_cmd ;;
     ha-status) ha_status_cmd ;;

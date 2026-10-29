@@ -1,22 +1,23 @@
 {
   "nas-debian": {
-    "version": "2.5.0",
+    "version": "2.6.0",
     "fichier": "nas-debian.sh",
-    "sha256": "0a888b8fbfeef70397302d7ec5070def27e0695a04f6cbb054bbfcca20eb5364",
+    "sha256": "c3317de7fc23e205cb342d65d477620f16515b414fb1171d23dab1e1da4426ae",
     "nouveautes": [
-      "Migration d'un dossier de l'OMV / Debian vers oCIS (espace projet ou personnel), avec contrôle et suppression des originaux en option, comme sur le Synology",
-      "Transferts oCIS → OMV / Debian : un dossier d'un espace oCIS recopié dans un dossier de la machine, ponctuel, à la demande ou programmé (copie ou miroir avec corbeille)",
-      "Code oCIS commun avec le script du Synology (commun/ocis.sh)"
+      "Débit selon l'heure : limite commune à toutes les sauvegardes de la machine, différente le jour et la nuit (reglages debit)",
+      "Estimation avant la première sauvegarde : volume et durée selon le débit réel vers la destination (estimer)",
+      "Doublons : recherche des fichiers identiques, corbeille des doublons vidée après 30 jours (doublons)",
+      "Actions depuis Home Assistant : boutons Lancer / Arrêter / Vérifier et interrupteurs pause / reprise du temps réel (suivi actions)",
+      "Nouvelles destinations : Yandex Disk, HiDrive, MEGA, Koofr, Proton Drive",
+      "Installation de NAS Manager en mode texte (tui installer)"
     ]
   },
   "nas-synology": {
-    "version": "2.4.0",
+    "version": "2.5.0",
     "fichier": "nas-synology.sh",
-    "sha256": "a18026367e6983e8ea12a2a0893ccc840be53972cd9a4ec674ab9538f136608b",
+    "sha256": "5bb9081bf73bfaed004ba4ef47f98cd91aed5c505da3644e0b3820fc6773538a",
     "nouveautes": [
-      "Transferts oCIS → Synology : un dossier d'un espace oCIS recopié dans un dossier du Synology, ponctuel, à la demande ou programmé (copie ou miroir avec corbeille)",
-      "La liste des espaces oCIS comprend aussi l'espace personnel du compte",
-      "Code oCIS commun avec le script de l'OMV / Debian (commun/ocis.sh)"
+      "Installation de NAS Manager en mode texte (tui installer)"
     ]
   }
 }

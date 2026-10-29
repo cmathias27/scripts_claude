@@ -11,10 +11,15 @@ Application Windows en Rust pour **suivre et gérer toutes les synchros du NAS s
 | Alertes & santé | `nas-debian alertes`, `disques`, `rapport` ; `nas-synology disques` | canaux de notification (ntfy, Telegram, Discord, e-mail, Home Assistant) avec test, alertes en cours des deux machines (acquitter), santé des disques (SMART, RAID), rapport hebdomadaire / mensuel, réglages des alertes, Google Drive, mots de passe de chiffrement |
 | Copie → OMV | `nas-synology copie` | suivre / arrêter la copie, en lancer une nouvelle avec navigateur de dossiers des deux NAS, historique, réparer les droits |
 | Migration oCIS | `nas-synology migration` | connexion oCIS, file d'attente (ajouter / retirer / lancer), suivi en direct, arrêt, résultats, historique |
+| Sauvegarde du PC | rclone sur le PC (SFTP vers le NAS) | dossiers du PC vers l'OMV / Debian ou le Synology, copie ou miroir avec corbeille, à heure fixe et / ou en temps réel, rattrapage des créneaux manqués, estimation |
+| Doublons | `nas-debian doublons` | fichiers identiques dans les dossiers choisis, corbeille des doublons (rien n'est supprimé sans confirmation) |
 | Historique | `nas-debian` (OMV / Debian) | exécutions, taux de réussite, volumes, évolution de l'espace |
 | Journaux | tous | dernières lignes de chaque journal, suivi en direct, filtre |
 | Installation | tous | scripts des machines (installer / mettre à jour depuis GitHub, revenir en arrière, migrer une ancienne installation), tous les outils nécessaires, connexion Google Drive, caméras, alertes, suivi Home Assistant, mémoire de rclone |
 | Aide | — | premiers pas, accès à distance (Tailscale / WireGuard), erreurs fréquentes, raccourcis |
+
+Sans PC Windows : **NAS Manager en mode texte** (`nas-manager`, dossier [`tui/`](tui/)) dans un terminal SSH
+sur le NAS, installé depuis la page Installation (carte 10).
 
 Interface en **français ou en anglais** (Paramètres > Préférences, par défaut la langue de Windows).
 L'application se met à jour d'elle-même (Paramètres > Mises à jour), gère **plusieurs sites** (un OMV et un Synology

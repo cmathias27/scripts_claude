@@ -1,5 +1,48 @@
 # Journal des modifications
 
+## 1.7.0
+
+Étapes 7 et 8 de la feuille de route : nouvelles fonctions, confort et finitions (scripts nas-debian 2.6.0 et nas-synology 2.5.0).
+
+### Sauvegarde de ce PC vers le NAS
+- Nouvelle page **« Sauvegarde du PC »** : des dossiers du PC (Documents, Bureau, Images… ou n'importe quel dossier) envoyés dans un dossier de l'**OMV / Debian** ou du **Synology**. rclone tourne sur le PC (téléchargé en un clic s'il manque) et passe par **SFTP avec la clé de l'application** : rien à installer sur le NAS.
+- **Copie** (rien n'est jamais supprimé sur le NAS) ou **miroir** avec une **corbeille datée** sur le NAS (`.corbeille-pc/<date>`, durée au choix, nettoyée automatiquement).
+- **À heure fixe** (mêmes horaires que les sauvegardes programmées) et / ou **en temps réel** : chaque changement part 30 s après le dernier (au plus tard 10 min), tant que l'application est ouverte, même réduite.
+- Un créneau manqué (PC éteint, application fermée) est **rattrapé au lancement suivant** ; NAS injoignable (portable hors de la maison) : nouvel essai toutes les 30 minutes, une seule notification. Le PC est tenu éveillé pendant l'envoi.
+- Limite de débit, exclusions, suivi en direct, arrêt, historique, journal, notifications Windows (échec, retour à la normale, fin d'une sauvegarde lancée à la main), **estimation** du volume et de la durée de la première sauvegarde.
+
+### NAS Manager en mode texte (SSH)
+- Nouveau programme **`nas-manager`** pour un terminal SSH sur l'OMV / Debian ou le Synology (ou depuis Linux, Mac, téléphone) : tableau de bord, sauvegardes programmées (lancer, arrêter), temps réel (pause, reprise, démarrage), historique, alertes (acquitter), transferts (copie, migration et transferts oCIS), journaux suivis en direct.
+- Au clavier (Tab ou chiffres pour les pages, ↑ ↓, ? pour l'aide), 80 colonnes suffisent, couleurs facultatives (`--sans-couleur`), français ou anglais (`--lang en`). Chaque action demande une confirmation ; sans les droits root, lecture seule.
+- Mêmes textes, même lecture de l'état et mêmes commandes que l'application Windows (code partagé). Suit aussi une autre machine du site : `nas-manager --hote root@192.168.1.190`.
+- Programme unique pour amd64, arm64 et armv7, publié avec chaque version ; installé et mis à jour depuis la page Installation (carte 10) ou par `nas-debian tui installer` / `nas-synology tui installer` (empreinte SHA-256 vérifiée).
+
+### Autres clouds
+- Nouvelles destinations : **Yandex Disk** et **HiDrive** (connexion dans le navigateur, comme Google Drive), **MEGA**, **Koofr / Digi Storage** et **Proton Drive** (formulaire, test d'envoi réel).
+
+### Débit selon l'heure
+- Page Installation, carte 7 : **limite commune** à toutes les sauvegardes de la machine, différente **le jour et la nuit** (ex. 2 Mo/s de 8 h à 23 h, sans limite la nuit), réglée une fois pour toutes. Heures et débits au choix.
+- Dans chaque sauvegarde programmée ou temps réel : **« Réglage de la machine »** (par défaut), **« Sans limite »**, une limite fixe ou sa propre plage horaire. Les restaurations et vérifications restent à pleine vitesse.
+
+### Estimation avant la première sauvegarde
+- Bouton **« Estimer la première sauvegarde »** dans le formulaire d'une nouvelle sauvegarde et sur la carte d'une sauvegarde jamais lancée : volume à envoyer, nombre de fichiers et **durée estimée** selon le débit réel vers la destination (moyenne des sauvegardes déjà faites vers elle, sinon un envoi de test de 16 Mo), limite de débit comprise.
+
+### Doublons
+- Nouvelle page **« Doublons »** : fichiers identiques au bit près (même taille puis même empreinte) dans les dossiers choisis, en arrière-plan sur le NAS en priorité basse ; liens physiques et dossiers techniques ignorés.
+- Groupes triés par place récupérable, le plus ancien gardé par défaut, sélection fichier par fichier, filtre. **Rien n'est supprimé sans confirmation** : les fichiers choisis partent dans une **corbeille des doublons** sur le même disque (vidée après 30 jours), après une relecture qui vérifie qu'une copie identique reste en place. Un groupe entièrement choisi est refusé.
+
+### Actions depuis Home Assistant
+- Page Installation, carte 6 : **« Autoriser les actions depuis Home Assistant »**. L'appareil du NAS reçoit (découverte MQTT) un bouton **« Lancer »** par sauvegarde programmée, **« Arrêter les sauvegardes »**, **« Vérifier maintenant »** et un **interrupteur par sauvegarde temps réel** (pause / reprise), utilisables dans des automatisations.
+- Écoute par un service dédié sur la même connexion MQTT que le suivi, relancé par la vérification horaire. Liste fermée d'actions, noms vérifiés, double appui ignoré, chaque action notée dans le journal.
+
+### Aide
+- Section **« Exemples de configuration »** : caméras en miroir chiffré, documents en temps réel avec corbeille, photos en copie hebdomadaire vers deux destinations, papiers en versionnée, ce PC vers le NAS, débit selon l'heure — chaque exemple ouvre le formulaire déjà rempli.
+- Sections « Sauvegarde de ce PC », « Débit selon l'heure, estimation, doublons », « Piloter depuis Home Assistant » (avec un exemple d'automatisation) et « NAS Manager en mode texte ».
+
+### Aussi
+- Tests automatiques : sauvegarde du PC contre le faux NAS (SFTP), `tests/confort.sh` (débit, estimation, doublons, actions MQTT avec un vrai serveur mosquitto, installation de l'interface texte, nouvelles destinations), rendu de l'interface texte ; compilation de l'interface texte pour les trois architectures dans GitHub.
+- Le faux NAS des tests accepte SFTP.
+
 ## 1.6.0
 
 Étape 6 de la feuille de route, première partie : migration et transferts oCIS (scripts nas-debian 2.5.0 et nas-synology 2.4.0).
