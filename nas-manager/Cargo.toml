@@ -1,6 +1,6 @@
 [package]
 name = "nas-manager"
-version = "1.4.0"
+version = "1.6.0"
 edition = "2021"
 description = "Suivi et gestion des sauvegardes et synchronisations du NAS (OMV + Synology) sans SSH"
 publish = false
@@ -19,7 +19,7 @@ rfd = "0.17"
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.26"
 tauri-winrt-notification = "0.8"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_System_Power"] }
 
 [profile.release]
 opt-level = 3

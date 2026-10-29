@@ -14,10 +14,13 @@ mod install;
 mod config;
 mod dests;
 mod extras;
+mod fiabilite;
 mod fmt;
 mod log;
 mod model;
 mod notifs;
+mod ocis;
+mod pcmig;
 mod pages;
 mod ram;
 mod realtime;
@@ -30,6 +33,7 @@ mod ssh;
 mod theme;
 mod tray;
 mod update;
+mod wol;
 
 use eframe::egui;
 

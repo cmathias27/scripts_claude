@@ -1,22 +1,22 @@
 {
   "nas-debian": {
-    "version": "2.3.0",
+    "version": "2.5.0",
     "fichier": "nas-debian.sh",
-    "sha256": "46caa1fe952f3c2782e6972b7c33ace3bb8364bb6ba4551fb5ade8c9050df65f",
+    "sha256": "0a888b8fbfeef70397302d7ec5070def27e0695a04f6cbb054bbfcca20eb5364",
     "nouveautes": [
-      "Notifications sans Home Assistant : ntfy, Telegram, Discord ou e-mail, combinables, avec un niveau par canal (alertes seulement ou tout)",
-      "Santé des disques (SMART) et du RAID vérifiée chaque heure : alerte dès les premiers signes d'usure, avant la panne",
-      "Rapport de la semaine ou du mois : sauvegardes, espace, disques, alertes",
-      "Une alerte dont l'envoi a échoué est renvoyée à la vérification suivante ; les envois en échec sont notés",
-      "Réglages des alertes (rappel, seuil d'espace, retard) modifiables depuis NAS Manager"
+      "Migration d'un dossier de l'OMV / Debian vers oCIS (espace projet ou personnel), avec contrôle et suppression des originaux en option, comme sur le Synology",
+      "Transferts oCIS → OMV / Debian : un dossier d'un espace oCIS recopié dans un dossier de la machine, ponctuel, à la demande ou programmé (copie ou miroir avec corbeille)",
+      "Code oCIS commun avec le script du Synology (commun/ocis.sh)"
     ]
   },
   "nas-synology": {
-    "version": "2.2.0",
+    "version": "2.4.0",
     "fichier": "nas-synology.sh",
-    "sha256": "4d2591514f14e19dec8f219d21d8b2cc22af5c92b9d701923788e97c6b794ea0",
+    "sha256": "a18026367e6983e8ea12a2a0893ccc840be53972cd9a4ec674ab9538f136608b",
     "nouveautes": [
-      "Santé des disques (SMART) et du RAID du Synology, affichée dans NAS Manager, avec alertes (disque en danger, RAID dégradé)"
+      "Transferts oCIS → Synology : un dossier d'un espace oCIS recopié dans un dossier du Synology, ponctuel, à la demande ou programmé (copie ou miroir avec corbeille)",
+      "La liste des espaces oCIS comprend aussi l'espace personnel du compte",
+      "Code oCIS commun avec le script de l'OMV / Debian (commun/ocis.sh)"
     ]
   }
 }

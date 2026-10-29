@@ -15,6 +15,9 @@ pub struct HostCfg {
     /// Mot de passe sudo chiffre par Windows (DPAPI), en base64. Vide = non memorise.
     #[serde(default)]
     pub saved_pass: String,
+    /// Adresse MAC (reveil Wake-on-LAN depuis le PC). Vide = pas de reveil.
+    #[serde(default)]
+    pub mac: String,
 }
 
 impl HostCfg {
@@ -130,6 +133,7 @@ impl Default for Settings {
                 user: "root".into(),
                 sudo: false,
                 saved_pass: String::new(),
+                mac: String::new(),
             },
             syno: HostCfg {
                 host: String::new(),
@@ -137,6 +141,7 @@ impl Default for Settings {
                 user: String::new(),
                 sudo: true,
                 saved_pass: String::new(),
+                mac: String::new(),
             },
             refresh_secs: 10,
             ssh_bin: String::new(),

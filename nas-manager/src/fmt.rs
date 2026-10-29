@@ -137,6 +137,21 @@ pub fn date(ts: i64) -> String {
     }
 }
 
+/// Date complete : "18/10/2026 12:00"
+pub fn date_full(ts: i64) -> String {
+    match Local.timestamp_opt(ts, 0).single() {
+        Some(t) => t.format("%d/%m/%Y %H:%M").to_string(),
+        None => "?".into(),
+    }
+}
+
+/// "2026-10-18" + "12:00" -> timestamp local
+pub fn parse_local(date: &str, time: &str) -> Option<i64> {
+    let d = chrono::NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d").ok()?;
+    let t = chrono::NaiveTime::parse_from_str(time.trim(), "%H:%M").ok()?;
+    Local.from_local_datetime(&d.and_time(t)).earliest().map(|x| x.timestamp())
+}
+
 /// "2026/10/18 12:00:00" (journal rclone) -> timestamp local
 pub fn parse_rclone_ts(s: &str) -> Option<i64> {
     let t = chrono::NaiveDateTime::parse_from_str(s.get(..19)?, "%Y/%m/%d %H:%M:%S").ok()?;

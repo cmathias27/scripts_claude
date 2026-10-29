@@ -79,6 +79,39 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         ui.label(tr("Différence avec miroir / copie : les fichiers ne sont pas lisibles un par un sur la destination, on les récupère avec « Versions et restauration » (menu ⋯ de la sauvegarde). Sans le mot de passe des versions, les versions sont illisibles : il est dans le kit de secours et dans les mots de passe de chiffrement."));
     });
 
+    section(ui, tr("S'assurer qu'on peut restaurer"), false, |ui| {
+        ui.label(RichText::new(tr("Test de restauration à blanc")).strong());
+        ui.label(tr("Une sauvegarde n'est utile que si on peut la relire. Le test restaure quelques fichiers pris au hasard depuis chaque destination (déchiffrés si besoin) dans un dossier temporaire, les compare octet par octet aux originaux, puis les efface. Seuls les fichiers plus anciens que la dernière sauvegarde réussie sont testés."));
+        step(ui, 1, tr("À la demande : menu ⋯ de la sauvegarde > « Tester la restauration »."));
+        step(ui, 2, tr("Automatique : page Sauvegardes programmées, « Test de restauration automatique » (par exemple chaque samedi, 5 fichiers par sauvegarde)."));
+        ui.label(RichText::new(tr("Un écart (fichier absent ou différent) déclenche une alerte : lance une vérification d'intégrité, puis une sauvegarde.")).small());
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Retour à une date précise")).strong());
+        ui.label(tr("Menu ⋯ > Restaurer > « À une date » : remet un dossier (ou toute la sauvegarde) tel qu'il était à la date choisie, dans un dossier de restauration (les fichiers actuels ne sont pas touchés)."));
+        ui.label(RichText::new(tr("Miroir avec corbeille : reconstitué à partir de la corbeille datée (fichiers supprimés depuis, anciennes versions des fichiers modifiés), aussi loin que la durée de la corbeille. Versionnée : la dernière version enregistrée avant la date. Copie : pas de retour possible (les anciennes versions ne sont pas gardées).")).small());
+    });
+
+    section(ui, tr("Machines en veille ou éteintes (Wake-on-LAN)"), false, |ui| {
+        ui.label(tr("Une machine en veille ou éteinte peut être réveillée par le réseau (« paquet magique ») si le Wake-on-LAN est activé dans son BIOS et dans ses réglages réseau (OMV : Réseau > Interfaces > Wake-on-LAN ; Synology : Matériel et alimentation > Activer WOL)."));
+        step(ui, 1, tr("Depuis ce PC : Paramètres > adresse MAC de la machine (bouton « Détecter » quand elle est allumée). Quand elle ne répond pas, le bouton « Réveiller » apparaît."));
+        step(ui, 2, tr("Avant les sauvegardes : page Destinations > « Réveil (Wake-on-LAN) » sur un autre NAS ou un PC. La sauvegarde le réveille s'il dort, attend qu'il réponde, puis le laisse se rendormir (ou le remet en veille, ou l'éteint)."));
+        step(ui, 3, tr("Avant les copies Synology → OMV : page Copie > « Réveil de l'OMV avant les copies »."));
+        ui.label(RichText::new(tr("Une destination en veille avec réveil configuré ne déclenche pas d'alerte « injoignable » lors de la vérification horaire.")).small());
+    });
+
+    section(ui, tr("oCIS : migration et transferts"), false, |ui| {
+        ui.label(RichText::new(tr("Migration vers oCIS")).strong());
+        ui.label(tr("Page oCIS, onglet « Migration vers oCIS » : un dossier envoyé dans un espace oCIS (personnel ou projet), depuis le Synology, l'OMV / Debian ou ce PC. Chaque machine a sa propre connexion à oCIS (adresse, compte et jeton d'application)."));
+        step(ui, 1, tr("Crée un jeton d'application dans oCIS et configure la connexion de la machine d'où part la migration."));
+        step(ui, 2, tr("Choisis le dossier, l'espace oCIS (et un sous-dossier), puis ajoute-le à la file d'attente ; lance la file."));
+        step(ui, 3, tr("En option, chaque fichier est contrôlé dans oCIS puis l'original est supprimé ; un fichier en défaut est renvoyé, et gardé s'il reste en défaut."));
+        ui.label(RichText::new(tr("Depuis ce PC : rclone tourne sur le PC, qui doit rester allumé (il est tenu éveillé pendant la migration). Si l'application est fermée en cours de route, la migration reprend à son prochain lancement.")).small());
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Transferts oCIS → NAS")).strong());
+        ui.label(tr("Onglet « Transferts oCIS → NAS » : un dossier d'un espace oCIS recopié dans un dossier du Synology ou de l'OMV, par l'accès WebDAV d'oCIS, dates conservées. Ponctuel, à la demande ou programmé (sauvegarde régulière d'oCIS vers le NAS)."));
+        ui.label(RichText::new(tr("Copie : rien n'est jamais supprimé sur le NAS. Miroir : le NAS suit oCIS ; ce qui y est supprimé ou remplacé est gardé quelques jours dans .corbeille-oCIS. Choisis un dossier dédié à chaque transfert miroir.")).small());
+    });
+
     section(ui, tr("Mon NAS est mort : reconstruire"), false, |ui| {
         ui.label(tr("Ce qu'il faut : le kit de secours (copié sur ce PC et dans le dossier NAS-secours de chaque destination) et son mot de passe (6 groupes de 4 caractères)."));
         step(ui, 1, tr("Installe Debian ou OpenMediaVault sur la nouvelle machine, monte les disques de données et active SSH (compte root)."));
@@ -136,7 +169,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             (tr("Mot de passe sudo refusé"), tr("Le compte du Synology doit appartenir au groupe administrators.")),
             (tr("Google Drive inaccessible"), tr("Page Installation > Reconnecter Google Drive (l'autorisation Google expire parfois).")),
             (tr("Sauvegarde en échec"), tr("L'explication s'affiche sous la sauvegarde. Le journal complet est dans Journaux.")),
-            (tr("NAS injoignable"), tr("Vérifie qu'il est allumé et sur le réseau ; hors de la maison, utilise un réseau privé (voir ci-dessus).")),
+            (tr("NAS injoignable"), tr("Vérifie qu'il est allumé et sur le réseau ; hors de la maison, utilise un réseau privé (voir ci-dessus). En veille : bouton « Réveiller » (adresse MAC dans les Paramètres).")),
             (tr("L'avertissement Windows SmartScreen"), tr("L'exécutable n'est pas signé : « Informations complémentaires » puis « Exécuter quand même ».")),
         ] {
             ui.label(RichText::new(title).strong());

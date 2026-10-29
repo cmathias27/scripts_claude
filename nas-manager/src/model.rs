@@ -96,6 +96,8 @@ pub struct Maintenance {
 #[serde(default)]
 pub struct DestState {
     pub ok: bool,
+    /// en veille, reveil configure (pas d'alerte)
+    pub veille: bool,
     pub verifie: i64,
     pub total: Option<u64>,
     pub utilise: Option<u64>,
@@ -180,6 +182,9 @@ pub struct Perf {
     pub omv: String,
     pub ha: String,
     pub webhook: String,
+    /// Synology : reveil de l'OMV avant les copies (nas-synology 2.3+)
+    pub omv_mac: String,
+    pub omv_apres: String,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -214,6 +219,59 @@ pub struct Job {
     pub rotation: String,
     pub dest_en_cours: Option<DestProgress>,
     pub entretien: Option<Maintenance>,
+    /// dernier test de restauration a blanc (script 2.4+)
+    pub test: Option<RestoreTest>,
+    pub test_en_cours: bool,
+}
+
+/// Un fichier du test de restauration
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct TestFile {
+    pub destination: String,
+    pub chemin: String,
+    pub taille: u64,
+    /// identique, different, absent ou erreur
+    pub resultat: String,
+    pub detail: String,
+}
+
+/// Test de restauration a blanc (fichiers au hasard restaures puis compares)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct RestoreTest {
+    pub debut: i64,
+    pub fin: i64,
+    /// ok, ecarts, echec ou vide
+    pub etat: String,
+    pub nb: i64,
+    pub identiques: i64,
+    pub ecarts: i64,
+    pub erreurs: i64,
+    /// « gdrive:ok;usb:ecarts »
+    pub destinations: String,
+    pub message: String,
+    pub fichiers: Vec<TestFile>,
+}
+
+/// Reveil (Wake-on-LAN) d'une destination
+#[derive(Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct ReveilDest {
+    pub mac: String,
+    pub adresse: String,
+    pub attente: u32,
+    /// rien, veille ou arret
+    pub apres: String,
+    pub ssh: String,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Reveil {
+    /// cle publique pour la remise en veille (vide tant qu'elle n'existe pas)
+    pub cle: String,
+    pub destinations: std::collections::BTreeMap<String, ReveilDest>,
 }
 
 impl Job {
@@ -279,6 +337,8 @@ pub struct Restore {
     pub element: String,
     /// sauvegarde versionnee : version restauree
     pub version: String,
+    /// retour a une date : date restauree (secondes, vide sinon)
+    pub date: String,
     pub avancement: Option<Progress>,
 }
 
@@ -413,6 +473,13 @@ pub struct OmvStatus {
     pub notif: Option<NotifConf>,
     /// sante des disques et du RAID (script 2.3+)
     pub sante_disques: Option<DiskHealth>,
+    /// test de restauration automatique : "JOURS HH:MM NB" ou vide (script 2.4+)
+    pub test_auto: String,
+    /// reveil des destinations (script 2.4+)
+    pub reveil: Option<Reveil>,
+    /// migration de la machine vers oCIS et transferts oCIS -> machine (script 2.5+)
+    pub migration: Option<Migration>,
+    pub transferts: Option<Transferts>,
 }
 
 impl OmvStatus {
@@ -541,6 +608,66 @@ pub struct Migration {
     pub journal: Vec<String>,
 }
 
+/// Dernier passage d'un transfert oCIS -> machine
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct TrResult {
+    /// OK, ECHEC ou ARRETE
+    pub etat: String,
+    pub debut: i64,
+    pub fin: i64,
+    pub detail: String,
+    pub fichiers: u64,
+    pub octets: u64,
+    pub supprimes: u64,
+}
+
+/// Transfert oCIS -> machine (transferts.conf + dernier passage)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Transfert {
+    pub nom: String,
+    pub espace_id: String,
+    pub espace: String,
+    pub sous_dossier: String,
+    pub destination: String,
+    /// copie ou miroir
+    pub mode: String,
+    pub corbeille: u32,
+    /// manuel, une-fois ou HH:MM[/jours];...
+    pub horaire: String,
+    pub debit: String,
+    pub dernier: Option<TrResult>,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct TrRunning {
+    pub nom: String,
+    pub debut: i64,
+    pub espace: String,
+    pub sous_dossier: String,
+    pub destination: String,
+    pub mode: String,
+    pub reprise: i64,
+    pub avancement: Option<Avancement>,
+    pub ram_mo: Option<i64>,
+}
+
+/// Transferts oCIS -> machine (nas-debian 2.5+, nas-synology 2.4+)
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Transferts {
+    pub installe: bool,
+    /// connexion oCIS configuree sur la machine
+    pub config: bool,
+    pub transferts: Vec<Transfert>,
+    pub file: Vec<String>,
+    pub en_cours: Option<TrRunning>,
+    pub historique: Vec<String>,
+    pub journal: Vec<String>,
+}
+
 #[derive(Deserialize, Default, Clone, Debug)]
 #[serde(default)]
 pub struct SynoStatus {
@@ -559,6 +686,8 @@ pub struct SynoStatus {
     pub sante_disques: Option<DiskHealth>,
     /// alertes en cours (disques, RAID)
     pub alertes: Vec<Alert>,
+    /// transferts oCIS -> Synology (nas-synology 2.4+)
+    pub transferts: Option<Transferts>,
 }
 
 #[derive(Clone, Debug)]
@@ -567,6 +696,24 @@ pub struct Space {
     pub name: String,
     pub free: i64,
     pub quota: i64,
+    /// project ou personal
+    pub kind: String,
+}
+
+/// Lignes « id|nom|webDavUrl|libre|quota[|type] » des scripts
+pub fn parse_spaces(txt: &str) -> Vec<Space> {
+    txt.lines()
+        .filter_map(|l| {
+            let p: Vec<&str> = l.split('|').collect();
+            (p.len() >= 5).then(|| Space {
+                id: p[0].to_string(),
+                name: p[1].to_string(),
+                free: p[3].trim().parse().unwrap_or(-1),
+                quota: p[4].trim().parse().unwrap_or(0),
+                kind: p.get(5).map(|k| k.trim().to_string()).unwrap_or_else(|| "project".into()),
+            })
+        })
+        .collect()
 }
 
 /// Une execution de sauvegarde (historique.jsonl)

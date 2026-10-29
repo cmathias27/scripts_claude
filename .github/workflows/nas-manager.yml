@@ -60,11 +60,27 @@ jobs:
         run: sudo bash tests/destinations.sh /usr/bin/rclone /usr/bin/restic
       - name: Notifications (ntfy, Telegram, Discord, e-mail), disques et rapport
         run: sudo bash tests/notifications.sh
+      - name: Test de restauration, retour a une date, reveil (vrais rclone et restic)
+        run: sudo bash tests/restauration.sh /usr/bin/rclone /usr/bin/restic
+      - name: Migration et transferts oCIS (faux oCIS, vrai rclone)
+        run: sudo bash tests/ocis.sh /usr/bin/rclone
       - name: Syntaxe des scripts
         working-directory: .
         run: |
-          for f in nas-debian.sh nas-synology.sh nas-manager/tests/faux-nas.sh nas-manager/tests/temps-reel.sh nas-manager/tests/destinations.sh nas-manager/tests/notifications.sh; do bash -n "$f"; done
-          shellcheck -S warning -e SC2034,SC1090,SC2155,SC2015 nas-debian.sh nas-synology.sh
+          for f in nas-debian.sh nas-synology.sh commun/*.sh nas-manager/tests/*.sh; do bash -n "$f"; done
+          shellcheck -S warning -e SC2034,SC1090,SC2155,SC2015 nas-debian.sh nas-synology.sh commun/*.sh
+          python3 -m py_compile nas-manager/tests/faux-ocis.py
+      - name: Diagnostic des tests en echec (annotations)
+        if: failure()
+        working-directory: .
+        run: |
+          for j in /tmp/*-moteur/journal.txt /tmp/notif-test/journal.txt; do
+            [ -f "$j" ] || continue
+            t=$(basename "$(dirname "$j")")
+            sudo grep '^== ECHEC' "$j" | head -n 5 | while read -r l; do echo "::error title=$t::$l"; done
+            msg=$(sudo tail -n 80 "$j" | sed 's/\x1b\[[0-9;]*m//g; s/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+            echo "::warning title=$t (fin du journal)::$msg"
+          done
       - name: Versions des scripts (versions-scripts.json a jour)
         working-directory: .
         run: |

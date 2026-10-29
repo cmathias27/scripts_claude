@@ -108,6 +108,7 @@ pub enum BrowsePurpose {
     CopySource,
     CopyDest,
     MigSource,
+    TrDest,
     PermsDir,
     RtSource,
     DestPath,
@@ -160,6 +161,8 @@ pub struct CopyForm {
 
 #[derive(Clone, Default)]
 pub struct MigForm {
+    /// machine de la migration affichee (le formulaire repart de zero si elle change)
+    pub host: Option<HostId>,
     pub src: String,
     pub label: String,
     pub sources: Vec<(String, String)>,
@@ -253,6 +256,10 @@ pub struct App {
     pub dests: crate::dests::DestUi,
     /// page Alertes : canal en cours d'ajout, rapport, seuils
     pub notifs: crate::notifs::NotifUi,
+    /// test de restauration, reveil des machines (etape 5)
+    pub fiab: crate::fiabilite::FiabUi,
+    pub ocis_ui: crate::ocis::OcisUi,
+    pub pcmig: crate::pcmig::PcMig,
 }
 
 impl App {
@@ -320,6 +327,9 @@ impl App {
             rt_form: None,
             dests: Default::default(),
             notifs: Default::default(),
+            fiab: Default::default(),
+            ocis_ui: Default::default(),
+            pcmig: crate::pcmig::PcMig::load(),
         };
         crate::i18n::set_language(&app.settings.language);
         if !app.settings.wizard_done {
@@ -370,7 +380,13 @@ impl App {
                 "destinations" => Page::Destinations,
                 "alertes" => Page::Alerts,
                 "copie" => Page::Copy,
-                "migration" => Page::Migration,
+                "migration" | "ocis" => Page::Migration,
+                "ocis-omv" | "ocis-pc" | "ocis-transferts" => {
+                    app.ocis_ui.src = Some(if p == "ocis-pc" { crate::ocis::Src::Pc } else { crate::ocis::Src::Omv });
+                    app.ocis_ui.tab = (p == "ocis-transferts") as u8;
+                    app.ocis_ui.tr_host = Some(HostId::Omv);
+                    Page::Migration
+                }
                 "journaux" => Page::Logs,
                 "installation" => Page::Install,
                 "aide" => Page::Help,
@@ -609,13 +625,15 @@ impl App {
                         || s.any_rt_catchup()
                         || s.nas_check_en_cours
                         || s.restauration.as_ref().map(|r| r.etat == "en_cours").unwrap_or(false)
+                        || s.migration.as_ref().map(|m| m.en_cours).unwrap_or(false)
+                        || s.transferts.as_ref().map(|t| t.en_cours.is_some()).unwrap_or(false)
                 })
                 .unwrap_or(false),
             HostId::Syno => self
                 .syno
                 .status
                 .as_ref()
-                .map(|s| s.copie.en_cours || s.migration.en_cours)
+                .map(|s| s.copie.en_cours || s.migration.en_cours || s.transferts.as_ref().map(|t| t.en_cours.is_some()).unwrap_or(false))
                 .unwrap_or(false),
         };
         let err = match host {
@@ -683,8 +701,8 @@ impl App {
             return;
         }
         let script = match host {
-            HostId::Omv => remote::OMV_STATUS,
-            HostId::Syno => remote::SYNO_STATUS,
+            HostId::Omv => remote::OMV_STATUS.as_str(),
+            HostId::Syno => remote::SYNO_STATUS.as_str(),
         }
         .to_string();
         match host {
@@ -957,6 +975,11 @@ impl App {
                 self.mig.label = path.rsplit('/').next().unwrap_or("").to_string();
                 self.mig.src = path;
             }
+            BrowsePurpose::TrDest => {
+                if let Some(f) = &mut self.ocis_ui.tr_form {
+                    f.dest = path.trim_end_matches('/').to_string();
+                }
+            }
             BrowsePurpose::PermsDir => self.perms.dir = path,
             BrowsePurpose::DestPath => {
                 if let Some(f) = &mut self.dests.form {
@@ -1210,6 +1233,9 @@ impl App {
         crate::realtime::form_window(self, ctx);
         crate::dests::form_window(self, ctx);
         crate::notifs::form_window(self, ctx);
+        crate::fiabilite::reveil_window(self, ctx);
+        crate::ocis::tr_form_window(self, ctx);
+        crate::pcmig::dialogs(self, ctx);
         crate::pages::restore_window(self, ctx);
         crate::pages::passwords_window(self, ctx);
         crate::extras::fingerprint_window(self, ctx);
@@ -1322,7 +1348,7 @@ impl eframe::App for App {
                     Page::Destinations => crate::dests::page(self, ui),
                     Page::Alerts => crate::pages::alerts(self, ui),
                     Page::Copy => crate::pages::copy(self, ui),
-                    Page::Migration => crate::pages::migration(self, ui),
+                    Page::Migration => crate::ocis::page(self, ui),
                     Page::Logs => crate::pages::logs(self, ui),
                     Page::Install => crate::install::page(self, ui),
                     Page::Help => crate::help::page(self, ui),
