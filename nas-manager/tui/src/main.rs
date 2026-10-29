@@ -1055,7 +1055,8 @@ mod tests {
         .unwrap();
         let (tx, _rx) = channel();
         let mut app = App {
-            target: Target::Local { sudo: false },
+            // (sudo : pas de lecture seule quand les tests ne tournent pas en root)
+            target: Target::Local { sudo: true },
             kind: Kind::Debian,
             color: false,
             page: 0,
