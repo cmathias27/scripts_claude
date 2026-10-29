@@ -230,6 +230,8 @@ pub struct Job {
     pub debit: String,
     /// memoire de rclone propre a la sauvegarde ("" = reglage de la machine)
     pub memoire: String,
+    /// fichiers envoyes en parallele ("" = reglage de la machine, nas-debian 2.7+)
+    pub paralleles: String,
     /// memoire utilisee par rclone pendant l'execution (Mo)
     pub ram_mo: Option<i64>,
     pub simulation: Option<Simulation>,
@@ -411,6 +413,8 @@ pub struct RtJob {
     pub anomalie: u32,
     pub memoire: String,
     pub debit: String,
+    /// fichiers envoyes en parallele ("" = reglage de la machine, nas-debian 2.7+)
+    pub paralleles: String,
     pub chiffre: bool,
     pub actif: bool,
     pub demarrage_auto: bool,

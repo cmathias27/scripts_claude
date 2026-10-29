@@ -145,6 +145,8 @@ pub struct JobFormState {
     pub trash_days: String,
     /// memoire de rclone ("" = reglage de la machine)
     pub memory: String,
+    /// fichiers envoyes en parallele ("" = reglage de la machine)
+    pub parallel: String,
     pub error: String,
 }
 

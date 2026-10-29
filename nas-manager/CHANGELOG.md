@@ -1,5 +1,16 @@
 # Journal des modifications
 
+## 1.7.1
+
+Script nas-debian 2.7.0.
+
+### Fichiers en parallèle par sauvegarde
+- Nouveau réglage **« Fichiers en parallèle »** dans chaque **sauvegarde programmée** et chaque **sauvegarde temps réel** : **« Réglage de la machine »** (par défaut, valeur affichée) ou un **nombre choisi de 1 à 32**.
+- Jusqu'ici, ce nombre ne se réglait que pour toute la machine (page Installation, « Mémoire de rclone »). Il peut maintenant être plus élevé pour une grosse sauvegarde de petits fichiers et plus bas pour une sauvegarde qui ne doit pas charger le NAS.
+- S'applique au miroir, à la copie et aux sauvegardes **versionnées** (connexions de restic), ainsi qu'au rattrapage du temps réel. Le nombre de vérifications en parallèle suit automatiquement.
+- **Avertissement** si la valeur dépasse ce que la mémoire de la machine permet sans risque ; après un manque de mémoire, la sauvegarde repasse comme avant à 1 fichier à la fois.
+- Valeur affichée sur la carte de la sauvegarde et notée dans le journal à chaque lancement.
+
 ## 1.7.0
 
 Étapes 7 et 8 de la feuille de route : nouvelles fonctions, confort et finitions (scripts nas-debian 2.6.1 et nas-synology 2.5.0).
