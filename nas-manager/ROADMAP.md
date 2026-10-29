@@ -102,7 +102,9 @@ Une version testable par étape (1.1, 1.2…).
 7. **Confort et finitions** *(1.7.0)* : débit selon l'heure, estimation, doublons · actions depuis Home
    Assistant · page d'aide avec exemples de configuration.
 8. **Transferts entre machines** *(1.8.0)* : transferts PC → OMV / Debian · transferts OMV / Debian →
-   autre serveur (machine suivie ou serveur SSH) · copie Synology → OMV d'un seul fichier.
+   autre serveur (machine suivie ou serveur SSH) · choix du nombre de transferts simultanés (nouveaux et
+   existants : Synology → OMV, oCIS) · copie Synology → OMV d'un seul fichier.
+   *Fait en avance (1.7.1) : fichiers en parallèle au choix pour les sauvegardes programmées et temps réel.*
 
 #### Détail
 - [x] **Distinguer deux types de sauvegardes** dans l'application :
@@ -230,6 +232,22 @@ Une version testable par étape (1.1, 1.2…).
       file d'attente et suivi comme la migration, notification à la fin.
       **Deux modes au choix** : transfert ponctuel, ou transfert **programmé** (sauvegarde régulière
       de l'oCIS vers le NAS, avec les mêmes options que les sauvegardes programmées).
+- [x] **Fichiers en parallèle pour les sauvegardes programmées et temps réel** *(1.7.1)* : réglage
+      propre à chaque sauvegarde (réglage de la machine par défaut, ou 1 à 32), versionnées comprises,
+      avertissement si la valeur est trop haute pour la mémoire de la machine.
+- [ ] **Nombre de transferts simultanés pour les transferts existants** *(1.8.0)* : copie Synology → OMV,
+      migrations vers oCIS (depuis le Synology, l'OMV / Debian ou le PC) et transferts oCIS →
+      Synology / Debian, avec les mêmes réglages que les nouveaux transferts ci-dessous.
+  - Aujourd'hui, le nombre de fichiers en parallèle suit le réglage RAM de la machine
+    (« Économe / Équilibré / Performant ») : il devient **réglable pour chaque transfert**
+    (1 à 16), le réglage de la machine restant la valeur par défaut.
+  - **Nombre de transferts de la file d'attente exécutés en même temps** (1 par défaut,
+    comme aujourd'hui), par machine.
+  - Modifiable pendant qu'un transfert tourne (pris en compte au fichier suivant), avertissement
+    si la valeur est trop haute pour la machine, repli automatique sur 1 à la fois après un
+    manque de mémoire (déjà fait pour la migration oCIS, à garder).
+  - Champ dans le formulaire de chaque transfert, dans la file d'attente et dans NAS Manager
+    en mode texte.
 - [ ] **Transferts PC → OMV / Debian** *(1.8.0)* : sur le modèle de la migration PC → oCIS, envoyer un
       dossier (ou un fichier) du PC vers un dossier de l'OMV / Debian, en une fois — à distinguer de la
       « Sauvegarde du PC », qui est récurrente.
@@ -241,6 +259,10 @@ Une version testable par étape (1.1, 1.2…).
     taille de la source, reprise après interruption, dates conservées, contrôle de chaque fichier
     puis suppression des originaux en option (renvoi des fichiers en défaut), bilan de fin,
     notification Windows.
+  - **Nombre de transferts simultanés au choix** : nombre de fichiers envoyés en parallèle (1 à 16,
+    4 par défaut) et nombre de transferts de la file d'attente exécutés en même temps (1 par
+    défaut), réglables pour chaque transfert et modifiables pendant qu'il tourne (pris en compte au
+    fichier suivant). Avertissement si la valeur est trop haute pour la machine de destination.
   - Prévenir que le PC doit rester allumé (PC tenu éveillé pendant l'envoi) ; reprise automatique
     au redémarrage de l'application ; Wake-on-LAN de l'OMV si besoin.
 - [ ] **Transferts OMV / Debian → autre serveur** *(1.8.0)* : sur le modèle des transferts oCIS → NAS,
@@ -257,6 +279,11 @@ Une version testable par étape (1.1, 1.2…).
     avec corbeille datée, mêmes options que les sauvegardes programmées).
   - File d'attente, suivi, reprise, dates et droits conservés, historique, notification à la fin ;
     disponible aussi dans NAS Manager en mode texte.
+  - **Nombre de transferts simultanés au choix**, comme pour les transferts PC → OMV : fichiers
+    envoyés en parallèle (rclone `--transfers` ; avec rsync, plusieurs envois lancés en parallèle
+    par sous-dossier) et nombre de transferts de la file d'attente exécutés en même temps.
+    Préréglage par machine (repris du réglage « Économe / Équilibré / Performant » de la RAM),
+    surchargeable par transfert ; repli automatique sur 1 à la fois après un manque de mémoire.
 
 #### Surveillance
 - [x] **Santé des disques** *(1.4.0)* : état SMART, température, secteurs défectueux, état du RAID,

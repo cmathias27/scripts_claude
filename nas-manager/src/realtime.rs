@@ -104,6 +104,8 @@ pub struct RtForm {
     pub anomaly_on: bool,
     pub anomaly: String,
     pub memory: String,
+    /// fichiers envoyes en parallele ("" = reglage de la machine)
+    pub parallel: String,
     pub bw: crate::sched::BwEdit,
     pub error: String,
 }
@@ -127,6 +129,7 @@ impl RtForm {
             anomaly_on: true,
             anomaly: "300".into(),
             memory: String::new(),
+            parallel: String::new(),
             bw: Default::default(),
             error: String::new(),
         }
@@ -155,6 +158,7 @@ impl RtForm {
             anomaly_on: j.anomalie > 0,
             anomaly: if j.anomalie > 0 { j.anomalie.to_string() } else { "300".into() },
             memory: j.memoire.clone(),
+            parallel: j.paralleles.clone(),
             bw: crate::sched::BwEdit::parse(&j.debit),
             error: String::new(),
         }
@@ -196,6 +200,7 @@ fn clean_list(s: &str) -> String {
 pub fn form_window(app: &mut App, ctx: &egui::Context) {
     let Some(mut f) = app.rt_form.take() else { return };
     let api11 = app.omv.status.as_ref().map(|s| s.nb_api >= 11).unwrap_or(false);
+    let machine_par = crate::ram::machine_parallel(app, HostId::Omv);
     let mut open = true;
     let mut save = false;
     let mut cancel = false;
@@ -326,6 +331,10 @@ pub fn form_window(app: &mut App, ctx: &egui::Context) {
                     crate::ram::job_memory_ui(ui, "rtmem", &mut f.memory);
                     ui.end_row();
 
+                    ui.label(tr("Fichiers en parallèle"));
+                    crate::ram::job_parallel_ui(ui, "rtpar", &mut f.parallel, machine_par);
+                    ui.end_row();
+
                     ui.label(tr("Limite de débit"));
                     f.bw.ui_with(ui, api11);
                     ui.end_row();
@@ -381,6 +390,8 @@ pub fn form_window(app: &mut App, ctx: &egui::Context) {
             tr("Seuil d'anomalie invalide (nombre de fichiers).").into()
         } else if !crate::ram::valid_job_memory(f.memory.trim()) {
             tr("Mémoire de rclone invalide : un nombre de Mo, 64 au minimum.").into()
+        } else if !crate::ram::valid_parallel(f.parallel.trim()) {
+            tr("Fichiers en parallèle invalides : un nombre de 1 à 32.").into()
         } else if let Err(e) = &bw {
             e.clone()
         } else if f.excl.contains('|') || f.types.contains('|') {
@@ -408,6 +419,7 @@ pub fn form_window(app: &mut App, ctx: &egui::Context) {
                 anomaly: if f.anomaly_on { f.anomaly.trim().parse().unwrap_or(300) } else { 0 },
                 memory: f.memory.trim(),
                 bwlimit: &bw.unwrap_or_default(),
+                parallel: f.parallel.trim(),
             },
         );
         let title = if f.new { tr("Nouvelle sauvegarde temps réel") } else { tr("Modification") };
@@ -609,6 +621,9 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &RtJob, now: i64, is_cam: bool)
         }
         if !j.memoire.is_empty() {
             cfg.push(tf("mémoire : {0}", &[&(crate::ram::job_memory_text(&j.memoire))]));
+        }
+        if !j.paralleles.is_empty() {
+            cfg.push(tf("fichiers en parallèle : {0}", &[&(crate::ram::parallel_text(&j.paralleles))]));
         }
         if !j.debit.is_empty() {
             cfg.push(tf("débit : {0}", &[&(fmt::bw_human(&j.debit))]));

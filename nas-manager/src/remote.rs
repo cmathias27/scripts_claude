@@ -393,7 +393,7 @@ for line in rd("/etc/nas-backup/jobs.conf").splitlines():
          "horaire": sched, "corbeille": int(ret) if ret.isdigit() else 0,
          "debit": p[7] if len(p) > 7 else "", "memoire": p[8] if len(p) > 8 else "", "source_existe": os.path.isdir(src),
          "destinations": [{"nom": d.split(":")[0], "chiffre": d.split(":", 1)[-1] == "oui"} for d in dl.split(";") if d],
-         "rotation": p[10] if len(p) > 10 else ""}
+         "rotation": p[10] if len(p) > 10 else "", "paralleles": p[11] if len(p) > 11 else ""}
     en = rd(f"{S}/{name}.entretien.json")
     if en:
         j["entretien"] = jload(en)
@@ -552,7 +552,7 @@ for line in rd("/etc/nas-backup/temps-reel.conf").splitlines():
     lock = f"/run/nas-temps-reel-{name}.lock"
     j = {"nom": name, "dossiers": [{"chemin": d, "existe": os.path.isdir(d)} for d in p[1].split(";") if d],
          "destination": p[2], "suppression": p[3], "corbeille": ival(p[4]), "exclusions": p[5], "types": p[6],
-         "delai": ival(p[7], 10), "rattrapage": ival(p[8], 15), "anomalie": ival(p[9]), "memoire": p[10], "debit": p[11],
+         "delai": ival(p[7], 10), "rattrapage": ival(p[8], 15), "anomalie": ival(p[9]), "memoire": p[10], "debit": p[11], "paralleles": p[12] if len(p) > 12 else "",
          "chiffre": p[2].split(":")[0] in ("gbackup", "gcrypt"), "actif": actif, "demarrage_auto": auto,
          "rattrapage_en_cours": os.path.exists(lock) and rc(f"flock -n {shq(lock)} true") == 1}
     pz = rd(f"{S}/rt-{name}.pause")
@@ -868,11 +868,13 @@ pub struct JobForm<'a> {
     pub dests: &'a str,
     /// versions gardees (jours:semaines:mois:annees)
     pub rotation: &'a str,
+    /// fichiers envoyes en parallele ("" = reglage de la machine)
+    pub parallel: &'a str,
 }
 
 pub fn nb_save(new: bool, f: &JobForm) -> String {
     format!(
-        "{NB_BIN} save {} {} {} {} {} {} {} {} {} {} {} {} 2>&1\n",
+        "{NB_BIN} save {} {} {} {} {} {} {} {} {} {} {} {} {} 2>&1\n",
         if new { "nouveau" } else { "modif" },
         sq(f.name),
         sq(f.source),
@@ -884,7 +886,8 @@ pub fn nb_save(new: bool, f: &JobForm) -> String {
         sq(f.bwlimit),
         sq(f.memory),
         sq(f.dests),
-        sq(f.rotation)
+        sq(f.rotation),
+        sq(f.parallel)
     )
 }
 
@@ -1156,11 +1159,13 @@ pub struct RtSave<'a> {
     pub anomaly: u32,
     pub memory: &'a str,
     pub bwlimit: &'a str,
+    /// fichiers envoyes en parallele ("" = reglage de la machine)
+    pub parallel: &'a str,
 }
 
 pub fn rt_save(new: bool, f: &RtSave) -> String {
     format!(
-        "{NB_BIN} temps-reel save {} {} {} {} {} {} {} {} {} {} {} {} {} 2>&1\n",
+        "{NB_BIN} temps-reel save {} {} {} {} {} {} {} {} {} {} {} {} {} {} 2>&1\n",
         if new { "nouveau" } else { "modif" },
         sq(f.name),
         sq(f.dirs),
@@ -1173,7 +1178,8 @@ pub fn rt_save(new: bool, f: &RtSave) -> String {
         f.catchup,
         f.anomaly,
         sq(f.memory),
-        sq(f.bwlimit)
+        sq(f.bwlimit),
+        sq(f.parallel)
     )
 }
 
@@ -1587,7 +1593,7 @@ mod live {
         // nouvelle sauvegarde avec apostrophe et espace dans le chemin
         let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Film's d'été";
         run(true, &format!("mkdir -p {}\n", sq(d)));
-        let f = JobForm { name: "Films", source: d, folder: "Films d'été", mode: "sync", encrypt: false, schedule: "05:10", trash_days: 14, bwlimit: "", memory: "", dests: "", rotation: "" };
+        let f = JobForm { name: "Films", source: d, folder: "Films d'été", mode: "sync", encrypt: false, schedule: "05:10", trash_days: 14, bwlimit: "", memory: "", dests: "", rotation: "", parallel: "" };
         let o = run(true, &nb_save(true, &f));
         assert_eq!(o.code, 0, "{}", o.text());
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf; cat /etc/cron.d/nas-backup");
@@ -1601,7 +1607,7 @@ mod live {
         let o = run(true, &nb_save(false, &f2));
         assert_eq!(o.code, 0);
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf");
-        assert!(o.stdout.trim().ends_with("|copy|non|manuel|0|||gdrive:non|"), "{}", o.stdout);
+        assert!(o.stdout.trim().ends_with("|copy|non|manuel|0|||gdrive:non||"), "{}", o.stdout);
         // horaires sur certains jours + limite de debit
         let f4 = JobForm { schedule: "03:30/135;22:15", bwlimit: "08:00,2M 23:00,off", ..f2 };
         let o = run(true, &nb_save(false, &f4));
@@ -1614,8 +1620,18 @@ mod live {
         let f5 = JobForm { memory: "econome", ..f4 };
         assert_eq!(run(true, &nb_save(false, &f5)).code, 0);
         let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf");
-        assert!(o.stdout.trim().ends_with("|08:00,2M 23:00,off|econome|gdrive:non|"), "{}", o.stdout);
+        assert!(o.stdout.trim().ends_with("|08:00,2M 23:00,off|econome|gdrive:non||"), "{}", o.stdout);
         assert_ne!(run(true, &nb_save(false, &JobForm { memory: "12", ..f4 })).code, 0, "memoire invalide refusee");
+        // fichiers en parallele propres a la sauvegarde
+        let f6 = JobForm { parallel: "6", ..f5 };
+        assert_eq!(run(true, &nb_save(false, &f6)).code, 0);
+        let o = run(true, "grep '^Films|' /etc/nas-backup/jobs.conf");
+        assert!(o.stdout.trim().ends_with("|econome|gdrive:non||6"), "{}", o.stdout);
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        assert_eq!(st.sauvegardes.iter().find(|j| j.nom == "Films").map(|j| j.paralleles.as_str()), Some("6"));
+        for bad in ["0", "33", "4x"] {
+            assert_ne!(run(true, &nb_save(false, &JobForm { parallel: bad, ..f6 })).code, 0, "fichiers en parallele {bad} acceptes");
+        }
         // horaire invalide
         let f3 = JobForm { schedule: "25:00", ..f2 };
         assert_ne!(run(true, &nb_save(false, &f3)).code, 0);
@@ -1685,10 +1701,10 @@ mod live {
         assert!(ds.iter().any(|d| d.nom == "usb" && d.kind == "local" && d.cible.ends_with("/Sauvegardes")), "{ds:?}");
         assert!(!ds.iter().any(|d| d.nom == "gbackup" || d.nom == "gcrypt"), "remotes chiffres caches : {ds:?}");
         let src = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5/Documents";
-        let f = JobForm { name: "Multi", source: src, folder: "Multi", mode: "sync", encrypt: true, schedule: "manuel", trash_days: 7, bwlimit: "", memory: "", dests: "gdrive:oui;usb:non", rotation: "" };
+        let f = JobForm { name: "Multi", source: src, folder: "Multi", mode: "sync", encrypt: true, schedule: "manuel", trash_days: 7, bwlimit: "", memory: "", dests: "gdrive:oui;usb:non", rotation: "", parallel: "" };
         let o = run(true, &nb_save(true, &f));
         assert_eq!(o.code, 0, "{}", o.text());
-        assert!(run(true, "grep '^Multi|' /etc/nas-backup/jobs.conf").stdout.trim().ends_with("|gdrive:oui;usb:non|"));
+        assert!(run(true, "grep '^Multi|' /etc/nas-backup/jobs.conf").stdout.trim().ends_with("|gdrive:oui;usb:non||"));
         assert_ne!(run(true, &nb_save(false, &JobForm { dests: "nulle:oui", ..f })).code, 0, "destination inconnue refusee");
         assert_ne!(run(true, &nb_save(false, &JobForm { dests: "gcrypt:oui", ..f })).code, 0, "remote chiffre refuse");
         let v = JobForm { name: "Vers", folder: "Vers", mode: "versions", encrypt: false, dests: "usb:non", rotation: "7:4:12:0", trash_days: 9, ..f };
@@ -1725,7 +1741,7 @@ mod live {
     fn temps_reel_live() {
         let d = "/srv/dev-disk-by-uuid-7cd5ac91-9ec8-439c-9de3-c5bf7f5418f5";
         let dirs = format!("{d}/Documents;{d}/Photos");
-        let f = RtSave { name: "Bureau", dirs: &dirs, dest: "gbackup:Bureau", deletion: "corbeille", trash_days: 30, excl: "cache;*.bak", types: "", delay: 10, catchup: 15, anomaly: 200, memory: "", bwlimit: "" };
+        let f = RtSave { name: "Bureau", dirs: &dirs, dest: "gbackup:Bureau", deletion: "corbeille", trash_days: 30, excl: "cache;*.bak", types: "", delay: 10, catchup: 15, anomaly: 200, memory: "", bwlimit: "", parallel: "" };
         let o = run(true, &rt_save(true, &f));
         assert_eq!(o.code, 0, "creation : {}", o.text());
         assert!(run(true, "cat /etc/cron.d/nas-temps-reel").stdout.contains("*/15 * * * * root /usr/local/bin/nas-debian temps-reel rattrapage Bureau"));
@@ -1749,12 +1765,15 @@ mod live {
         assert_eq!(run(true, &rt_cmd("reprendre", "Bureau")).code, 0);
         assert!(run(true, "ls /var/lib/nas-backup/").stdout.contains("rt-Bureau.reprise"));
         // modification d'une sauvegarde qui n'est pas la derniere de la liste : c'est bien elle qui change
-        let f2 = RtSave { name: "Cameras", dirs: &format!("{d}/Cam"), dest: "gcrypt:", deletion: "directe", trash_days: 0, excl: "", types: "*.mp4", delay: 5, catchup: 15, anomaly: 0, memory: "econome", bwlimit: "" };
+        let f2 = RtSave { name: "Cameras", dirs: &format!("{d}/Cam"), dest: "gcrypt:", deletion: "directe", trash_days: 0, excl: "", types: "*.mp4", delay: 5, catchup: 15, anomaly: 0, memory: "econome", bwlimit: "", parallel: "3" };
         let o = run(true, &rt_save(false, &f2));
         assert_eq!(o.code, 0, "modification : {}", o.text());
         assert!(o.stdout.contains("« Cameras »") && !o.stdout.contains("« Bureau »"), "{}", o.text());
         let o = run(true, "grep -v '^#' /etc/nas-backup/temps-reel.conf");
-        assert!(o.stdout.contains("Cameras|") && o.stdout.contains("|*.mp4|5|15|0|econome|"), "{}", o.stdout);
+        assert!(o.stdout.contains("Cameras|") && o.stdout.contains("|*.mp4|5|15|0|econome||3"), "{}", o.stdout);
+        let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
+        assert_eq!(st.temps_reel.iter().find(|j| j.nom == "Cameras").map(|j| j.paralleles.as_str()), Some("3"));
+        assert_ne!(run(true, &rt_save(false, &RtSave { parallel: "0", ..f2 })).code, 0, "0 fichier en parallele accepte");
         assert!(o.stdout.contains("Bureau|"), "{}", o.stdout);
         // arret / demarrage
         assert_eq!(run(true, &rt_cmd("arreter", "Bureau")).code, 0);

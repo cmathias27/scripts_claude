@@ -1,9 +1,10 @@
 {
   "nas-debian": {
-    "version": "2.6.1",
+    "version": "2.7.0",
     "fichier": "nas-debian.sh",
-    "sha256": "a1da240e5e11e41911bbaf36a861d05d6ab84b0204428f9b2b8310ddb2d6cfba",
+    "sha256": "72be84acdd0aac9c6c0e67db326e0c9c616868ad98cd2963c1f264f57dfecd10",
     "nouveautes": [
+      "Fichiers en parallèle au choix pour chaque sauvegarde programmée ou temps réel (par défaut : réglage de la machine), y compris pour les sauvegardes versionnées",
       "Correction : après la reprise d'une sauvegarde temps réel en pause, l'état du dossier est toujours répercuté (même si un rattrapage tournait déjà)",
       "Débit selon l'heure : limite commune à toutes les sauvegardes de la machine, différente le jour et la nuit (reglages debit)",
       "Estimation avant la première sauvegarde : volume et durée selon le débit réel vers la destination (estimer)",

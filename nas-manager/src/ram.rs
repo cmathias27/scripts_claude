@@ -69,6 +69,85 @@ pub fn job_memory_ui(ui: &mut egui::Ui, id: &str, v: &mut String) {
     });
 }
 
+/// Fichiers en parallele : vide (reglage de la machine) ou 1 a 32
+pub fn valid_parallel(v: &str) -> bool {
+    v.is_empty() || v.parse::<u32>().map(|n| (1..=32).contains(&n)).unwrap_or(false)
+}
+
+/// Texte des fichiers en parallele d'une sauvegarde ("" = machine)
+pub fn parallel_text(v: &str) -> String {
+    if v.is_empty() {
+        tr("réglage de la machine").into()
+    } else {
+        tf("{0} à la fois", &[&v])
+    }
+}
+
+/// Fichiers en parallele de la machine (reglage effectif) et memoire totale (Mo)
+pub fn machine_parallel(app: &App, h: HostId) -> (Option<u32>, i64) {
+    match perf_of(app, h) {
+        Some((p, total)) => {
+            let t = p.effectif.options.split_whitespace().skip_while(|w| *w != "--transfers").nth(1).and_then(|n| n.parse().ok());
+            (t, if total > 0 { total } else { p.ram_total_mo })
+        }
+        None => (None, 0),
+    }
+}
+
+/// Valeur conseillee au plus selon la memoire de la machine
+pub fn parallel_max_advised(ram_total_mo: i64) -> u32 {
+    match ram_total_mo {
+        1..=2999 => 4,
+        3000..=7999 => 8,
+        _ => 16,
+    }
+}
+
+/// Choix des fichiers envoyes en parallele : reglage de la machine ou un nombre (1 a 32)
+pub fn job_parallel_ui(ui: &mut egui::Ui, id: &str, v: &mut String, machine: (Option<u32>, i64)) {
+    let (machine_t, total) = machine;
+    let own = !v.is_empty();
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            let machine_label = match machine_t {
+                Some(t) => tf("Réglage de la machine ({0})", &[&t]),
+                None => tr("Réglage de la machine").to_string(),
+            };
+            egui::ComboBox::from_id_salt(id)
+                .width(230.0)
+                .selected_text(if own { tr("Nombre choisi").to_string() } else { machine_label.clone() })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(!own, machine_label).clicked() {
+                        v.clear();
+                    }
+                    if ui.selectable_label(own, tr("Nombre choisi")).clicked() && !own {
+                        *v = machine_t.unwrap_or(4).to_string();
+                    }
+                });
+            if own {
+                let mut n: u32 = v.parse().unwrap_or(4).clamp(1, 32);
+                if ui.add(egui::DragValue::new(&mut n).range(1..=32)).changed() {
+                    *v = n.to_string();
+                }
+                ui.label(tr("fichiers à la fois"));
+            }
+        });
+        if let Ok(n) = v.parse::<u32>() {
+            let max = parallel_max_advised(total);
+            if total > 0 && n > max {
+                ui.label(
+                    RichText::new(tf(
+                        "Beaucoup pour cette machine ({0} Mo de mémoire) : {1} au plus est conseillé, sinon rclone risque de manquer de mémoire (la sauvegarde repasse alors à 1 fichier à la fois).",
+                        &[&total, &max],
+                    ))
+                    .small()
+                    .color(WARN),
+                );
+            }
+        }
+    });
+}
+
 pub fn valid_job_memory(v: &str) -> bool {
     v.is_empty() || PROFILES.contains(&v) || v.parse::<u32>().map(|n| n >= 64).unwrap_or(false)
 }

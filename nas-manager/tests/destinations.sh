@@ -70,12 +70,18 @@ check "etat : destination joignable" "$ND destinations etat usb >/dev/null && jq
 echo "== Sauvegarde vers deux destinations (Drive chiffre + disque en clair)"
 mkdir -p "$S/Docs/sous"; echo a > "$S/Docs/a.txt"; echo b > "$S/Docs/sous/b.txt"
 $ND save nouveau T_Docs "$S/Docs" Docs sync oui manuel 7 "" "" "gdrive:oui;usb:non" "" >>"$J" 2>&1
-check "enregistree avec ses destinations" "grep -q '^T_Docs|$S/Docs|Docs|sync|oui|manuel|7|||gdrive:oui;usb:non|$' /etc/nas-backup/jobs.conf"
+check "enregistree avec ses destinations" "grep -q '^T_Docs|$S/Docs|Docs|sync|oui|manuel|7|||gdrive:oui;usb:non||$' /etc/nas-backup/jobs.conf"
 check "remote chiffre cree" "rclone listremotes | grep -qx 'gbackup:'"
+check "fichiers en parallele : 0 refuse" "! $ND save modif T_Docs '$S/Docs' Docs sync oui manuel 7 '' '' 'gdrive:oui;usb:non' '' 0 >>'$J' 2>&1"
+$ND save modif T_Docs "$S/Docs" Docs sync oui manuel 7 "" "" "gdrive:oui;usb:non" "" 3 >>"$J" 2>&1
+check "fichiers en parallele enregistres" "grep -q '^T_Docs|.*|gdrive:oui;usb:non||3$' /etc/nas-backup/jobs.conf"
 check "destination inconnue refusee" "! $ND save nouveau T_X '$S/Docs' X sync oui manuel 7 '' '' 'nulle:oui' '' >>'$J' 2>&1"
 check "destination en double refusee" "! $ND save nouveau T_X '$S/Docs' X sync oui manuel 7 '' '' 'usb:oui;usb:non' '' >>'$J' 2>&1"
 $ND run T_Docs >>"$J" 2>&1
 check "sauvegarde OK" "grep -q ' OK$' $ST/T_Docs.status"
+check "rclone lance avec 3 fichiers en parallele" "grep 'T_Docs : debut' /var/log/nas-backup.log | tail -n 1 | grep -q '3 fichier(s) en parallele'"
+$ND save modif T_Docs "$S/Docs" Docs sync oui manuel 7 "" "" "gdrive:oui;usb:non" "" >>"$J" 2>&1
+check "retour au reglage de la machine" "grep -q '^T_Docs|.*|gdrive:oui;usb:non||$' /etc/nas-backup/jobs.conf"
 check "disque : fichiers en clair" "[ -f $U/NAS/Docs/sous/b.txt ]"
 check "Drive : noms chiffres" "[ -d $W/gd/NAS-chiffre ] && ! find $W/gd -name a.txt | grep -q ."
 check "Drive : relisible dechiffre" "[ \"\$(rclone cat gbackup:Docs/a.txt)\" = a ]"
@@ -101,7 +107,7 @@ mv "$U.debranche" "$U"
 echo "== Sauvegarde versionnee (restic)"
 mkdir -p "$S/Photos/2024"; echo v1 > "$S/Photos/p.txt"; echo img > "$S/Photos/2024/i.jpg"
 $ND save nouveau T_Photos "$S/Photos" Photos versions non manuel 0 "" "" "usb:non" "7:4:12:0" >>"$J" 2>&1
-check "enregistree (versions toujours chiffrees)" "grep -q '^T_Photos|$S/Photos|Photos|versions|oui|manuel|0|||usb:oui|7:4:12:0$' /etc/nas-backup/jobs.conf"
+check "enregistree (versions toujours chiffrees)" "grep -q '^T_Photos|$S/Photos|Photos|versions|oui|manuel|0|||usb:oui|7:4:12:0|$' /etc/nas-backup/jobs.conf"
 check "rotation invalide refusee" "! $ND save modif T_Photos '$S/Photos' Photos versions non manuel 0 '' '' 'usb:non' '0:0:0:0' >>'$J' 2>&1"
 $ND simulate T_Photos >>"$J" 2>&1
 check "simulation avant la premiere version : 2 fichiers" "grep -q '^ENVOIS=2' $ST/T_Photos.simulation.status"

@@ -996,6 +996,7 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                         bw: crate::sched::BwEdit::parse(&j.debit),
                         trash_days: j.corbeille.to_string(),
                         memory: j.memoire.clone(),
+                        parallel: j.paralleles.clone(),
                         error: String::new(),
                     });
                     if !app.sources_loaded {
@@ -1135,6 +1136,9 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
         }
         if !j.memoire.is_empty() {
             ui.label(RichText::new(tf("Mémoire de rclone : {0}", &[&(crate::ram::job_memory_text(&j.memoire))])).small().weak());
+        }
+        if !j.paralleles.is_empty() {
+            ui.label(RichText::new(tf("Fichiers en parallèle : {0}", &[&(crate::ram::parallel_text(&j.paralleles))])).small().weak());
         }
         if let Some(sim) = &j.simulation {
             simulation_box(app, ui, &j.nom, sim);
@@ -1362,6 +1366,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
     let api_ok = app.omv.status.as_ref().map(|s| s.nb_api >= 7).unwrap_or(false);
     // nas-debian 2.6 : limite de debit commune a la machine (vide) ou « sans limite »
     let api11 = app.omv.status.as_ref().map(|s| s.nb_api >= 11).unwrap_or(false);
+    let machine_par = crate::ram::machine_parallel(app, HostId::Omv);
     let est = app.nas_est.get("\u{1}form").cloned();
     let est_busy = app.nas_est_busy.is_some();
     let mut do_est = false;
@@ -1466,6 +1471,10 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 ui.label(tr("Mémoire de rclone"));
                 crate::ram::job_memory_ui(ui, "jobmem", &mut f.memory);
                 ui.end_row();
+
+                ui.label(tr("Fichiers en parallèle"));
+                crate::ram::job_parallel_ui(ui, "jobpar", &mut f.parallel, machine_par);
+                ui.end_row();
             });
             });
             if !f.new {
@@ -1559,6 +1568,8 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
             tr("Versions gardées invalides : des nombres, au moins un supérieur à 0.")
         } else if !crate::ram::valid_job_memory(f.memory.trim()) {
             tr("Mémoire de rclone invalide : un nombre de Mo, 64 au minimum.")
+        } else if !crate::ram::valid_parallel(f.parallel.trim()) {
+            tr("Fichiers en parallèle invalides : un nombre de 1 à 32.")
         } else {
             ""
         };
@@ -1585,6 +1596,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 memory: f.memory.trim(),
                 dests: if api_ok { &dests } else { "" },
                 rotation: &rot.unwrap_or_default(),
+                parallel: f.parallel.trim(),
             },
         );
         let title = if f.new { tr("Nouvelle sauvegarde") } else { tr("Modification") };
