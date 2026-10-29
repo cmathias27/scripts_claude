@@ -21,6 +21,7 @@ mod log;
 mod model;
 mod notifs;
 mod ocis;
+mod ocisconf;
 mod pcbackup;
 mod pcmig;
 mod pages;

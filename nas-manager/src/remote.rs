@@ -99,9 +99,10 @@ def oc_collect(M="/root/.migre-ocis", T="/root/.ocis-transferts"):
 
     # ---------------- migration vers oCIS
     mg = {}
-    conf = src_vars(M + "/config", ["OCIS_URL", "LOCAL_URL", "OCIS_USER", "OCIS_VENDOR", "OCIS_INSECURE"])
+    conf = src_vars(M + "/config", ["OCIS_URL", "LOCAL_URL", "OCIS_USER", "OCIS_VENDOR", "OCIS_INSECURE", "OCIS_SIG"])
     mg["config"] = {"url": conf.get("OCIS_URL", ""), "locale": conf.get("LOCAL_URL", ""), "utilisateur": conf.get("OCIS_USER", ""),
-                    "mode": conf.get("OCIS_VENDOR", ""), "certificat_accepte": conf.get("OCIS_INSECURE", "") == "1"} if conf else None
+                    "mode": conf.get("OCIS_VENDOR", ""), "certificat_accepte": conf.get("OCIS_INSECURE", "") == "1",
+                    "signature": conf.get("OCIS_SIG", "")} if conf else None
     q = []
     for line in rd(M + "/file-attente").splitlines():
         p = line.split("|")
@@ -1403,18 +1404,29 @@ pub fn migre_start(h: HostId) -> String {
 pub fn migre_stop(h: HostId) -> String {
     format!("{} arreter 2>&1\n", mig_bin(h))
 }
+/// Recopie la connexion oCIS commune sur la machine ; `sig` (empreinte de la connexion,
+/// gardee dans OCIS_SIG) permet de savoir ensuite si la machine est a jour.
+/// Un script plus ancien ignore simplement la 6e ligne.
 pub fn migre_configure(h: HostId,
-    url: &str, user: &str, token: &str, local: &str, insecure: bool,
+    url: &str, user: &str, token: &str, local: &str, insecure: bool, sig: &str,
 ) -> String {
     let clean = |s: &str| s.replace(['\n', '\r'], "").trim().to_string();
     format!(
-        "{} configurer 2>&1 <<'NASMGR_EOF'\n{}\n{}\n{}\n{}\n{}\nNASMGR_EOF\n",mig_bin(h),
+        "{} configurer 2>&1 <<'NASMGR_EOF'\n{}\n{}\n{}\n{}\n{}\n{}\nNASMGR_EOF\n",mig_bin(h),
         clean(url),
         clean(user),
         clean(token),
         if clean(local).is_empty() { "-".into() } else { clean(local) },
-        if insecure { 1 } else { 0 }
+        if insecure { 1 } else { 0 },
+        clean(sig)
     )
+}
+
+/// Connexion oCIS deja enregistree sur la machine (reprise dans l'application quand elle
+/// n'en a pas encore) : 5 lignes adresse, utilisateur, jeton, adresse locale, certificat (0/1).
+/// Lecture directe du fichier : marche quelle que soit la version du script.
+pub fn migre_export() -> String {
+    "bash -c '. /root/.migre-ocis/config 2>/dev/null || exit 3; printf \"%s\\n\" \"$OCIS_URL\" \"$OCIS_USER\" \"$OCIS_PASS\" \"${LOCAL_URL:-}\" \"${OCIS_INSECURE:-0}\"'\n".to_string()
 }
 
 // ---------------- Transferts oCIS -> machine (nas-debian 2.5+, nas-synology 2.4+) ----------------
@@ -1523,6 +1535,30 @@ mod live {
     use crate::config;
     use crate::ssh::Ssh;
     use std::time::Duration;
+
+    /// Reprise de la connexion d'une machine : le fichier du script (printf %q) est relu tel quel.
+    /// Commande executee sur le NAS (bash Linux) : pas de test sous Windows (bash absent ou WSL).
+    #[cfg(unix)]
+    #[test]
+    fn export_connexion() {
+        use std::io::Write;
+        let d = std::env::temp_dir().join(format!("export-ocis-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let conf = d.join("config");
+        let w = std::process::Command::new("bash")
+            .args(["-c", "printf 'OCIS_URL=%q\\nLOCAL_URL=%q\\nOCIS_USER=%q\\nOCIS_PASS=%q\\nOCIS_INSECURE=1\\nOCIS_SIG=ab12\\n' https://cloud.x '' alice $'se cr$et\\'\\\\' >\"$1\"", "_"])
+            .arg(&conf)
+            .status()
+            .unwrap();
+        assert!(w.success());
+        let script = migre_export().replace("/root/.migre-ocis/config", &conf.display().to_string());
+        let mut c = std::process::Command::new("bash").arg("-s").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        c.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        let o = c.wait_with_output().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(String::from_utf8_lossy(&o.stdout).lines().collect::<Vec<_>>(), vec!["https://cloud.x", "alice", "se cr$et'\\", "", "1"]);
+        assert!(migre_configure(HostId::Omv, "u", "a", "t", "", true, "ab12").ends_with("u\na\nt\n-\n1\nab12\nNASMGR_EOF\n"));
+    }
 
     fn on() -> bool {
         std::env::var("NAS_MANAGER_LIVE_TEST").is_ok()
@@ -1899,7 +1935,7 @@ mod live {
         let save = "rm -rf /tmp/ocis-live/avant; mkdir -p /tmp/ocis-live/avant /tmp/ocis-live/dest; for d in /root/.migre-ocis /root/.ocis-transferts; do [ -d $d ] && mv $d /tmp/ocis-live/avant/; done; cp -p /etc/crontab /tmp/ocis-live/avant/crontab 2>/dev/null; true";
         run(true, save);
         let res = std::panic::catch_unwind(|| {
-            let o = run(true, &migre_configure(HostId::Omv, "http://127.0.0.1:9251", "alice", "secret", "", false));
+            let o = run(true, &migre_configure(HostId::Omv, "http://127.0.0.1:9251", "alice", "secret", "", false, "0123abcd"));
             assert_eq!(o.code, 0, "{}", o.text());
             let sp = crate::model::parse_spaces(&run(true, &tr_spaces(HostId::Omv)).stdout);
             assert_eq!(sp.iter().map(|s| (s.id.as_str(), s.kind.as_str())).collect::<Vec<_>>(), vec![("personnel-alice", "personal"), ("projet-docs", "project"), ("projet-photos", "project")]);
@@ -1914,6 +1950,9 @@ mod live {
             assert!(o.stdout.contains("10 3 * * ") && o.stdout.contains("root /usr/local/bin/nas-debian transferts run-at"), "{}", o.text());
             let st: crate::model::OmvStatus = serde_json::from_str(run(true, &OMV_STATUS).stdout.lines().last().unwrap()).expect("json OMV");
             assert!(st.migration.as_ref().map(|m| m.config.is_some()).unwrap_or(false), "{:?}", st.migration);
+            // connexion commune : signature gardee, reprise possible par l'application
+            assert_eq!(st.migration.as_ref().and_then(|m| m.config.as_ref()).map(|c| c.signature.as_str()), Some("0123abcd"));
+            assert_eq!(run(true, &migre_export()).stdout.lines().collect::<Vec<_>>(), vec!["http://127.0.0.1:9251", "alice", "secret", "", "0"]);
             let t = st.transferts.expect("transferts");
             assert!(t.config && t.en_cours.is_none());
             let x = &t.transferts[0];
@@ -1921,7 +1960,7 @@ mod live {
             let o = run(true, &tr_delete(HostId::Omv, "Photos-oCIS"));
             assert_eq!(o.code, 0, "{}", o.text());
             // Synology : meme moteur, planification dans /etc/crontab
-            let o = run(false, &migre_configure(HostId::Syno, "http://127.0.0.1:9251", "alice", "secret", "", false));
+            let o = run(false, &migre_configure(HostId::Syno, "http://127.0.0.1:9251", "alice", "secret", "", false, ""));
             assert_eq!(o.code, 0, "{}", o.text());
             let o = run(false, &tr_save(HostId::Syno, true, &TrSave { name: "Docs", space: "projet-docs", sub: "", dest: "/tmp/ocis-live/dest/docs", mode: "copie", trash_days: 0, schedule: "manuel", bwlimit: "2M" }));
             assert_eq!(o.code, 0, "{}", o.text());

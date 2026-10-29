@@ -58,7 +58,7 @@
 # =====================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="2.7.0"
+SCRIPT_VERSION="2.7.1"
 API_VERSION=12
 
 # --------------------------- Parametres ------------------------------
@@ -5594,6 +5594,7 @@ api() {  # api <GET|POST> <chemin> [json]  -> corps dans $BODY, code HTTP dans $
 
 load_conf() {
   [ -f "$MG_CONF" ] || return 1
+  unset OCIS_SIG
   . "$MG_CONF"
   CURL_K=""; RCLONE_K=(); BASE="$OCIS_URL"
   [ "${OCIS_INSECURE:-0}" = 1 ] && { CURL_K="-k"; RCLONE_K=(--no-check-certificate); }
@@ -5614,6 +5615,13 @@ print(u.urlunsplit((base.scheme, base.netloc) + tuple(src[2:])))' "$1" "${BASE:-
 mg_setup_conf() {
   clear
   echo -e "${OC_B}== Connexion a oCIS ==${OC_N}"
+  if [ -n "${OCIS_SIG:-}" ]; then
+    echo -e "${OC_J}Cette connexion est commune a toutes les machines et geree par NAS Manager :${OC_N}"
+    echo -e "${OC_J}modifie-la plutot dans l'application (page oCIS). Une modification faite ici${OC_N}"
+    echo -e "${OC_J}sera remplacee par celle de l'application a sa prochaine connexion.${OC_N}"
+    read -r -p "Modifier quand meme ici ? [o/N] : " c; [[ "$c" =~ ^[oOyY] ]] || return 0
+    echo
+  fi
   echo "Compte a utiliser : un compte oCIS membre des espaces projets de destination,"
   echo "avec le droit « Peut modifier » ou « Gestionnaire ». Mot de passe = jeton"
   echo "d'application (recommande) ou mot de passe si l'authentification basique est activee."
@@ -6589,11 +6597,16 @@ mg_api_stop() {
   echo "Migration arretee. Les migrations non terminees sont remises en file d'attente."
 }
 
-# Configuration sans question : 5 lignes sur l'entree standard
-#   adresse, utilisateur, jeton, adresse locale (ou -), certificat non reconnu accepte (0/1)
+# Configuration sans question : 5 ou 6 lignes sur l'entree standard
+#   adresse, utilisateur, jeton, adresse locale (ou -), certificat non reconnu accepte (0/1),
+#   [signature] : empreinte de la connexion commune de NAS Manager (OCIS_SIG). NAS Manager
+#   garde une seule connexion oCIS pour toutes les machines et la recopie ici des que la
+#   signature differe (connexion modifiee dans l'application ou dans le menu du script).
 mg_api_configure() {
-  local u usr pw lu insecure
+  local u usr pw lu insecure sig
   read -r u; read -r usr; read -r pw; read -r lu; read -r insecure
+  read -r sig || sig=""
+  [[ "$sig" =~ ^[0-9a-f]{0,64}$ ]] || sig=""
   u="${u%/}"; [[ "$u" =~ ^https?:// ]] || u="https://$u"
   [ -n "$usr" ] && [ -n "$pw" ] || die "utilisateur et jeton obligatoires."
   [ "$insecure" = 1 ] || insecure=0
@@ -6624,7 +6637,8 @@ mg_api_configure() {
     lu=""
   fi
   detect_vendor || exit 1
-  printf 'OCIS_URL=%q\nLOCAL_URL=%q\nOCIS_USER=%q\nOCIS_PASS=%q\nOCIS_INSECURE=%s\nOCIS_VENDOR=%s\n' "$u" "$lu" "$usr" "$pw" "$insecure" "$OCIS_VENDOR" > "$MG_CONF"
+  { printf 'OCIS_URL=%q\nLOCAL_URL=%q\nOCIS_USER=%q\nOCIS_PASS=%q\nOCIS_INSECURE=%s\nOCIS_VENDOR=%s\n' "$u" "$lu" "$usr" "$pw" "$insecure" "$OCIS_VENDOR"
+    [ -n "$sig" ] && printf 'OCIS_SIG=%s\n' "$sig"; } > "$MG_CONF"
   chmod 600 "$MG_CONF"
   echo "Configuration enregistree."
 }
@@ -6665,7 +6679,7 @@ fi
 while true; do
   clear
   echo -e "${OC_B}===== MIGRATION $OC_NOM -> oCIS =====${OC_N}"
-  echo -e "oCIS : $OCIS_URL  (compte $OCIS_USER, mode ${OCIS_VENDOR:-infinitescale})"
+  echo -e "oCIS : $OCIS_URL  (compte $OCIS_USER, mode ${OCIS_VENDOR:-infinitescale})${OCIS_SIG:+  - connexion commune (NAS Manager)}"
   [ -n "${LOCAL_URL:-}" ] && echo -e "Transferts : ${OC_V}reseau local${OC_N} ($LOCAL_URL)" \
                           || echo -e "Transferts : ${OC_J}via Internet${OC_N} (menu 7 pour ajouter l'adresse locale)"
   if mg_running; then . "$MG_STATE/etape" 2>/dev/null; echo -e "${OC_J}Migration en cours : ${E_LABEL:-...} (${ETAPE:-?}/$NB)${OC_N}"; fi

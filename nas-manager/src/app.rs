@@ -265,6 +265,8 @@ pub struct App {
     /// test de restauration, reveil des machines (etape 5)
     pub fiab: crate::fiabilite::FiabUi,
     pub ocis_ui: crate::ocis::OcisUi,
+    /// connexion oCIS commune : test et recopie sur les machines
+    pub ocis_sync: crate::ocisconf::Sync,
     pub pcmig: crate::pcmig::PcMig,
     /// sauvegarde de ce PC vers le NAS (etape 7)
     pub pcbackup: crate::pcbackup::PcBackup,
@@ -342,6 +344,7 @@ impl App {
             notifs: Default::default(),
             fiab: Default::default(),
             ocis_ui: Default::default(),
+            ocis_sync: Default::default(),
             pcmig: crate::pcmig::PcMig::load(),
             pcbackup: crate::pcbackup::PcBackup::load(),
             dups: Default::default(),
@@ -423,7 +426,7 @@ impl App {
         }
     }
 
-    fn pass_of(&self, h: HostId) -> Option<String> {
+    pub fn pass_of(&self, h: HostId) -> Option<String> {
         match h {
             HostId::Omv => self.omv.pass.clone(),
             HostId::Syno => self.syno.pass.clone(),
@@ -1292,6 +1295,7 @@ impl App {
         crate::dests::form_window(self, ctx);
         crate::notifs::form_window(self, ctx);
         crate::fiabilite::reveil_window(self, ctx);
+        crate::ocisconf::tick(self);
         crate::ocis::tr_form_window(self, ctx);
         crate::pcmig::dialogs(self, ctx);
         crate::pcbackup::form_window(self, ctx);

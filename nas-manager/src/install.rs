@@ -632,11 +632,11 @@ fn token_row(ui: &mut egui::Ui, j: &Token) {
     let now = crate::fmt::now();
     match j.etat.as_str() {
         "refuse" => {
-            ui.colored_label(ERR, tr("Jeton oCIS refusé (expiré ou révoqué) : crée un nouveau jeton et mets-le à jour (page Migration)."));
+            ui.colored_label(ERR, tr("Jeton oCIS refusé (expiré ou révoqué) : crée un nouveau jeton et mets-le à jour (page oCIS, carte « Connexion oCIS »)."));
         }
         "ok" => match j.expire {
             Some(t) if t - now < 7 * 86400 => {
-                ui.colored_label(WARN, tf("Jeton oCIS : expire {0} — pense à le renouveler (page Migration).", &[&(crate::fmt::ago(t, now))]));
+                ui.colored_label(WARN, tf("Jeton oCIS : expire {0} — pense à le renouveler (page oCIS, carte « Connexion oCIS »).", &[&(crate::fmt::ago(t, now))]));
             }
             Some(t) => {
                 ui.label(RichText::new(tf("Jeton oCIS valable jusqu'au {0}", &[&(crate::fmt::date(t))])).small().color(OK));
