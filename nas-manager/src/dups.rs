@@ -351,11 +351,29 @@ fn results(app: &mut App, ui: &mut egui::Ui, st: &DupState, now: i64) {
                     true,
                     None,
                     Box::new(move |app| {
-                        app.action_dialog(HostId::Omv, tr("Doublons"), script, 1800);
-                        app.dups.last_fetch = None;
-                        if let Some(s) = app.dups.state.as_mut() {
-                            s.groupes.clear();
+                        if app.blocked() {
+                            return;
                         }
+                        // pas de relecture pendant le deplacement
+                        app.dups.loading = true;
+                        app.exec(
+                            HostId::Omv,
+                            tr("Doublons"),
+                            script,
+                            1800,
+                            Box::new(|app, r| {
+                                app.output = Some(match r {
+                                    Ok(o) => crate::app::OutputDialog { title: tr("Doublons").into(), text: o.text(), ok: o.code == 0 },
+                                    Err(e) => crate::app::OutputDialog { title: tr("Doublons").into(), text: e.to_string(), ok: false },
+                                });
+                                // liste relue apres le deplacement (fichiers deplaces retires des groupes)
+                                if let Some(s) = app.dups.state.as_mut() {
+                                    s.groupes.clear();
+                                }
+                                app.dups.loading = false;
+                                app.dups.last_fetch = None;
+                            }),
+                        );
                     }),
                 );
             }

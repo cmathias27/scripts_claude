@@ -120,7 +120,8 @@ check "surveillance de la sauvegarde supprimee arretee" "! pgrep -f 'temps-reel 
 nettoyer; trap - EXIT
 sleep 1
 check "plus aucune surveillance de test" "! pgrep -f 'temps-reel surveiller T_' >/dev/null"
-rm -rf "$W"
+# journal garde en cas d'echec (annotations de la CI)
+[ "$ko" -eq 0 ] && rm -rf "$W"
 echo
 echo "$ok verification(s) reussie(s), $ko en echec"
 [ "$ko" -eq 0 ]
