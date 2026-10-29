@@ -3,6 +3,8 @@
 # 2. Tests et compilation sous Windows
 # 3. Publication : une Release par version (vX.Y.Z, depuis nas-manager/Cargo.toml),
 #    avec les nouveautes de nas-manager/CHANGELOG.md. Meme version = fichier remplace.
+# 4. Interface texte (nas-manager/tui) : tests, puis binaires Linux statiques amd64 /
+#    arm64 / armv7 (+ empreintes SHA-256) ajoutes a la meme Release.
 name: NAS Manager (Windows)
 
 on:
@@ -45,7 +47,7 @@ jobs:
         with:
           workspaces: nas-manager
       - name: Dependances
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync inotify-tools shellcheck rclone restic
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server rsync inotify-tools shellcheck rclone restic mosquitto mosquitto-clients
       - name: Faux OMV et faux Synology
         run: sudo bash tests/faux-nas.sh "$RUNNER_TEMP/app"
       - name: Tests
@@ -64,6 +66,8 @@ jobs:
         run: sudo bash tests/restauration.sh /usr/bin/rclone /usr/bin/restic
       - name: Migration et transferts oCIS (faux oCIS, vrai rclone)
         run: sudo bash tests/ocis.sh /usr/bin/rclone
+      - name: Debit selon l'heure, estimation, doublons, actions Home Assistant (vrai MQTT)
+        run: sudo bash tests/confort.sh /usr/bin/rclone
       - name: Syntaxe des scripts
         working-directory: .
         run: |
@@ -74,7 +78,7 @@ jobs:
         if: failure()
         working-directory: .
         run: |
-          for j in /tmp/*-moteur/journal.txt /tmp/notif-test/journal.txt; do
+          for j in /tmp/*-moteur/journal.txt /tmp/notif-test/journal.txt /tmp/confort-moteur/journal.txt; do
             [ -f "$j" ] || continue
             t=$(basename "$(dirname "$j")")
             sudo grep '^== ECHEC' "$j" | head -n 5 | while read -r l; do echo "::error title=$t::$l"; done
@@ -134,3 +138,50 @@ jobs:
           if gh release view nas-manager-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit nas-manager-latest --repo "$GITHUB_REPOSITORY" --title "NAS Manager 0.9 (bêta)" --prerelease --latest=false
           fi
+
+  tui:
+    name: Interface texte (Linux amd64 / arm64 / armv7)
+    # apres la compilation Windows : la Release de la version existe deja
+    needs: [tests-linux, windows]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nas-manager/tui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl,armv7-unknown-linux-musleabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nas-manager/tui
+      - name: Tests
+        run: cargo test --locked
+      - name: Outils de compilation croisee (zig)
+        run: |
+          pip install ziglang
+          cargo install cargo-zigbuild --locked
+      - name: Compilation (binaires statiques)
+        run: |
+          mkdir -p ../dist
+          for t in x86_64-unknown-linux-musl:x86_64 aarch64-unknown-linux-musl:aarch64 armv7-unknown-linux-musleabihf:armv7; do
+            cargo zigbuild --release --locked --target "${t%%:*}"
+            cp "target/${t%%:*}/release/nas-manager" "../dist/nas-manager-tui-${t##*:}"
+          done
+          ../dist/nas-manager-tui-x86_64 --version
+          cd ../dist && for f in nas-manager-tui-*; do sha256sum "$f" > "$f.sha256"; done && ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nas-manager-tui
+          path: nas-manager/dist/
+      - name: Version
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: version
+        working-directory: nas-manager
+        run: echo "version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      - name: Publication (meme Release que l'application)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: nas-manager/dist/*

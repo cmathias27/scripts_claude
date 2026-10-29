@@ -81,6 +81,9 @@ pub fn summary(app: &App) -> (Level, String) {
             busy.push(tf("transfert oCIS « {0} »", &[&t.nom]));
         }
     }
+    if let Some(n) = crate::pcbackup::running(app) {
+        busy.push(tf("sauvegarde du PC « {0} »", &[&n]));
+    }
     if crate::pcmig::running(app) {
         busy.push(tr("migration oCIS depuis ce PC").into());
     }

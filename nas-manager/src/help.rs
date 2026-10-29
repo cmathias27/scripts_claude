@@ -36,6 +36,191 @@ fn code(ui: &mut egui::Ui, c: &str) {
     });
 }
 
+/// Un exemple de configuration : titre, explication, réglages, bouton qui pré-remplit le formulaire
+fn example(ui: &mut egui::Ui, title: &str, why: &str, settings: &[(&str, String)], button: Option<&str>) -> bool {
+    let mut go = false;
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(title).strong());
+            ui.label(RichText::new(why).small());
+            egui::Grid::new(("ex", title)).num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+                for (k, v) in settings {
+                    ui.label(RichText::new(*k).small().weak());
+                    ui.label(RichText::new(v).small());
+                    ui.end_row();
+                }
+            });
+            if let Some(b) = button {
+                if ui.small_button(b).clicked() {
+                    go = true;
+                }
+            }
+        });
+    ui.add_space(4.0);
+    go
+}
+
+/// Exemples prêts à l'emploi (programmées, temps réel, PC), avec pré-remplissage du formulaire
+fn examples(app: &mut App, ui: &mut egui::Ui) {
+    ui.label(tr("Quelques réglages qui marchent bien. Le bouton ouvre le formulaire déjà rempli : il reste à choisir le dossier, puis à enregistrer."));
+    ui.add_space(4.0);
+    let ready = app.omv.status.as_ref().map(|s| s.nb_installe).unwrap_or(false);
+    let first_dest = crate::dests::available(app).first().map(|d| d.nom.clone()).unwrap_or_else(|| "gdrive".into());
+    let has_usb = crate::dests::available(app).iter().any(|d| d.kind == "local");
+    let btn = |label: &'static str| if ready { Some(tr(label)) } else { None };
+
+    if example(
+        ui,
+        tr("Caméras : miroir chiffré en temps réel"),
+        tr("Chaque vidéo part dès qu'elle est écrite ; les vidéos effacées par l'enregistreur le sont aussi sur la destination (pas de corbeille, pour ne pas doubler l'espace)."),
+        &[
+            (tr("Page"), tr("Sauvegardes temps réel").into()),
+            (tr("Destination"), tr("Drive chiffré").into()),
+            (tr("Fichiers supprimés"), tr("Suppression directe").into()),
+            (tr("Types de fichiers"), "*.mp4 ; *.jpg".into()),
+            (tr("Regroupement"), tr("envoi après 5 s, rattrapage toutes les 15 min").into()),
+        ],
+        btn("\u{E3EE} Créer cette sauvegarde temps réel…"),
+    ) {
+        let mut f = crate::realtime::RtForm::new_default();
+        f.name = "Cameras".into();
+        f.folder = "Cameras".into();
+        f.deletion = 0;
+        f.types = "*.mp4 ; *.jpg".into();
+        f.delay = "5".into();
+        f.catchup = 15;
+        app.rt_form = Some(f);
+        app.page = Page::Realtime;
+    }
+    if example(
+        ui,
+        tr("Documents : temps réel avec corbeille de 30 jours"),
+        tr("Un document modifié part dans la minute ; un fichier effacé ou écrasé par erreur reste 30 jours dans la corbeille de la destination, et le retour à une date précise est possible."),
+        &[
+            (tr("Page"), tr("Sauvegardes temps réel").into()),
+            (tr("Fichiers supprimés"), tr("Corbeille 30 jours").into()),
+            (tr("Exclusions"), "~$* ; *.tmp ; .~lock.*".into()),
+            (tr("Détection d'anomalie"), tr("pause au-delà de 300 changements en peu de temps (rançongiciel)").into()),
+        ],
+        btn("\u{E3EE} Créer cette sauvegarde temps réel…"),
+    ) {
+        let mut f = crate::realtime::RtForm::new_default();
+        f.name = "Documents".into();
+        f.folder = "Documents".into();
+        f.deletion = 1;
+        f.trash_days = "30".into();
+        f.excl = "~$* ; *.tmp ; .~lock.*".into();
+        app.rt_form = Some(f);
+        app.page = Page::Realtime;
+    }
+    let photo_dests = if has_usb { tf("{0} (chiffré) + disque USB (en clair)", &[&first_dest]) } else { tf("{0} (chiffré)", &[&first_dest]) };
+    if example(
+        ui,
+        tr("Photos : copie hebdomadaire vers deux destinations"),
+        tr("Les photos changent peu : une copie chaque dimanche suffit. En copie, rien n'est jamais supprimé sur la destination (une photo effacée par erreur sur le NAS reste sauvegardée)."),
+        &[
+            (tr("Page"), tr("Sauvegardes programmées").into()),
+            (tr("Mode"), tr("Copie").into()),
+            (tr("Horaire"), tr("le dimanche à 02:00").into()),
+            (tr("Destinations"), photo_dests),
+            (tr("Débit"), tr("réglage de la machine (débit selon l'heure)").into()),
+        ],
+        btn("\u{E3EE} Créer cette sauvegarde programmée…"),
+    ) {
+        let mut dests = vec![(first_dest.clone(), true)];
+        if let Some(u) = crate::dests::available(app).iter().find(|d| d.kind == "local") {
+            dests.push((u.nom.clone(), false));
+        }
+        app.job_form = Some(crate::app::JobFormState {
+            new: true,
+            name: "Photos".into(),
+            folder: "Photos".into(),
+            folder_touched: true,
+            mode: 1,
+            dests,
+            rot: crate::dests::rot_parse(""),
+            sched: crate::sched::SchedEdit::parse("02:00/7"),
+            trash_days: "30".into(),
+            ..Default::default()
+        });
+        if !app.sources_loaded {
+            app.load_backup_sources();
+        }
+        app.page = Page::Backups;
+    }
+    if example(
+        ui,
+        tr("Papiers importants : versionnée chaque nuit"),
+        tr("Garde des versions datées (comme Hyper Backup) : retrouver un fichier tel qu'il était avant une erreur ou un rançongiciel, même des mois après."),
+        &[
+            (tr("Page"), tr("Sauvegardes programmées").into()),
+            (tr("Mode"), tr("Versionnée").into()),
+            (tr("Horaire"), tr("chaque jour à 03:30").into()),
+            (tr("Versions gardées"), tr("7 quotidiennes, 4 hebdomadaires, 12 mensuelles").into()),
+        ],
+        btn("\u{E3EE} Créer cette sauvegarde programmée…"),
+    ) {
+        app.job_form = Some(crate::app::JobFormState {
+            new: true,
+            name: "Papiers".into(),
+            folder: "Papiers".into(),
+            folder_touched: true,
+            mode: 2,
+            dests: vec![(first_dest.clone(), true)],
+            rot: crate::dests::rot_parse("7:4:12:0"),
+            sched: crate::sched::SchedEdit::parse("03:30"),
+            trash_days: "30".into(),
+            ..Default::default()
+        });
+        if !app.sources_loaded {
+            app.load_backup_sources();
+        }
+        app.page = Page::Backups;
+    }
+    if example(
+        ui,
+        tr("Ce PC : Documents et Bureau vers le NAS"),
+        tr("Chaque jour à midi, plus les changements au fil de l'eau ; en miroir, un fichier supprimé du PC reste 30 jours dans la corbeille du NAS."),
+        &[
+            (tr("Page"), tr("Sauvegarde du PC").into()),
+            (tr("Mode"), tr("Miroir, corbeille 30 jours").into()),
+            (tr("Horaire"), tr("chaque jour à 12:30 + temps réel").into()),
+        ],
+        Some(tr("\u{E3EE} Créer cette sauvegarde du PC…")),
+    ) {
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+        let dirs: Vec<String> = ["Documents", "Desktop"].iter().map(|d| std::path::Path::new(&home).join(d)).filter(|p| p.is_dir()).map(|p| p.display().to_string()).collect();
+        app.pcbackup.form = Some(crate::pcbackup::PcForm {
+            new: true,
+            name: tr("Documents du PC").into(),
+            dirs,
+            host_kind: "omv".into(),
+            mode: 1,
+            trash_days: "30".into(),
+            sched: crate::sched::SchedEdit::parse("12:30"),
+            realtime: true,
+            enabled: true,
+            ..Default::default()
+        });
+        app.page = Page::PcBackup;
+    }
+    if example(
+        ui,
+        tr("Connexion Internet partagée : débit selon l'heure"),
+        tr("Les sauvegardes ne ralentissent pas la maison en journée, et vont à pleine vitesse la nuit."),
+        &[(tr("Page"), tr("Installation, carte 7").into()), (tr("Débit"), tr("2 Mo/s de 8 h à 23 h, sans limite la nuit").into())],
+        Some(tr("\u{E3EE} Ouvrir le réglage…")),
+    ) {
+        app.install.ram[0].bw_loaded = true;
+        app.install.ram[0].bw = crate::sched::BwEdit::parse("08:00,2M 23:00,off");
+        app.page = Page::Install;
+    }
+}
+
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
     ui.heading(tr("Aide"));
     ui.label(RichText::new(tf("NAS Manager {0} — suivi et gestion des sauvegardes et synchros du NAS", &[&(crate::extras::VERSION)])).weak());
@@ -64,6 +249,43 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         step(ui, 5, tr("Page Sauvegardes temps réel : dossiers surveillés en continu (caméras, documents…), chaque changement part au fil de l'eau."));
         step(ui, 6, tr("Note les mots de passe de chiffrement hors du NAS (Alertes > Mots de passe de chiffrement)."));
         step(ui, 7, tr("Page Destinations : ajoute une deuxième destination (disque USB, autre NAS, OneDrive…) et note le mot de passe du kit de secours."));
+    });
+
+    section(ui, tr("Exemples de configuration"), true, |ui| {
+        examples(app, ui);
+    });
+
+    section(ui, tr("Sauvegarde de ce PC vers le NAS"), false, |ui| {
+        ui.label(tr("Page « Sauvegarde du PC » : des dossiers du PC (Documents, Bureau, Images…) envoyés dans un dossier de l'OMV / Debian ou du Synology. rclone tourne sur le PC et passe par SFTP avec la clé de l'application : rien à installer sur le NAS."));
+        step(ui, 1, tr("« + Nouvelle sauvegarde du PC » : dossiers du PC, NAS, dossier de destination (bouton Parcourir), mode, horaire."));
+        step(ui, 2, tr("Copie : rien n'est jamais supprimé sur le NAS. Miroir : le NAS suit le PC ; ce qui est supprimé ou remplacé part dans .corbeille-pc/<date> sur le NAS, gardé le nombre de jours choisi."));
+        step(ui, 3, tr("Temps réel (facultatif) : chaque changement part 30 s après le dernier, au plus tard 10 min après, tant que l'application est ouverte."));
+        ui.label(RichText::new(tr("L'application doit être ouverte (même réduite dans la zone de notification) : active « Lancer au démarrage de Windows ». Un créneau manqué (PC éteint) est rattrapé au lancement suivant ; NAS injoignable (portable hors de la maison) : nouvel essai toutes les 30 minutes. Synology : activer le service SFTP dans DSM.")).small());
+    });
+
+    section(ui, tr("Débit selon l'heure, estimation, doublons"), false, |ui| {
+        ui.label(RichText::new(tr("Débit selon l'heure")).strong());
+        ui.label(tr("Page Installation, carte 7 : une limite commune à toutes les sauvegardes de la machine, différente le jour et la nuit (ex. 2 Mo/s de 8 h à 23 h, sans limite la nuit), réglée une fois pour toutes. Chaque sauvegarde peut garder « Réglage de la machine », avoir sa propre limite, ou être « Sans limite »."));
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Estimation avant la première sauvegarde")).strong());
+        ui.label(tr("Bouton « Estimer la première sauvegarde » (formulaire d'une nouvelle sauvegarde, ou carte d'une sauvegarde jamais lancée) : volume à envoyer et durée, selon le débit réel vers la destination (moyenne des sauvegardes déjà faites vers elle, sinon un envoi de test de 16 Mo), limite de débit comprise."));
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Doublons")).strong());
+        ui.label(tr("Page « Doublons » : les fichiers identiques au bit près dans les dossiers choisis (photos importées deux fois, copies de sauvegarde…). Dans chaque groupe, le plus ancien est gardé par défaut ; les autres partent dans la corbeille des doublons (.corbeille-doublons, sur le même disque), vidée après 30 jours. Chaque fichier est relu juste avant : il n'est déplacé que s'il est toujours identique à une copie qui reste en place."));
+    });
+
+    section(ui, tr("Piloter depuis Home Assistant"), false, |ui| {
+        ui.label(tr("Page Installation, carte 6 : « Autoriser les actions depuis Home Assistant ». L'appareil du NAS reçoit un bouton « Lancer » par sauvegarde programmée, « Arrêter les sauvegardes », « Vérifier maintenant », et un interrupteur par sauvegarde temps réel (pause / reprise)."));
+        ui.label(RichText::new(tr("Exemple d'automatisation : lancer la sauvegarde des photos quand tout le monde est parti, mettre les caméras en pause quand quelqu'un rentre (à adapter : noms des entités dans Paramètres > Appareils > NAS).")).small());
+        code(ui, "automation:\n  - alias: Sauvegarde des photos en partant\n    trigger: [{ platform: state, entity_id: zone.home, to: \"0\" }]\n    action: [{ service: button.press, target: { entity_id: button.nas_lancer_photos } }]\n  - alias: Pause des caméras au retour\n    trigger: [{ platform: state, entity_id: zone.home, from: \"0\" }]\n    action: [{ service: switch.turn_off, target: { entity_id: switch.nas_temps_reel_actif_cameras } }]");
+        ui.label(RichText::new(tr("Seules ces actions sont acceptées, pour des sauvegardes qui existent ; chacune est notée dans le journal du NAS. Toute personne ayant accès au serveur MQTT peut les déclencher : garde un compte MQTT dédié avec un mot de passe.")).small());
+    });
+
+    section(ui, tr("Sans PC Windows : NAS Manager en mode texte (SSH)"), false, |ui| {
+        ui.label(tr("Page Installation, carte 10 : installe le programme « nas-manager » sur l'OMV / Debian et le Synology. Ensuite, depuis n'importe quel terminal SSH (Linux, Mac, téléphone avec Termius ou JuiceSSH) :"));
+        code(ui, "ssh root@192.168.1.190\nnas-manager");
+        ui.label(tr("Tableau de bord, sauvegardes (lancer, arrêter), temps réel (pause, reprise), historique, alertes (acquitter), transferts et journaux, au clavier : Tab ou les chiffres pour changer de page, ↑ ↓ pour choisir, ? pour l'aide, q pour quitter. Chaque action demande une confirmation."));
+        ui.label(RichText::new(tr("Sur le Synology : sudo nas-manager. Pour suivre une autre machine du site : nas-manager --hote root@192.168.1.190 (clé SSH déjà autorisée). Sans couleurs : --sans-couleur ; en anglais : --lang en.")).small());
     });
 
     section(ui, tr("Destinations et règle 3-2-1"), false, |ui| {

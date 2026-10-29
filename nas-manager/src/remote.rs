@@ -1510,7 +1510,8 @@ pub fn install_file(path: &str, content: &str) -> String {
 // =====================================================================
 //  Tests contre un NAS de test (NAS_MANAGER_LIVE_TEST=1, voir README)
 // =====================================================================
-#[cfg(test)]
+// (pas dans l'interface texte, qui reprend ce fichier sans le reste de l'application)
+#[cfg(all(test, not(nas_manager_tui)))]
 mod live {
     use super::*;
     use crate::config;
@@ -2032,7 +2033,7 @@ mod live {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(nas_manager_tui)))]
 mod crlf {
     #[test]
     fn install_strips_crlf() {

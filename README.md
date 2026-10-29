@@ -71,6 +71,9 @@ Commandes principales (toutes sans question, utilisées par NAS Manager) :
 | `nas-debian version` | version du script et machine reconnue (`omv` ou `debian`), en JSON |
 | `nas-debian outils etat \| installer [suivi] \| rclone-maj` | état des outils, installation de ce qui manque, mise à jour de rclone |
 | `nas-debian reglages voir \| ram <profil> [Mo] [transferts] [verifs] [tampon]` | mémoire attribuée à rclone |
+| `nas-debian reglages debit <limite \| ->` | **débit selon l'heure** : limite commune des sauvegardes, format `--bwlimit` de rclone (ex. `08:00,2M 23:00,off`) ; une sauvegarde peut avoir la sienne ou `off` (sans limite) |
+| `nas-debian estimer <NOM> \| <SOURCE> <DESTINATION> [oui\|non]` | estimation avant la première sauvegarde (JSON) : volume, fichiers, débit vers la destination (historique ou envoi de test de 16 Mo), durée |
+| `nas-debian doublons analyser [--min Ko] <DOSSIER>… \| etat \| voir [N] \| arreter \| supprimer \| vider` | fichiers en double (taille puis SHA-1), en arrière-plan ; `supprimer` (chemins sur l'entrée standard) déplace dans `<dossier>/.corbeille-doublons/<date>/` après relecture, jamais la dernière copie ; vidée après 30 jours |
 | `nas-debian racines` / `dossiers` | disques de données / dossiers proposés comme sources |
 | `nas-debian migrer simulation \| appliquer` | reprise d'une installation faite avec les anciens scripts |
 | `nas-debian alertes configurer <ip HA> <webhook>` | alertes Home Assistant (ex-`install-alertes.sh`) |
@@ -78,6 +81,8 @@ Commandes principales (toutes sans question, utilisées par NAS Manager) :
 | `nas-debian disques verifier \| etat` | [santé des disques](#santé-des-disques-nas-debian-disques) (SMART, RAID) |
 | `nas-debian rapport voir \| envoyer \| planifier <hebdo\|mensuel\|non> [jour] [HH:MM] [canaux]` | [rapport périodique](#rapport-périodique-nas-debian-rapport) |
 | `nas-debian suivi configurer <serveur MQTT>` | tableau de bord Home Assistant (ex-`install-suivi-ha.sh`) |
+| `nas-debian suivi actions <oui\|non>` | **actions depuis Home Assistant** : boutons MQTT « Lancer <sauvegarde> », « Arrêter les sauvegardes », « Vérifier maintenant », interrupteurs pause / reprise du temps réel ; service `nas-ha-actions` (écoute de `nas-<machine>/commande`, liste fermée d'actions) |
+| `nas-debian tui installer \| etat \| supprimer` | NAS Manager en mode texte (`/usr/local/bin/nas-manager`), téléchargé depuis la Release GitHub, empreinte vérifiée |
 | `nas-debian temps-reel liste \| save \| pause \| reprendre \| …` | sauvegardes temps réel (voir plus bas) |
 | `nas-debian destinations liste \| etat [NOM] \| creer NOM TYPE \| jeton NOM TYPE \| supprimer NOM` | [destinations](#destinations-nas-debian-destinations) des sauvegardes (remotes rclone) |
 | `nas-debian versions liste \| ls \| restaurer \| entretien` | [sauvegardes versionnées](#sauvegardes-versionnées-restic) (restic) |
@@ -212,6 +217,16 @@ la fait vérifier au plus une fois par heure, alertes `disque-<série>` / `raid-
 Assistant si `reglages ha` est renseigné).
 Sur le Synology, le profil *automatique* correspond à *équilibré* (2 fichiers à la fois, 1/5 de la RAM
 entre 128 et 512 Mo).
+`tui installer | etat | supprimer` installe NAS Manager en mode texte (`sudo nas-manager`), comme sur
+l'OMV / Debian (code commun : `commun/tui.sh`).
+
+## NAS Manager en mode texte (`nas-manager`)
+
+Programme pour un terminal SSH (sources : `nas-manager/tui`, binaires Linux amd64 / arm64 / armv7
+publiés avec chaque version de l'application). Mêmes informations que l'application Windows :
+tableau de bord, sauvegardes (lancer, arrêter), temps réel (pause, reprise), historique, alertes,
+transferts, journaux. Sur la machine : `nas-manager` (root ou sudo) ; une autre machine :
+`nas-manager --hote root@192.168.1.190` ; état en JSON : `nas-manager --etat`.
 
 ---
 

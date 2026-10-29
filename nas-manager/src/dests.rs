@@ -35,6 +35,8 @@ pub struct Kind {
     pub oauth: bool,
     /// hors de la maison (pour la regle 3-2-1)
     pub offsite: bool,
+    /// version d'API de nas-debian necessaire
+    pub api: u32,
     pub fields: &'static [Field],
 }
 
@@ -43,17 +45,58 @@ const fn f(key: &'static str, label: &'static str, secret: bool, hint: &'static 
 }
 
 pub const KINDS: &[Kind] = &[
-    Kind { kind: "drive", label: "Google Drive", desc: "Compte Google (connexion dans le navigateur).", oauth: true, offsite: true, fields: &[] },
-    Kind { kind: "onedrive", label: "OneDrive", desc: "Compte Microsoft personnel ou professionnel (connexion dans le navigateur).", oauth: true, offsite: true, fields: &[] },
-    Kind { kind: "dropbox", label: "Dropbox", desc: "Compte Dropbox (connexion dans le navigateur).", oauth: true, offsite: true, fields: &[] },
-    Kind { kind: "pcloud", label: "pCloud", desc: "Compte pCloud (connexion dans le navigateur).", oauth: true, offsite: true, fields: &[] },
-    Kind { kind: "box", label: "Box", desc: "Compte Box (connexion dans le navigateur).", oauth: true, offsite: true, fields: &[] },
+    Kind { kind: "drive", label: "Google Drive", desc: "Compte Google (connexion dans le navigateur).", oauth: true, offsite: true, api: 7, fields: &[] },
+    Kind { kind: "onedrive", label: "OneDrive", desc: "Compte Microsoft personnel ou professionnel (connexion dans le navigateur).", oauth: true, offsite: true, api: 7, fields: &[] },
+    Kind { kind: "dropbox", label: "Dropbox", desc: "Compte Dropbox (connexion dans le navigateur).", oauth: true, offsite: true, api: 7, fields: &[] },
+    Kind { kind: "pcloud", label: "pCloud", desc: "Compte pCloud (connexion dans le navigateur).", oauth: true, offsite: true, api: 7, fields: &[] },
+    Kind { kind: "box", label: "Box", desc: "Compte Box (connexion dans le navigateur).", oauth: true, offsite: true, api: 7, fields: &[] },
+    Kind { kind: "yandex", label: "Yandex Disk", desc: "Compte Yandex (connexion dans le navigateur).", oauth: true, offsite: true, api: 11, fields: &[] },
+    Kind { kind: "hidrive", label: "HiDrive (Strato)", desc: "Compte HiDrive de Strato / IONOS (connexion dans le navigateur).", oauth: true, offsite: true, api: 11, fields: &[] },
+    Kind {
+        kind: "mega",
+        label: "MEGA",
+        desc: "Compte MEGA (adresse e-mail et mot de passe ; sans double authentification).",
+        oauth: false,
+        offsite: true,
+        api: 11,
+        fields: &[f("user", "Adresse e-mail", false, "", true), f("pass", "Mot de passe", true, "", true), f("dossier", "Dossier", false, "Sauvegardes (facultatif)", false)],
+    },
+    Kind {
+        kind: "koofr",
+        label: "Koofr",
+        desc: "Compte Koofr ou Digi Storage, avec un mot de passe d'application (Koofr > Préférences > Mots de passe).",
+        oauth: false,
+        offsite: true,
+        api: 11,
+        fields: &[
+            Field { key: "provider", label: "Service", secret: false, hint: "", choices: &[("koofr", "Koofr"), ("digistorage", "Digi Storage")], required: true },
+            f("user", "Adresse e-mail", false, "", true),
+            f("password", "Mot de passe d'application", true, "", true),
+            f("dossier", "Dossier", false, "Sauvegardes (facultatif)", false),
+        ],
+    },
+    Kind {
+        kind: "protondrive",
+        label: "Proton Drive",
+        desc: "Compte Proton (chiffré de bout en bout par Proton). Code de double authentification demandé une seule fois, à l'ajout.",
+        oauth: false,
+        offsite: true,
+        api: 11,
+        fields: &[
+            f("username", "Adresse e-mail", false, "", true),
+            f("password", "Mot de passe", true, "", true),
+            f("2fa", "Code à 6 chiffres (double authentification)", false, "si activée", false),
+            f("mailbox_password", "Mot de passe de la boîte (mode à deux mots de passe)", true, "rarement utilisé", false),
+            f("dossier", "Dossier", false, "Sauvegardes (facultatif)", false),
+        ],
+    },
     Kind {
         kind: "local",
         label: "Disque local ou USB",
         desc: "Un dossier sur un autre disque de la machine (disque USB branché sur le NAS, second disque).",
         oauth: false,
         offsite: false,
+        api: 7,
         fields: &[f("chemin", "Dossier", false, "/srv/dev-disk-by-uuid-…/Sauvegardes  ·  /media/usb/Sauvegardes", true)],
     },
     Kind {
@@ -62,6 +105,7 @@ pub const KINDS: &[Kind] = &[
         desc: "Un autre NAS (chez un proche, au bureau…) joignable en SSH / SFTP.",
         oauth: false,
         offsite: true,
+        api: 7,
         fields: &[
             f("host", "Adresse", false, "192.168.1.50  ·  nas.exemple.fr  ·  100.x.y.z (Tailscale)", true),
             f("port", "Port", false, "22", false),
@@ -76,6 +120,7 @@ pub const KINDS: &[Kind] = &[
         desc: "Un dossier partagé d'un autre NAS ou d'un PC Windows du réseau.",
         oauth: false,
         offsite: false,
+        api: 7,
         fields: &[
             f("host", "Adresse", false, "192.168.1.50", true),
             f("user", "Utilisateur", false, "", true),
@@ -89,6 +134,7 @@ pub const KINDS: &[Kind] = &[
         desc: "Un serveur WebDAV : Nextcloud, ownCloud, oCIS, ou un autre NAS.",
         oauth: false,
         offsite: true,
+        api: 7,
         fields: &[
             f("url", "Adresse WebDAV", false, "https://cloud.exemple.fr/remote.php/dav/files/moi", true),
             Field { key: "vendor", label: "Serveur", secret: false, hint: "", choices: &[("nextcloud", "Nextcloud"), ("owncloud", "ownCloud / oCIS"), ("other", "Autre")], required: true },
@@ -102,6 +148,7 @@ pub const KINDS: &[Kind] = &[
         desc: "Stockage en ligne à bas prix, facturé au volume.",
         oauth: false,
         offsite: true,
+        api: 7,
         fields: &[
             f("account", "keyID", false, "", true),
             f("key", "applicationKey", true, "", true),
@@ -114,6 +161,7 @@ pub const KINDS: &[Kind] = &[
         desc: "Stockage objet compatible S3.",
         oauth: false,
         offsite: true,
+        api: 7,
         fields: &[
             Field {
                 key: "provider",
@@ -620,7 +668,8 @@ pub fn form_window(app: &mut App, ctx: &egui::Context) {
                 if f.kind.is_empty() {
                     ui.label(tr("Où envoyer les sauvegardes ?"));
                     ui.add_space(4.0);
-                    for k in KINDS {
+                    let api = status.as_ref().map(|s| s.nb_api).unwrap_or(0);
+                    for k in KINDS.iter().filter(|k| k.api <= api) {
                         let r = ui.add(egui::Button::new(RichText::new(tr(k.label)).strong()).min_size(egui::vec2(ui.available_width(), 0.0)));
                         ui.label(RichText::new(tr(k.desc)).small().weak());
                         if r.clicked() {

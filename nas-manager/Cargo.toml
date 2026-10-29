@@ -1,6 +1,6 @@
 [package]
 name = "nas-manager"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 description = "Suivi et gestion des sauvegardes et synchronisations du NAS (OMV + Synology) sans SSH"
 publish = false
@@ -15,11 +15,16 @@ sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sys-locale = "0.3"
 rfd = "0.17"
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
 
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.26"
 tauri-winrt-notification = "0.8"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_System_Power"] }
+
+[lints.rust]
+# nas_manager_tui : modules partages compiles dans l'interface texte (tui/)
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(nas_manager_tui)'] }
 
 [profile.release]
 opt-level = 3

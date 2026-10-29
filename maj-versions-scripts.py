@@ -23,7 +23,7 @@ ICI = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = {"nas-debian": "nas-debian.sh", "nas-synology": "nas-synology.sh"}
 MANIFESTE = os.path.join(ICI, "versions-scripts.json")
 # code partage : fichier de commun/ -> scripts qui l'incluent
-COMMUN = {"commun/ocis.sh": ["nas-debian.sh", "nas-synology.sh"]}
+COMMUN = {"commun/ocis.sh": ["nas-debian.sh", "nas-synology.sh"], "commun/tui.sh": ["nas-debian.sh", "nas-synology.sh"]}
 
 
 def synchroniser(verifier):

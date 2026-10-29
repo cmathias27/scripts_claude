@@ -30,6 +30,7 @@ PermitRootLogin yes
 PasswordAuthentication yes
 PubkeyAuthentication yes
 UsePAM yes
+Subsystem sftp internal-sftp
 PidFile $W/sshd.pid
 EOF
 [ -f "$W/sshd.pid" ] && kill "$(cat "$W/sshd.pid")" 2>/dev/null || true

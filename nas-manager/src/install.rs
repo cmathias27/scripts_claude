@@ -153,6 +153,8 @@ pub struct InstallState {
     pub google: Option<GoogleFlow>,
     /// reglage memoire de rclone en cours d'edition (OMV, Synology)
     pub ram: [crate::ram::RamEdit; 2],
+    /// actions depuis Home Assistant (case en cours d'edition)
+    pub ha_actions: Option<bool>,
 }
 
 impl Default for InstallState {
@@ -168,6 +170,7 @@ impl Default for InstallState {
             mqtt_pass: String::new(),
             google: None,
             ram: Default::default(),
+            ha_actions: None,
         }
     }
 }
@@ -499,12 +502,16 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             app.install.mqtt_pass.clear();
             app.action_dialog(HostId::Omv, tr("Installation du suivi Home Assistant"), script, 900);
         }
+        ha_actions_ui(app, ui, st.mqtt == 1 && st.suivi_ha == 1);
     });
     ui.add_space(8.0);
 
     // ---- 7. memoire de rclone (OMV / Debian)
-    crate::pages::card_pub(ui, &tf("7. Mémoire de rclone ({0})", &[&srv]), |ui| {
+    crate::pages::card_pub(ui, &tf("7. Mémoire et débit de rclone ({0})", &[&srv]), |ui| {
         crate::ram::card(app, ui, HostId::Omv);
+        ui.separator();
+        ui.label(RichText::new(tr("Débit selon l'heure")).strong());
+        crate::ram::bw_card(app, ui);
     });
     ui.add_space(8.0);
 
@@ -553,6 +560,71 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     crate::pages::card_pub(ui, &tf("9. Reconstruire après une panne ({0})", &[&srv]), |ui| {
         crate::dests::rebuild_card(app, ui);
     });
+    ui.add_space(8.0);
+
+    // ---- 10. interface texte (SSH)
+    crate::pages::card_pub(ui, tr("10. NAS Manager en mode texte (terminal SSH)"), |ui| {
+        tui_card(app, ui);
+    });
+}
+
+/// Interface texte : installation sur les machines, mode d'emploi
+fn tui_card(app: &mut App, ui: &mut egui::Ui) {
+    ui.label(tr("La même chose sans PC Windows : tableau de bord, sauvegardes (lancer, arrêter), temps réel (pause, reprise), historique, alertes, transferts et journaux, au clavier dans un terminal SSH (Linux, Mac, téléphone)."));
+    ui.label(RichText::new(tr("Après installation, se connecter en SSH à la machine puis taper : nas-manager (sudo nas-manager sur le Synology). Depuis une machine, les autres se suivent avec : nas-manager --hote root@192.168.1.190")).small().weak());
+    let omv_api = app.omv.status.as_ref().map(|s| s.nb_api).unwrap_or(0);
+    let syno_api = app.syno.status.as_ref().and_then(|s| s.agent.as_ref()).map(|a| a.api).unwrap_or(0);
+    ui.horizontal_wrapped(|ui| {
+        let lab = tf("Installer / mettre à jour sur {0}", &[&(server_label(app))]);
+        if ui.add_enabled(omv_api >= 11, egui::Button::new(lab)).on_disabled_hover_text(tr("Mets d'abord à jour le script de la machine (carte 1).")).clicked() {
+            app.action_dialog(HostId::Omv, tr("Interface texte"), format!("{} tui installer 2>&1\n", remote::DEBIAN_BIN), 300);
+        }
+        if app.settings.syno.is_set()
+            && ui
+                .add_enabled(syno_api >= 7, egui::Button::new(tr("Installer / mettre à jour sur le Synology")))
+                .on_disabled_hover_text(tr("Mets d'abord à jour le script du Synology (carte 8)."))
+                .clicked()
+        {
+            app.action_dialog(HostId::Syno, tr("Interface texte"), format!("{} tui installer 2>&1\n", remote::SYNO_BIN), 300);
+        }
+    });
+    ui.label(RichText::new(tr("Programme unique pour amd64, arm64 et armv7, téléchargé depuis la page des versions sur GitHub ; empreinte vérifiée avant installation.")).small().weak());
+}
+
+/// Actions depuis Home Assistant : boutons MQTT (lancer une sauvegarde, tout arrêter,
+/// mettre en pause ou reprendre le temps réel), utilisables dans des automatisations
+fn ha_actions_ui(app: &mut App, ui: &mut egui::Ui, suivi: bool) {
+    let (api, perf) = app.omv.status.as_ref().map(|s| (s.nb_api, s.perf.clone().unwrap_or_default())).unwrap_or_default();
+    ui.separator();
+    ui.label(RichText::new(tr("Actions depuis Home Assistant")).strong());
+    if api < 11 {
+        ui.label(RichText::new(tr("Mets à jour le script de la machine (carte 1) pour piloter les sauvegardes depuis Home Assistant.")).weak());
+        return;
+    }
+    if !suivi {
+        ui.label(RichText::new(tr("Installe d'abord le suivi ci-dessus : les actions passent par la même connexion MQTT.")).weak());
+        return;
+    }
+    let mut on = app.install.ha_actions.unwrap_or(perf.ha_actions);
+    ui.checkbox(&mut on, tr("Autoriser les actions depuis Home Assistant"));
+    app.install.ha_actions = Some(on);
+    ui.label(
+        RichText::new(tr("Ajoute à l'appareil du NAS un bouton « Lancer » par sauvegarde programmée, un bouton « Arrêter les sauvegardes », un bouton « Vérifier maintenant » et un interrupteur par sauvegarde temps réel (pause / reprise), utilisables dans des automatisations. Seules ces actions sont acceptées ; toute personne ayant accès au serveur MQTT peut les déclencher."))
+            .small()
+            .weak(),
+    );
+    if perf.ha_actions {
+        if perf.ha_actions_actif {
+            ui.colored_label(crate::theme::OK, tr("\u{E182} Écoute des actions active."));
+        } else {
+            ui.colored_label(crate::theme::ERR, tr("L'écoute des actions ne tourne pas : clique sur Appliquer pour la relancer."));
+        }
+    }
+    if ui.add_enabled(on != perf.ha_actions || (on && !perf.ha_actions_actif), egui::Button::new(tr("Appliquer"))).clicked() {
+        app.install.ha_actions = None;
+        let script = format!("{} suivi actions {} 2>&1\n", remote::DEBIAN_BIN, if on { "oui" } else { "non" });
+        app.action_dialog(HostId::Omv, tr("Actions depuis Home Assistant"), script, 120);
+    }
 }
 
 /// Etat du jeton d'application oCIS

@@ -457,6 +457,8 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
     let dest_badge = omv.as_ref().and_then(crate::dests::nav_badge);
     let copy_run = syno.as_ref().map(|s| s.copie.en_cours).unwrap_or(false);
     let ocis_badge = crate::ocis::nav_badge(app);
+    let pc_badge = crate::pcbackup::nav_badge(app);
+    let dup_badge = crate::dups::nav_badge(app);
 
     let items: Vec<(Page, &str, Option<(String, Color32)>)> = vec![
         (Page::Dashboard, tr("\u{E2C2}  Tableau de bord"), None),
@@ -477,6 +479,8 @@ pub fn nav(app: &mut App, ui: &mut egui::Ui) {
         (Page::Alerts, tr("\u{E0CE}  Alertes"), if alerts > 0 { Some((alerts.to_string(), ERR)) } else { None }),
         (Page::Copy, tr("\u{E390}  Copie → OMV"), if copy_run { Some((tr("en cours").into(), INFO)) } else { None }),
         (Page::Migration, tr("\u{E1AA}  oCIS"), ocis_badge),
+        (Page::PcBackup, tr("\u{E560}  Sauvegarde du PC"), pc_badge),
+        (Page::Duplicates, tr("\u{E1CA}  Doublons"), dup_badge),
         (Page::Logs, tr("\u{EB7A}  Journaux"), None),
         (Page::Install, tr("\u{ECA0}  Installation"), None),
         (Page::Help, tr("\u{E63A}  Aide"), None),
@@ -1073,6 +1077,25 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
             if !parts.is_empty() {
                 ui.label(RichText::new(parts.join(" · ")).small());
             }
+            if j.bilan.is_none() && j.dernier_etat.is_none() && app.omv.status.as_ref().map(|s| s.nb_api >= 11).unwrap_or(false) {
+                ui.horizontal_wrapped(|ui| {
+                    match app.nas_est.get(&j.nom).cloned() {
+                        Some(Ok(e)) => {
+                            ui.label(RichText::new(tf("Première sauvegarde : {0}", &[&(fmt::estimate_human(&e))])).small());
+                        }
+                        Some(Err(e)) => {
+                            ui.label(RichText::new(e).small().color(ERR));
+                        }
+                        None => {}
+                    }
+                    if app.nas_est_busy.as_deref() == Some(j.nom.as_str()) {
+                        ui.spinner();
+                    } else if ui.add_enabled(app.nas_est_busy.is_none(), egui::Button::new(tr("Estimer la première sauvegarde")).small()).clicked() {
+                        let n = j.nom.clone();
+                        app.nas_estimate(&n, &[&n]);
+                    }
+                });
+            }
             if let Some(b) = &j.bilan {
                 ui.label(RichText::new(tf("Bilan : {0}", &[&(bilan_text(b, j.versions()))])).small().weak());
                 if b.destinations.len() > 1 {
@@ -1105,7 +1128,9 @@ fn job_card(app: &mut App, ui: &mut egui::Ui, j: &Job, now: i64, _any_running: b
                 }
             }
         }
-        if !j.debit.is_empty() {
+        if j.debit == "off" {
+            ui.label(RichText::new(tr("Débit : sans limite (même si la machine en a une)")).small().weak());
+        } else if !j.debit.is_empty() {
             ui.label(RichText::new(tf("Débit limité : {0}", &[&(fmt::bw_human(&j.debit))])).small().weak());
         }
         if !j.memoire.is_empty() {
@@ -1335,6 +1360,11 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
     let sources = app.backup_sources.clone();
     let avail = crate::dests::available(app);
     let api_ok = app.omv.status.as_ref().map(|s| s.nb_api >= 7).unwrap_or(false);
+    // nas-debian 2.6 : limite de debit commune a la machine (vide) ou « sans limite »
+    let api11 = app.omv.status.as_ref().map(|s| s.nb_api >= 11).unwrap_or(false);
+    let est = app.nas_est.get("\u{1}form").cloned();
+    let est_busy = app.nas_est_busy.is_some();
+    let mut do_est = false;
     egui::Window::new(RichText::new(if f.new { tr("Nouvelle sauvegarde") } else { tr("Modifier la sauvegarde") }).strong())
         .id(egui::Id::unique("jobform"))
         .collapsible(false)
@@ -1430,7 +1460,7 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 ui.end_row();
 
                 ui.label(tr("Limite de débit"));
-                f.bw.ui(ui);
+                f.bw.ui_with(ui, api11);
                 ui.end_row();
 
                 ui.label(tr("Mémoire de rclone"));
@@ -1440,6 +1470,33 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
             });
             if !f.new {
                 ui.label(RichText::new(tr("Changer le dossier, une destination ou le chiffrement : les fichiers déjà envoyés restent à l'ancien emplacement.")).small().weak());
+            }
+            if api11 && f.new {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    if est_busy {
+                        ui.spinner();
+                        ui.label(tr("Estimation (taille du dossier, débit vers la destination)…"));
+                    } else if ui
+                        .add_enabled(!f.source.trim().is_empty() && !f.dests.is_empty(), egui::Button::new(tr("Estimer la première sauvegarde")))
+                        .on_hover_text(tr("Volume à envoyer et durée, selon le débit réel vers la première destination"))
+                        .clicked()
+                    {
+                        do_est = true;
+                    }
+                    match &est {
+                        Some(Ok(e)) => {
+                            ui.label(RichText::new(fmt::estimate_human(e)).small());
+                        }
+                        Some(Err(e)) => {
+                            ui.label(RichText::new(e).small().color(ERR));
+                        }
+                        None => {}
+                    }
+                });
+                if f.mode == 2 {
+                    ui.label(RichText::new(tr("Versionnée : la déduplication et la compression réduisent souvent le volume réellement envoyé.")).small().weak());
+                }
             }
             if !f.error.is_empty() {
                 ui.colored_label(ERR, &f.error);
@@ -1454,6 +1511,13 @@ pub fn job_form_window(app: &mut App, ctx: &egui::Context) {
                 }
             });
         });
+    if do_est {
+        let (d, enc) = f.dests.first().cloned().unwrap_or_default();
+        let enc = if f.mode == 2 || enc { "oui" } else { "non" };
+        let src = f.source.trim().trim_end_matches('/').to_string();
+        app.nas_est.remove("\u{1}form");
+        app.nas_estimate("\u{1}form", &[&src, &d, enc]);
+    }
     if goto_dests {
         app.job_form = Some(f);
         app.page = Page::Destinations;
@@ -1546,7 +1610,7 @@ pub fn browser_window(app: &mut App, ctx: &egui::Context) {
         HostId::Omv => tr("Disques de l'OMV"),
         HostId::Syno => tr("Dossiers partagés du Synology"),
     };
-    let can_mkdir = matches!(purpose, BrowsePurpose::CopyDest | BrowsePurpose::RestoreTarget | BrowsePurpose::DestPath) && !app.settings.read_only;
+    let can_mkdir = matches!(purpose, BrowsePurpose::CopyDest | BrowsePurpose::RestoreTarget | BrowsePurpose::DestPath | BrowsePurpose::PcDest) && !app.settings.read_only;
     egui::Window::new(RichText::new(tf("Choisir un dossier — {0}", &[&(host.label())])).strong())
         .id(egui::Id::unique("browser"))
         .collapsible(false)
