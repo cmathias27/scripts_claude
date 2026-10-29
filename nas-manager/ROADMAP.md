@@ -102,7 +102,8 @@ Une version testable par étape (1.1, 1.2…).
 7. **Confort et finitions** *(1.7.0)* : débit selon l'heure, estimation, doublons · actions depuis Home
    Assistant · page d'aide avec exemples de configuration.
 8. **Transferts entre machines** *(1.8.0)* : transferts PC → OMV / Debian · transferts OMV / Debian →
-   autre serveur (machine suivie ou serveur SSH) · choix du nombre de transferts simultanés · copie Synology → OMV d'un seul fichier.
+   autre serveur (machine suivie ou serveur SSH) · choix du nombre de transferts simultanés (nouveaux et
+   existants : Synology → OMV, oCIS) · copie Synology → OMV d'un seul fichier.
 
 #### Détail
 - [x] **Distinguer deux types de sauvegardes** dans l'application :
@@ -230,6 +231,19 @@ Une version testable par étape (1.1, 1.2…).
       file d'attente et suivi comme la migration, notification à la fin.
       **Deux modes au choix** : transfert ponctuel, ou transfert **programmé** (sauvegarde régulière
       de l'oCIS vers le NAS, avec les mêmes options que les sauvegardes programmées).
+- [ ] **Nombre de transferts simultanés pour les transferts existants** *(1.8.0)* : copie Synology → OMV,
+      migrations vers oCIS (depuis le Synology, l'OMV / Debian ou le PC) et transferts oCIS →
+      Synology / Debian, avec les mêmes réglages que les nouveaux transferts ci-dessous.
+  - Aujourd'hui, le nombre de fichiers en parallèle suit le réglage RAM de la machine
+    (« Économe / Équilibré / Performant ») : il devient **réglable pour chaque transfert**
+    (1 à 16), le réglage de la machine restant la valeur par défaut.
+  - **Nombre de transferts de la file d'attente exécutés en même temps** (1 par défaut,
+    comme aujourd'hui), par machine.
+  - Modifiable pendant qu'un transfert tourne (pris en compte au fichier suivant), avertissement
+    si la valeur est trop haute pour la machine, repli automatique sur 1 à la fois après un
+    manque de mémoire (déjà fait pour la migration oCIS, à garder).
+  - Champ dans le formulaire de chaque transfert, dans la file d'attente et dans NAS Manager
+    en mode texte.
 - [ ] **Transferts PC → OMV / Debian** *(1.8.0)* : sur le modèle de la migration PC → oCIS, envoyer un
       dossier (ou un fichier) du PC vers un dossier de l'OMV / Debian, en une fois — à distinguer de la
       « Sauvegarde du PC », qui est récurrente.
