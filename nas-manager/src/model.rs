@@ -554,6 +554,8 @@ pub struct OcisConf {
     pub utilisateur: String,
     pub mode: String,
     pub certificat_accepte: bool,
+    /// empreinte de la connexion commune de l'application (OCIS_SIG, vide = reglee a la main)
+    pub signature: String,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]

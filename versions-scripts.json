@@ -1,9 +1,10 @@
 {
   "nas-debian": {
-    "version": "2.7.0",
+    "version": "2.7.1",
     "fichier": "nas-debian.sh",
-    "sha256": "72be84acdd0aac9c6c0e67db326e0c9c616868ad98cd2963c1f264f57dfecd10",
+    "sha256": "b992c18438a8afc80b6b0c30ce0e6816cef0e2aed6e24c2b603699b22538ae68",
     "nouveautes": [
+      "Connexion oCIS commune : NAS Manager garde une seule connexion (adresse, compte, jeton) et la recopie sur chaque machine",
       "Fichiers en parallèle au choix pour chaque sauvegarde programmée ou temps réel (par défaut : réglage de la machine), y compris pour les sauvegardes versionnées",
       "Correction : après la reprise d'une sauvegarde temps réel en pause, l'état du dossier est toujours répercuté (même si un rattrapage tournait déjà)",
       "Débit selon l'heure : limite commune à toutes les sauvegardes de la machine, différente le jour et la nuit (reglages debit)",
@@ -15,10 +16,11 @@
     ]
   },
   "nas-synology": {
-    "version": "2.5.0",
+    "version": "2.5.1",
     "fichier": "nas-synology.sh",
-    "sha256": "5bb9081bf73bfaed004ba4ef47f98cd91aed5c505da3644e0b3820fc6773538a",
+    "sha256": "874d96c65d29691efb9136d9f204d0a3798d55e672ddde58598a0ff192386ead",
     "nouveautes": [
+      "Connexion oCIS commune : NAS Manager garde une seule connexion (adresse, compte, jeton) et la recopie sur chaque machine",
       "Installation de NAS Manager en mode texte (tui installer)"
     ]
   }

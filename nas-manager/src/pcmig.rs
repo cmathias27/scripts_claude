@@ -48,13 +48,13 @@ pub struct PcConf {
 }
 
 impl PcConf {
-    fn secret(&self) -> String {
+    pub(crate) fn secret(&self) -> String {
         match self.token.strip_prefix("clair:") {
             Some(t) => t.to_string(),
             None => crate::secret::unprotect(&self.token).unwrap_or_default(),
         }
     }
-    fn store_secret(t: &str) -> String {
+    pub(crate) fn store_secret(t: &str) -> String {
         crate::secret::protect(t).unwrap_or_else(|| format!("clair:{t}"))
     }
     /// adresse utilisee pour les transferts
@@ -91,6 +91,9 @@ pub struct PcResult {
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(default)]
 pub struct Saved {
+    /// connexion oCIS commune (crate::ocisconf), recopiee ici pour les fils de travail ;
+    /// lue dans les anciens fichiers pour la reprendre, plus jamais ecrite dans migration-pc.json
+    #[serde(skip_serializing)]
     pub conf: Option<PcConf>,
     pub queue: Vec<PcItem>,
     /// une migration tournait quand l'application a ete fermee : reprise au lancement
@@ -145,8 +148,6 @@ pub struct Shared {
     pub spaces: Vec<(Space, String)>,
     pub spaces_busy: bool,
     pub spaces_err: String,
-    pub conf_busy: bool,
-    pub conf_msg: Option<(bool, String)>,
     pub rclone: Option<(PathBuf, String)>,
     pub rclone_checked: bool,
     pub rclone_busy: bool,
@@ -206,21 +207,35 @@ pub struct PcMig {
     pub space: Option<String>,
     pub sub: String,
     pub del_mode: u8,
-    pub conf_open: bool,
-    pub url: String,
-    pub user: String,
-    pub token: String,
-    pub local: String,
-    pub insecure: bool,
     started: bool,
 }
 
 impl PcMig {
     pub fn load() -> Self {
-        let saved = std::fs::read_to_string(state_path()).ok().and_then(|t| serde_json::from_str::<Saved>(&t).ok()).unwrap_or_default();
+        let mut saved = std::fs::read_to_string(state_path()).ok().and_then(|t| serde_json::from_str::<Saved>(&t).ok()).unwrap_or_default();
+        // ancienne connexion propre a ce PC : devient la connexion commune si l'application n'en a pas
+        let legacy = saved.conf.take();
+        let had_legacy = legacy.is_some();
+        if let Some(c) = legacy {
+            if crate::ocisconf::get().is_none() {
+                crate::ocisconf::set(Some(c));
+            }
+        }
+        saved.conf = crate::ocisconf::get();
         let sh = Shared { saved, persist: true, ..Default::default() };
+        if had_legacy {
+            sh.save(); // retire le jeton de migration-pc.json
+        }
         PcMig { sh: Arc::new(Mutex::new(sh)), ..Default::default() }
     }
+}
+
+/// Nouvelle connexion commune : utilisee aussitot par la migration depuis ce PC
+pub fn set_conf(app: &App, c: Option<PcConf>) {
+    let mut g = lock(&app.pcmig.sh);
+    g.saved.conf = c;
+    g.spaces.clear();
+    g.spaces_err.clear();
 }
 
 pub fn running(app: &App) -> bool {
@@ -408,9 +423,9 @@ fn rclone_cmd(rclone: &Path, c: &PcConf, obs: &str, dav: &str, vendor: &str) -> 
     cmd
 }
 
-/// Teste la connexion puis un vrai envoi dans l'espace personnel (WebDAV classique d'abord) :
-/// renvoie le mode qui marche
-pub fn test_conf(rclone: &Path, c: &PcConf) -> Result<String, String> {
+/// Teste la connexion a oCIS (adresse publique, puis adresse locale si elle est donnee),
+/// sans rclone : renvoie les espaces visibles
+pub fn check_api(c: &PcConf) -> Result<Vec<(Space, String)>, String> {
     let spaces = fetch_spaces(c)?;
     if !c.local.trim().is_empty() {
         let (code, _) = api_get(c.local.trim().trim_end_matches('/'), &c.user, &c.secret(), c.insecure, "/graph/v1.0/me/drives").map_err(|e| tf("Adresse locale : {0}", &[&e]))?;
@@ -418,6 +433,13 @@ pub fn test_conf(rclone: &Path, c: &PcConf) -> Result<String, String> {
             return Err(tf("L'adresse locale ne répond pas correctement (HTTP {0}).", &[&code]));
         }
     }
+    Ok(spaces)
+}
+
+/// Teste la connexion puis un vrai envoi dans l'espace personnel (WebDAV classique d'abord) :
+/// renvoie le mode qui marche
+pub fn test_conf(rclone: &Path, c: &PcConf) -> Result<String, String> {
+    let spaces = check_api(c)?;
     let dav = spaces
         .iter()
         .find(|(s, _)| s.kind == "personal")
@@ -783,6 +805,21 @@ pub fn worker(sh: Sh) {
         fail_all(tr("rclone ou la connexion oCIS manque sur ce PC.").into());
         return;
     };
+    let mut conf = conf;
+    if conf.vendor.is_empty() {
+        // connexion enregistree sans rclone sur ce PC : mode d'envoi teste maintenant
+        match test_conf(&rc, &conf) {
+            Ok(v) => {
+                conf.vendor = v;
+                let mut g = lock(&sh);
+                g.saved.conf = Some(conf.clone());
+                if g.persist {
+                    crate::ocisconf::set_vendor(&conf.vendor);
+                }
+            }
+            Err(e) => return fail_all(e),
+        }
+    }
     let obs = match obscure(&rc, &conf.secret()) {
         Ok(o) => o,
         Err(e) => return fail_all(e),
@@ -972,130 +1009,12 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     }
     let ready = rclone.is_some();
 
-    let (saved, live_running, spaces, spaces_busy, spaces_err, conf_busy, conf_msg, sizing) = {
+    let (saved, live_running, spaces, spaces_busy, spaces_err, sizing) = {
         let g = lock(&sh);
-        (g.saved.clone(), g.live.running, g.spaces.clone(), g.spaces_busy, g.spaces_err.clone(), g.conf_busy, g.conf_msg.clone(), g.sizing.clone())
+        (g.saved.clone(), g.live.running, g.spaces.clone(), g.spaces_busy, g.spaces_err.clone(), g.sizing.clone())
     };
 
-    // ---- connexion
-    card(ui, tr("Connexion oCIS (ce PC)"), |ui| {
-        match &saved.conf {
-            Some(c) => {
-                ui.label(tf("{0}  ·  compte {1}", &[&c.url, &c.user]));
-                ui.label(
-                    RichText::new(tf(
-                        "Transferts : {0}  ·  {1}",
-                        &[
-                            &(if c.local.is_empty() { tr("via Internet").to_string() } else { tf("réseau local ({0})", &[&c.local]) }),
-                            &(rclone.as_ref().map(|r| r.1.clone()).unwrap_or_default()),
-                        ],
-                    ))
-                    .small()
-                    .weak(),
-                );
-            }
-            None => {
-                ui.colored_label(WARN, tr("Pas encore configurée."));
-            }
-        }
-        let f = &mut app.pcmig;
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!conf_busy && !live_running, egui::Button::new(if f.conf_open { tr("Fermer") } else { tr("Modifier la connexion…") })).clicked() {
-                f.conf_open = !f.conf_open;
-                if f.conf_open {
-                    if let Some(c) = &saved.conf {
-                        f.url = c.url.clone();
-                        f.user = c.user.clone();
-                        f.local = c.local.clone();
-                        f.insecure = c.insecure;
-                    }
-                    f.token.clear();
-                }
-            }
-            if conf_busy {
-                ui.spinner();
-                ui.label(tr("Test de la connexion et d'un envoi…"));
-            }
-        });
-        if let Some((ok, m)) = &conf_msg {
-            ui.colored_label(if *ok { OK } else { ERR }, m);
-        }
-        if f.conf_open {
-            egui::Grid::new("pcocis").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                ui.label(tr("Adresse d'oCIS"));
-                ui.add(egui::TextEdit::singleline(&mut f.url).hint_text("https://cloud.maison.fr").desired_width(320.0));
-                ui.end_row();
-                ui.label(tr("Utilisateur"));
-                ui.add(egui::TextEdit::singleline(&mut f.user).desired_width(200.0));
-                ui.end_row();
-                ui.label(tr("Jeton d'application"));
-                ui.add(egui::TextEdit::singleline(&mut f.token).password(true).desired_width(320.0).hint_text(if saved.conf.is_some() {
-                    tr("vide = garder le jeton actuel")
-                } else {
-                    ""
-                }));
-                ui.end_row();
-                ui.label(tr("Adresse locale"));
-                ui.add(egui::TextEdit::singleline(&mut f.local).hint_text(tr("vide = passer par Internet")).desired_width(320.0));
-                ui.end_row();
-                ui.label("");
-                ui.checkbox(&mut f.insecure, tr("Accepter un certificat non reconnu (auto-signé)"));
-                ui.end_row();
-            });
-            if !crate::secret::can_store() {
-                ui.label(RichText::new(tr("Hors Windows, le jeton est gardé en clair dans le dossier de l'application (lisible par ton compte seulement).")).small().weak());
-            }
-            let has_token = !f.token.trim().is_empty() || saved.conf.is_some();
-            let can = !f.url.trim().is_empty() && !f.user.trim().is_empty() && has_token;
-            if ui.add_enabled(can, egui::Button::new(tr("Tester et enregistrer"))).clicked() {
-                let norm = |u: &str| {
-                    let u = u.trim().trim_end_matches('/');
-                    if u.is_empty() || u.starts_with("http://") || u.starts_with("https://") {
-                        u.to_string()
-                    } else {
-                        format!("https://{u}")
-                    }
-                };
-                let token = if f.token.trim().is_empty() { saved.conf.as_ref().map(|c| c.token.clone()).unwrap_or_default() } else { PcConf::store_secret(f.token.trim()) };
-                let mut c = PcConf { url: norm(&f.url), user: f.user.trim().to_string(), token, local: norm(&f.local), insecure: f.insecure, vendor: String::new() };
-                f.conf_open = false;
-                f.token.clear();
-                let rc = rclone.clone().map(|r| r.0).unwrap_or_default();
-                {
-                    let mut g = lock(&sh);
-                    g.conf_busy = true;
-                    g.conf_msg = None;
-                }
-                let s = sh.clone();
-                std::thread::spawn(move || {
-                    let r = test_conf(&rc, &c);
-                    let mut g = lock(&s);
-                    g.conf_busy = false;
-                    match r {
-                        Ok(v) => {
-                            c.vendor = v.clone();
-                            g.saved.conf = Some(c.clone());
-                            g.save();
-                            g.conf_msg = Some((
-                                true,
-                                if v == "owncloud" {
-                                    tr("Connexion et envoi OK (WebDAV classique).").into()
-                                } else {
-                                    tr("Envoi OK en mode oCIS natif seulement : rclone y consomme beaucoup de mémoire.").into()
-                                },
-                            ));
-                            drop(g);
-                            load_spaces(&s);
-                            return;
-                        }
-                        Err(e) => g.conf_msg = Some((false, e)),
-                    }
-                    g.repaint();
-                });
-            }
-        }
-    });
-    ui.add_space(10.0);
+    // ---- connexion : commune a toute l'application (carte « Connexion oCIS » en haut de la page)
     if saved.conf.is_some() && spaces.is_empty() && !spaces_busy && spaces_err.is_empty() {
         load_spaces(&sh);
     }

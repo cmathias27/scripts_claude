@@ -154,6 +154,8 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         ui.selectable_value(&mut app.ocis_ui.tab, 1, RichText::new(tr("\u{E20C} Transferts oCIS → NAS")).size(15.0));
     });
     ui.add_space(6.0);
+    connection_card(app, ui);
+    ui.add_space(10.0);
     if app.ocis_ui.tab == 0 {
         migration(app, ui);
     } else {
@@ -223,7 +225,6 @@ fn migration_host(app: &mut App, ui: &mut egui::Ui, h: HostId) {
     };
     if app.mig.host != Some(h) {
         app.mig = MigForm { host: Some(h), ..Default::default() };
-        app.ocis.open = false;
     }
     if ready && m.config.is_some() && !app.mig.auto_loaded {
         app.mig.auto_loaded = true;
@@ -233,8 +234,10 @@ fn migration_host(app: &mut App, ui: &mut egui::Ui, h: HostId) {
         }
     }
 
-    connection_card(app, ui, h, &m, ready);
-    ui.add_space(10.0);
+    if m.config.is_none() {
+        banner(ui, WARN, &tf("La connexion oCIS n'est pas encore recopiée sur cette machine ({0}) : voir la carte « Connexion oCIS » ci-dessus.", &[&label(h)]));
+        ui.add_space(6.0);
+    }
 
     // ---- Migration en cours
     if m.en_cours {
@@ -495,68 +498,118 @@ fn space_picker(app: &mut App, ui: &mut egui::Ui, h: HostId) {
     }
 }
 
-/// Connexion à oCIS de la machine (une par machine)
-fn connection_card(app: &mut App, ui: &mut egui::Ui, h: HostId, m: &Migration, ready: bool) {
-    card(ui, &tf("Connexion oCIS ({0})", &[&label(h)]), |ui| {
-        match &m.config {
+/// Connexion à oCIS commune à toute l'application (ce PC, Synology, OMV / Debian)
+fn connection_card(app: &mut App, ui: &mut egui::Ui) {
+    let conf = crate::ocisconf::get();
+    card(ui, tr("Connexion oCIS (commune à toutes les machines)"), |ui| {
+        match &conf {
             Some(c) => {
-                ui.label(tf("{0}  ·  compte {1}", &[&c.url, &c.utilisateur]));
+                ui.label(tf("{0}  ·  compte {1}", &[&c.url, &c.user]));
                 ui.label(
                     RichText::new(tf(
-                        "Transferts : {0}  ·  mode {1}",
-                        &[
-                            &(if c.locale.is_empty() { tr("via Internet").to_string() } else { tf("réseau local ({0})", &[&c.locale]) }),
-                            &(if c.mode == "owncloud" { tr("WebDAV classique").to_string() } else { c.mode.clone() }),
-                        ],
+                        "Transferts : {0}",
+                        &[&(if c.local.is_empty() { tr("via Internet").to_string() } else { tf("réseau local ({0})", &[&c.local]) })],
                     ))
                     .small()
                     .weak(),
                 );
+                ui.horizontal_wrapped(|ui| {
+                    let mut retry = None;
+                    for h in [HostId::Syno, HostId::Omv] {
+                        if h == HostId::Syno && !app.settings.syno.is_set() {
+                            continue;
+                        }
+                        use crate::ocisconf::HostState as S;
+                        let (col, txt) = match crate::ocisconf::host_state(app, h) {
+                            S::UpToDate => (OK, tr("à jour").to_string()),
+                            S::Busy => (INFO, tr("recopie en cours…").to_string()),
+                            S::Pending => (WARN, tr("à recopier").to_string()),
+                            S::Offline => (IDLE, tr("injoignable : recopiée à la prochaine connexion").to_string()),
+                            S::OldScript => (WARN, tr("script à mettre à jour").to_string()),
+                            S::Error(e) => {
+                                retry = Some(h);
+                                (ERR, tf("échec : {0}", &[&e]))
+                            }
+                        };
+                        dot(ui, col);
+                        ui.label(RichText::new(format!("{} : {txt}", label(h))).small());
+                        ui.add_space(8.0);
+                    }
+                    dot(ui, OK);
+                    ui.label(RichText::new(tr("Ce PC : utilisée directement")).small());
+                    if let Some(h) = retry {
+                        if ui.small_button(tr("Réessayer")).clicked() {
+                            crate::ocisconf::retry(app, h);
+                        }
+                    }
+                });
             }
             None => {
                 ui.colored_label(WARN, tr("Pas encore configurée."));
+                ui.label(RichText::new(tr("Réglée une seule fois ici, elle sert à ce PC et est recopiée automatiquement sur le Synology et l'OMV / Debian.")).small().weak());
             }
         }
-        if ui.add_enabled(ready, egui::Button::new(if app.ocis.open { tr("Fermer") } else { tr("Modifier la connexion…") })).clicked() {
-            app.ocis.open = !app.ocis.open;
-            if app.ocis.open {
-                if let Some(c) = &m.config {
-                    app.ocis.url = c.url.clone();
-                    app.ocis.user = c.utilisateur.clone();
-                    app.ocis.local = c.locale.clone();
-                    app.ocis.insecure = c.certificat_accepte;
-                } else if app.ocis.local.is_empty() {
-                    app.ocis.local = "https://192.168.1.53:9200".into();
+        let testing = app.ocis_sync.testing;
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!testing, egui::Button::new(if app.ocis.open { tr("Fermer") } else { tr("Modifier la connexion…") })).clicked() {
+                app.ocis.open = !app.ocis.open;
+                if app.ocis.open {
+                    match &conf {
+                        Some(c) => {
+                            app.ocis.url = c.url.clone();
+                            app.ocis.user = c.user.clone();
+                            app.ocis.local = c.local.clone();
+                            app.ocis.insecure = c.insecure;
+                        }
+                        None if app.ocis.local.is_empty() => app.ocis.local = "https://192.168.1.53:9200".into(),
+                        None => {}
+                    }
+                    app.ocis.token.clear();
                 }
-                app.ocis.token.clear();
             }
+            if testing {
+                ui.spinner();
+                ui.label(tr("Test de la connexion…"));
+            }
+        });
+        if let Some((ok, m)) = &app.ocis_sync.msg {
+            ui.colored_label(if *ok { OK } else { ERR }, m);
         }
         if app.ocis.open {
             egui::Grid::new("ocisgrid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                 ui.label(tr("Adresse d'oCIS"));
-                ui.add(egui::TextEdit::singleline(&mut app.ocis.url).hint_text("https://cloud.maison.fr").desired_width(320.0));
+                ui.add(egui::TextEdit::singleline(&mut app.ocis.url).hint_text("https://cloud.maison.fr").desired_width(320.0))
+                    .on_hover_text(tr("Adresse publique d'oCIS, celle qui marche depuis l'extérieur de la maison."));
                 ui.end_row();
                 ui.label(tr("Utilisateur"));
                 ui.add(egui::TextEdit::singleline(&mut app.ocis.user).desired_width(200.0));
                 ui.end_row();
                 ui.label(tr("Jeton d'application"));
-                ui.add(egui::TextEdit::singleline(&mut app.ocis.token).password(true).desired_width(320.0));
+                ui.add(egui::TextEdit::singleline(&mut app.ocis.token).password(true).desired_width(320.0).hint_text(if conf.is_some() {
+                    tr("vide = garder le jeton actuel")
+                } else {
+                    ""
+                }));
                 ui.end_row();
                 ui.label(tr("Adresse locale"));
-                ui.add(egui::TextEdit::singleline(&mut app.ocis.local).hint_text(tr("vide = passer par Internet")).desired_width(320.0));
+                ui.add(egui::TextEdit::singleline(&mut app.ocis.local).hint_text(tr("vide = passer par Internet")).desired_width(320.0))
+                    .on_hover_text(tr("Adresse d'oCIS sur le réseau de la maison (ex. https://192.168.1.53:9200) : les fichiers ne passent pas par Internet."));
                 ui.end_row();
                 ui.label("");
                 ui.checkbox(&mut app.ocis.insecure, tr("Accepter un certificat non reconnu (auto-signé)"));
                 ui.end_row();
             });
-            ui.label(RichText::new(tr("Jeton : docker exec <conteneur-ocis> ocis auth-app create --user-name=<compte> --expiration=2160h")).small().monospace().weak());
-            let can = !app.ocis.url.trim().is_empty() && !app.ocis.user.trim().is_empty() && !app.ocis.token.trim().is_empty();
-            if ui.add_enabled(can, egui::Button::new(tr("Tester et enregistrer"))).clicked() {
+            ui.label(RichText::new(tr("Jeton, à créer sur la machine d'oCIS : docker exec <conteneur-ocis> ocis auth-app create --user-name=<compte> --expiration=2160h")).small().monospace().weak());
+            if !crate::secret::can_store() {
+                ui.label(RichText::new(tr("Hors Windows, le jeton est gardé en clair dans le dossier de l'application (lisible par ton compte seulement).")).small().weak());
+            }
+            let has_token = !app.ocis.token.trim().is_empty() || conf.is_some();
+            let can = !testing && !app.ocis.url.trim().is_empty() && !app.ocis.user.trim().is_empty() && has_token;
+            if ui.add_enabled(can, egui::Button::new(tr("Tester et enregistrer"))).clicked() && !app.blocked() {
                 let f = app.ocis.clone();
                 app.ocis.open = false;
                 app.ocis.token.clear();
-                app.mig.auto_loaded = false;
-                app.action_dialog(h, tr("Connexion à oCIS"), remote::migre_configure(h, &f.url, &f.user, &f.token, &f.local, f.insecure), 300);
+                crate::ocisconf::test_and_save(app, &f);
             }
         }
     });
@@ -658,12 +711,7 @@ fn transfers(app: &mut App, ui: &mut egui::Ui) {
     };
     let now = fmt::now();
     if !t.config {
-        banner(ui, WARN, &tf("Connexion à oCIS à configurer d'abord sur cette machine ({0}).", &[&label(h)]));
-        if ui.button(tr("Configurer la connexion oCIS…")).clicked() {
-            app.ocis_ui.tab = 0;
-            app.ocis_ui.src = Some(if h == HostId::Syno { Src::Syno } else { Src::Omv });
-            app.ocis.open = true;
-        }
+        banner(ui, WARN, &tf("La connexion oCIS n'est pas encore recopiée sur cette machine ({0}) : voir la carte « Connexion oCIS » ci-dessus.", &[&label(h)]));
         ui.add_space(6.0);
     }
     ui.horizontal(|ui| {

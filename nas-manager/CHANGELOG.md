@@ -1,5 +1,17 @@
 # Journal des modifications
 
+## 1.7.2
+
+Scripts nas-debian 2.7.1 et nas-synology 2.5.1.
+
+### Une seule connexion oCIS pour toute l'application
+- La connexion à oCIS (adresse, compte, jeton d'application, adresse locale, certificat auto-signé) se règle **une seule fois**, dans la nouvelle carte **« Connexion oCIS (commune à toutes les machines) »** en haut de la page oCIS. Il n'y a plus de connexion à part pour le Synology, l'OMV / Debian et ce PC.
+- **Ce PC** l'utilise directement ; le **Synology** et l'**OMV / Debian** en reçoivent une copie **automatiquement** (leur script en a besoin pour migrer et transférer seul). La carte indique pour chaque machine si sa copie est à jour, en cours de recopie, en échec (bouton « Réessayer ») ou en attente (machine injoignable : recopie à la prochaine connexion).
+- Chaque copie porte une empreinte de la connexion (`OCIS_SIG`) : si elle est modifiée sur une machine (menu du script), l'application y remet la connexion commune. Le menu du script prévient avant une telle modification.
+- **Reprise de l'existant** : la connexion déjà réglée pour ce PC devient la connexion commune ; sinon, celle déjà enregistrée sur le Synology ou l'OMV est reprise. Rien à ressaisir.
+- Le jeton de ce PC n'est plus gardé dans `migration-pc.json` mais dans `ocis-connexion.json` (toujours chiffré sous Windows).
+- Champs expliqués au survol (adresse publique / adresse sur le réseau de la maison).
+
 ## 1.7.1
 
 Script nas-debian 2.7.0.

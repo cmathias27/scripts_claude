@@ -323,8 +323,8 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
 
     section(ui, tr("oCIS : migration et transferts"), false, |ui| {
         ui.label(RichText::new(tr("Migration vers oCIS")).strong());
-        ui.label(tr("Page oCIS, onglet « Migration vers oCIS » : un dossier envoyé dans un espace oCIS (personnel ou projet), depuis le Synology, l'OMV / Debian ou ce PC. Chaque machine a sa propre connexion à oCIS (adresse, compte et jeton d'application)."));
-        step(ui, 1, tr("Crée un jeton d'application dans oCIS et configure la connexion de la machine d'où part la migration."));
+        ui.label(tr("Page oCIS, onglet « Migration vers oCIS » : un dossier envoyé dans un espace oCIS (personnel ou projet), depuis le Synology, l'OMV / Debian ou ce PC. La connexion à oCIS (adresse, compte et jeton d'application) se règle une seule fois, en haut de la page : elle sert à ce PC et est recopiée automatiquement sur le Synology et l'OMV / Debian."));
+        step(ui, 1, tr("Crée un jeton d'application dans oCIS et règle la connexion oCIS (carte en haut de la page oCIS)."));
         step(ui, 2, tr("Choisis le dossier, l'espace oCIS (et un sous-dossier), puis ajoute-le à la file d'attente ; lance la file."));
         step(ui, 3, tr("En option, chaque fichier est contrôlé dans oCIS puis l'original est supprimé ; un fichier en défaut est renvoyé, et gardé s'il reste en défaut."));
         ui.label(RichText::new(tr("Depuis ce PC : rclone tourne sur le PC, qui doit rester allumé (il est tenu éveillé pendant la migration). Si l'application est fermée en cours de route, la migration reprend à son prochain lancement.")).small());

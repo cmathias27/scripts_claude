@@ -110,7 +110,7 @@ const RULES: &[(&[&str], Explanation)] = &[
         &[" 401", "(401)", "unauthorized", "jeton refuse"],
         Explanation {
             cause: "Identifiants refusés (jeton d'application oCIS expiré ou révoqué).",
-            remedy: "Créer un nouveau jeton (docker exec <conteneur-ocis> ocis auth-app create --user-name=<compte> --expiration=2160h) puis le saisir dans « Modifier la connexion ».",
+            remedy: "Créer un nouveau jeton (docker exec <conteneur-ocis> ocis auth-app create --user-name=<compte> --expiration=2160h) puis le saisir dans « Modifier la connexion… » (page oCIS) : il est recopié sur toutes les machines.",
             command: None,
             transient: false,
         },

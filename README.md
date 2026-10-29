@@ -292,6 +292,8 @@ Migre le contenu de **Synology Drive** (les « Mon Drive » de chaque utilisateu
 
 La configuration est enregistrée dans `/root/.migre-ocis/config` (droits `600`).
 
+**Avec NAS Manager, la connexion est commune** : elle se règle une seule fois dans l'application (page oCIS, carte « Connexion oCIS ») et y est recopiée automatiquement sur chaque machine (`nas-synology migration configurer` / `nas-debian migration configurer`, avec une empreinte `OCIS_SIG`). Une modification faite dans le menu 7 est remplacée par celle de l'application à sa prochaine connexion ; le menu prévient avant.
+
 ### Ajouter une migration (menu 1)
 
 - **Source** : liste des `Mon Drive` trouvés dans `/volume*/homes/*/Drive` avec leur taille, ou navigation dans les dossiers du NAS, ou chemin saisi.
