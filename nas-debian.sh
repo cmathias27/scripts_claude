@@ -58,7 +58,7 @@
 # =====================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="2.6.0"
+SCRIPT_VERSION="2.6.1"
 API_VERSION=11
 
 # --------------------------- Parametres ------------------------------
@@ -3002,12 +3002,18 @@ rt_flush() {
 }
 
 # --------------------------- rattrapage (cron) -----------------------
-rt_catchup() {  # rt_catchup <nom> [initial]
+rt_catchup() {  # rt_catchup <nom> [initial] [attendre]
   rt_get "$1" || die "sauvegarde temps reel '$1' introuvable."
   need_rclone
   if rt_paused; then echo "Sauvegarde « $R_NAME » en pause : pas de rattrapage."; return 0; fi
   exec 6>"/run/nas-temps-reel-$R_NAME.lock"
-  flock -n 6 || { echo "Un rattrapage de « $R_NAME » est deja en cours."; return 0; }
+  if [ "${3:-}" = attendre ]; then
+    # reprise apres une pause : un rattrapage lance avant la reprise (sans l'autorisation)
+    # ne repercute pas les changements ; on attend sa fin puis on fait le notre
+    flock -w 900 6 || { echo "Rattrapage de « $R_NAME » toujours occupe : reessaie plus tard."; return 1; }
+  else
+    flock -n 6 || { echo "Un rattrapage de « $R_NAME » est deja en cours."; return 0; }
+  fi
   perf_load "$R_PERF"; rt_filters
   local log="$RT_LOG_DIR/$R_NAME.log" tmp src d tr rc=0 r jour n nd now f o=0 nc=0
   mkdir -p "$RT_LOG_DIR"; tmp=$(mktemp); jour=$(date +%Y-%m-%d_%H%M%S)
@@ -3222,7 +3228,7 @@ rt_resume() {
   rm -f "$STATE_DIR/rt-$R_NAME.pause"
   rt_log "reprise demandee : l'etat actuel du dossier va etre repercute"
   notify ok "rt-pause-$R_NAME" "Sauvegarde temps réel « $R_NAME »" "La sauvegarde a repris."
-  nohup setsid "$SELF" temps-reel rattrapage "$R_NAME" >/dev/null 2>&1 < /dev/null &
+  nohup setsid "$SELF" temps-reel rattrapage-reprise "$R_NAME" >/dev/null 2>&1 < /dev/null &
   vert "Sauvegarde temps reel « $R_NAME » reprise : le rattrapage repercute maintenant l'etat actuel du dossier."
 }
 
@@ -3249,6 +3255,7 @@ temps_reel_main() {
     reprendre)   rt_resume "${2:-}" ;;
     pause)       rt_get "${2:-}" || die "introuvable."; rt_pause "Mise en pause manuelle"; vert "En pause." ;;
     rattrapage)  rt_catchup "${2:-}" ;;
+    rattrapage-reprise) rt_catchup "${2:-}" "" attendre ;;
     envoi-complet) rt_catchup "${2:-}" initial ;;
     surveiller)  rt_watch "${2:-}" ;;
     gen-cron)    rt_gen_cron ;;
