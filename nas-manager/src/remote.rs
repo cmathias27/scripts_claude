@@ -1536,7 +1536,9 @@ mod live {
     use crate::ssh::Ssh;
     use std::time::Duration;
 
-    /// Reprise de la connexion d'une machine : le fichier du script (printf %q) est relu tel quel
+    /// Reprise de la connexion d'une machine : le fichier du script (printf %q) est relu tel quel.
+    /// Commande executee sur le NAS (bash Linux) : pas de test sous Windows (bash absent ou WSL).
+    #[cfg(unix)]
     #[test]
     fn export_connexion() {
         use std::io::Write;
