@@ -159,7 +159,9 @@ echo "== Autres clouds (destinations)"
 $ND destinations creer yd yandex < /dev/null > "$W/c1.txt" 2>&1; $ND destinations creer hd hidrive < /dev/null > "$W/c2.txt" 2>&1
 check "Yandex Disk et HiDrive : connexion par le navigateur" "grep -q navigateur $W/c1.txt && grep -q navigateur $W/c2.txt"
 for t in mega koofr protondrive; do
-  printf 'user=x@y.fr\npass=faux\nusername=x@y.fr\npassword=faux\n' | timeout 120 $ND destinations creer "t_$t" "$t" > "$W/c.txt" 2>&1
+  # sans acces reseau (proxy injoignable) : refus immediat, quel que soit l'environnement
+  printf 'user=x@y.fr\npass=faux\nusername=x@y.fr\npassword=faux\n' | HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 NO_PROXY= \
+    timeout 300 $ND destinations creer "t_$t" "$t" > "$W/c.txt" 2>&1
   check "$t : type reconnu (refus de connexion, pas de type inconnu), rien de cree" "! grep -q 'type de destination inconnu' $W/c.txt && ! rclone listremotes | grep -q '^t_$t'"
 done
 
@@ -177,7 +179,8 @@ $ND tui supprimer >>"$J" 2>&1
 
 [ "$ko" -ne 0 ] && diagnostic
 remettre; trap - EXIT
-rm -rf "${W:?}"
+# journal garde en cas d'echec (annotations de la CI)
+[ "$ko" -eq 0 ] && rm -rf "${W:?}"
 echo
 echo "$ok verification(s) reussie(s), $ko en echec"
 [ "$ko" -eq 0 ]
