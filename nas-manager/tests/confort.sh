@@ -17,6 +17,9 @@ REEL="${1:-/usr/bin/rclone}"
 command -v mosquitto >/dev/null || { echo "mosquitto absent (apt install mosquitto mosquitto-clients)"; exit 1; }
 DEPOT="$(cd "$(dirname "$0")/../.." && pwd)"
 W=/tmp/confort-moteur
+# configuration du broker de test dans /etc/mosquitto si possible : sous Ubuntu 26.04,
+# AppArmor empeche mosquitto de lire un fichier ailleurs (retiree par remettre)
+MQ_CONF="$W/mqtt/conf"; [ -d /etc/mosquitto ] && MQ_CONF=/etc/mosquitto/nas-confort-test.conf
 rm -rf "${W:?}"; mkdir -p "$W/bin" "$W/src" "$W/gd" "$W/etc-avant" "$W/mqtt"
 # rclone : on note les options de chaque appel puis on lance le vrai
 cat > "$W/bin/rclone" <<EOF
@@ -49,6 +52,7 @@ jq_() {  # jq_ <fichier json> <expression python sur d>
 remettre() {
   $ND suivi actions non >/dev/null 2>&1
   [ -f "$W/mqtt/pid" ] && kill "$(cat "$W/mqtt/pid")" 2>/dev/null
+  rm -f "$MQ_CONF"
   pkill -f "doublons.py $ST/doublons.json" 2>/dev/null
   rm -rf "$ST"/T_* "$ST/doublons.json" "$ST/doublons.py" "$ST/doublons.pid" "$ST/mqtt-jobs.json" /usr/local/bin/nas-manager
   rm -f /etc/nas-backup/*
@@ -132,9 +136,9 @@ $ND doublons vider >>"$J" 2>&1
 check "corbeille videe" "[ ! -d $D/.corbeille-doublons ]"
 
 echo "== Actions depuis Home Assistant (MQTT)"
-printf 'listener %s 127.0.0.1\nallow_anonymous true\npersistence false\n' "$MQ" > "$W/mqtt/conf"
-mosquitto -c "$W/mqtt/conf" -d 2>>"$J"; sleep 1
-pgrep -f "mosquitto -c $W/mqtt/conf" | head -n 1 > "$W/mqtt/pid"
+printf 'listener %s 127.0.0.1\nallow_anonymous true\npersistence false\n' "$MQ" > "$MQ_CONF"
+mosquitto -c "$MQ_CONF" -d 2>>"$J"; sleep 1
+pgrep -f "mosquitto -c $MQ_CONF" | head -n 1 > "$W/mqtt/pid"
 printf -- '-h 127.0.0.1\n-p %s\n' "$MQ" > /root/.config/mosquitto_pub
 $ND suivi actions oui >>"$J" 2>&1
 sleep 1
