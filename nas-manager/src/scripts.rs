@@ -3,6 +3,8 @@
 //! bouton unique « Installer / À jour / Mettre à jour », retour a la version precedente.
 //!
 //! La version integree a l'application sert de secours quand GitHub est injoignable.
+//! La liste lue sur GitHub n'est retenue que si sa signature (versions-scripts.json.sig)
+//! est valide : elle porte l'empreinte de chaque script, verifiee avant installation.
 
 #[allow(unused_imports)]
 use crate::i18n::{tf, tr};
@@ -104,6 +106,15 @@ pub fn parse_manifest(txt: &str) -> Result<Manifest, String> {
     serde_json::from_str(txt).map_err(|e| tf("liste des versions illisible : {0}", &[&e]))
 }
 
+/// Liste des versions lue sur GitHub, refusee si sa signature est invalide
+pub fn signed_manifest(txt: &str, sig: &str) -> Result<Manifest, String> {
+    if !crate::signature::verify(crate::signature::unix(txt).as_bytes(), sig) {
+        crate::log::error("versions des scripts : signature de versions-scripts.json invalide");
+        return Err(tr("liste des versions des scripts sur GitHub : signature invalide, mises à jour des scripts refusées.").into());
+    }
+    parse_manifest(txt)
+}
+
 /// Version installee : None = machine non connectee, Some(None) = script absent
 pub fn installed(app: &App, k: Kind) -> Option<Option<String>> {
     match k {
@@ -184,7 +195,10 @@ pub fn start_check(app: &mut App, manual: bool) {
     let tx = app.tx.clone();
     let ctx = app.ctx.clone();
     std::thread::spawn(move || {
-        let r = fetch(&format!("{RAW_BASE}{MANIFEST_FILE}"), 20).and_then(|t| parse_manifest(&t));
+        let r = fetch(&format!("{RAW_BASE}{MANIFEST_FILE}"), 20).and_then(|t| {
+            let sig = fetch(&format!("{RAW_BASE}{MANIFEST_FILE}.sig"), 20)?;
+            signed_manifest(&t, &sig)
+        });
         let h: crate::app::Handler = Box::new(move |app: &mut App, _| {
             app.scripts.checking = false;
             app.settings.scripts_last_check = crate::fmt::now();
@@ -485,6 +499,16 @@ pub fn card(app: &mut App, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manifeste_signe() {
+        let sig = include_str!("../../versions-scripts.json.sig");
+        assert!(signed_manifest(EMBEDDED_MANIFEST, sig).is_ok());
+        assert!(signed_manifest(&EMBEDDED_MANIFEST.replace("\n", "\r\n"), sig).is_ok());
+        // empreinte d'un script remplacee : liste refusee
+        let e = parse_manifest(EMBEDDED_MANIFEST).unwrap()["nas-debian"].sha256.clone();
+        assert!(signed_manifest(&EMBEDDED_MANIFEST.replace(&e, &"0".repeat(64)), sig).is_err());
+        assert!(signed_manifest(EMBEDDED_MANIFEST, "").is_err());
+    }
     #[test]
     fn manifeste_coherent() {
         // versions-scripts.json doit correspondre aux scripts integres (python3 maj-versions-scripts.py)

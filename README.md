@@ -32,6 +32,22 @@ Les détails ci-dessous décrivent chaque fonction sous son ancien nom.
 script : NAS Manager le lit pour proposer les mises à jour. Après une modification d'un script,
 augmenter `SCRIPT_VERSION` puis lancer `python3 maj-versions-scripts.py` (vérifié par GitHub Actions).
 
+### Signature des publications
+
+Les mises à jour sont signées avec une clé **ed25519 gardée hors de GitHub** (clé publique :
+[`signature/cle-publique.pem`](signature/cle-publique.pem), aussi intégrée à NAS Manager et aux scripts).
+Quelqu'un qui prendrait le contrôle du compte GitHub ne pourrait donc pas faire installer un fichier modifié.
+- **Scripts** : `maj-versions-scripts.py` signe `versions-scripts.json` (`versions-scripts.json.sig`).
+  NAS Manager ignore une liste dont la signature est invalide ; la liste porte l'empreinte de chaque script.
+- **Application et interface texte** : après la CI d'une version, lancer
+  `signature/signer-publication.sh X.Y.Z` sur la machine qui a la clé. Il vérifie que la CI a réussi
+  et que les fichiers viennent d'elle, puis ajoute `signatures.txt` (empreintes) et sa signature à la
+  Release. NAS Manager ne propose une version qu'une fois signée ; `tui installer` refuse un binaire
+  non signé. Si la CI republie la même version, relancer la signature.
+- Clé privée : `~/.config/scripts_claude/signature-ed25519.pem` (ou `$NAS_SIGNATURE_CLE`), avec une
+  copie hors ligne. Pour changer de clé, ajouter la nouvelle clé publique à `PUBLIC_KEYS`
+  (`nas-manager/src/signature.rs`) dans une version signée par l'ancienne.
+
 ## Vue d'ensemble
 
 ```
@@ -227,6 +243,8 @@ publiés avec chaque version de l'application). Mêmes informations que l'applic
 tableau de bord, sauvegardes (lancer, arrêter), temps réel (pause, reprise), historique, alertes,
 transferts, journaux. Sur la machine : `nas-manager` (root ou sudo) ; une autre machine :
 `nas-manager --hote root@192.168.1.190` ; état en JSON : `nas-manager --etat`.
+Installation : `nas-debian tui installer` (ou `nas-synology tui installer`), qui vérifie la
+[signature de la publication](#signature-des-publications) (openssl 1.1.1 ou plus récent).
 
 ---
 

@@ -1,5 +1,16 @@
 # Journal des modifications
 
+## 1.7.3
+
+Scripts nas-debian 2.7.2 et nas-synology 2.5.2.
+
+### Mises à jour signées
+- Chaque version est désormais **signée** avec une clé gardée hors de GitHub. NAS Manager vérifie la signature et l'empreinte du nouvel exécutable avant de le mettre en place : un fichier modifié est refusé, même s'il est publié depuis le compte GitHub.
+- Une version publiée mais **pas encore signée** n'est pas proposée (message « pas encore signée » dans les Paramètres) ; elle l'est dès sa signature, quelques minutes après la publication.
+- La **liste des versions des scripts** lue sur GitHub doit aussi être signée ; sinon l'application garde les scripts qu'elle contient et l'indique.
+- **Interface texte** : `tui installer` vérifie la même signature avant d'installer le programme sur la machine.
+- Cette version-ci est la dernière installée sans vérification : les suivantes seront vérifiées.
+
 ## 1.7.2
 
 Scripts nas-debian 2.7.1 et nas-synology 2.5.1.

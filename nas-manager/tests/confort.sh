@@ -170,11 +170,23 @@ check "etat : pas installee" "$ND tui etat | python3 -c 'import json,sys; d=json
 A=$(uname -m | sed 's/amd64/x86_64/; s/arm64/aarch64/; s/armv8l/armv7/; s/armv7.*/armv7/')
 mkdir -p "$W/rel"
 printf '#!/bin/sh\necho "nas-manager 9.9.9"\n' > "$W/rel/nas-manager-tui-$A"
-(cd "$W/rel" && sha256sum "nas-manager-tui-$A" > "nas-manager-tui-$A.sha256")
-NAS_TUI_URL="file://$W/rel" $ND tui installer >>"$J" 2>&1
-check "installee depuis la publication, empreinte verifiee" "$ND tui etat | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d[\"installe\"] and d[\"version\"]==\"9.9.9\" else 1)'"
-echo "0000 x" > "$W/rel/nas-manager-tui-$A.sha256"
-check "empreinte incorrecte : refusee" "! NAS_TUI_URL=file://$W/rel $ND tui installer >>$J 2>&1"
+# cle de test (la vraie cle privee n'est pas sur GitHub) : signatures.txt comme signature/signer-publication.sh
+openssl genpkey -algorithm ed25519 -out "$W/cle-test.pem" 2>/dev/null
+openssl pkey -in "$W/cle-test.pem" -pubout -out "$W/cle-test-pub.pem"
+signer_rel() {
+  openssl pkeyutl -sign -inkey "$W/cle-test.pem" -rawin -in "$W/rel/signatures.txt" | openssl base64 -A > "$W/rel/signatures.txt.sig"
+}
+{ echo "nas-manager 9.9.9"; (cd "$W/rel" && sha256sum "nas-manager-tui-$A"); } > "$W/rel/signatures.txt"
+check "pas de signature : refusee" "! NAS_TUI_CLE=$W/cle-test-pub.pem NAS_TUI_URL=file://$W/rel $ND tui installer >>$J 2>&1"
+signer_rel
+check "cle officielle : signature de test refusee" "! NAS_TUI_URL=file://$W/rel $ND tui installer >>$J 2>&1"
+NAS_TUI_CLE="$W/cle-test-pub.pem" NAS_TUI_URL="file://$W/rel" $ND tui installer >>"$J" 2>&1
+check "installee depuis la publication, signature et empreinte verifiees" "$ND tui etat | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d[\"installe\"] and d[\"version\"]==\"9.9.9\" else 1)'"
+$ND tui supprimer >>"$J" 2>&1
+sed -i 's/^[0-9a-f]\{4\}/0000/' "$W/rel/signatures.txt"
+check "liste modifiee apres signature : refusee" "! NAS_TUI_CLE=$W/cle-test-pub.pem NAS_TUI_URL=file://$W/rel $ND tui installer >>$J 2>&1"
+signer_rel
+check "empreinte incorrecte (liste signee) : refusee" "! NAS_TUI_CLE=$W/cle-test-pub.pem NAS_TUI_URL=file://$W/rel $ND tui installer >>$J 2>&1"
 $ND tui supprimer >>"$J" 2>&1
 
 [ "$ko" -ne 0 ] && diagnostic
