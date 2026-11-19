@@ -1,9 +1,10 @@
 {
   "nas-debian": {
-    "version": "2.7.1",
+    "version": "2.7.2",
     "fichier": "nas-debian.sh",
-    "sha256": "b992c18438a8afc80b6b0c30ce0e6816cef0e2aed6e24c2b603699b22538ae68",
+    "sha256": "a41fdc9fadf8a90aed653cd257d2f136766d37b551a24fa34fde2ed8aea24c01",
     "nouveautes": [
+      "Interface texte (tui installer) : la liste des empreintes de la publication doit être signée (clé ed25519 gardée hors de GitHub), sinon l'installation est refusée",
       "Connexion oCIS commune : NAS Manager garde une seule connexion (adresse, compte, jeton) et la recopie sur chaque machine",
       "Fichiers en parallèle au choix pour chaque sauvegarde programmée ou temps réel (par défaut : réglage de la machine), y compris pour les sauvegardes versionnées",
       "Correction : après la reprise d'une sauvegarde temps réel en pause, l'état du dossier est toujours répercuté (même si un rattrapage tournait déjà)",
@@ -16,10 +17,11 @@
     ]
   },
   "nas-synology": {
-    "version": "2.5.1",
+    "version": "2.5.2",
     "fichier": "nas-synology.sh",
-    "sha256": "874d96c65d29691efb9136d9f204d0a3798d55e672ddde58598a0ff192386ead",
+    "sha256": "94ca99ffe0c4487aad9115b87bddeaf63725d03fbe1c1ac7601f876385ec2a97",
     "nouveautes": [
+      "Interface texte (tui installer) : la liste des empreintes de la publication doit être signée (clé ed25519 gardée hors de GitHub), sinon l'installation est refusée",
       "Connexion oCIS commune : NAS Manager garde une seule connexion (adresse, compte, jeton) et la recopie sur chaque machine",
       "Installation de NAS Manager en mode texte (tui installer)"
     ]

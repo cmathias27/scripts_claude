@@ -31,6 +31,7 @@ mod remote;
 mod restore;
 mod sched;
 mod scripts;
+mod signature;
 mod secret;
 mod ssh;
 mod theme;

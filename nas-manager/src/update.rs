@@ -1,6 +1,8 @@
 //! Mise a jour de l'application depuis les Releases GitHub, sans installateur :
 //! le nouvel executable est telecharge (curl.exe, integre a Windows 10/11),
 //! remplace l'ancien (un exe en cours d'execution peut etre renomme) et relance.
+//! Une version n'est proposee que si sa liste d'empreintes (signatures.txt) est signee
+//! par la cle de signature (crate::signature) ; l'exe telecharge doit y correspondre.
 
 #[allow(unused_imports)]
 use crate::i18n::{tf, tr};
@@ -15,7 +17,8 @@ pub struct UpdateInfo {
     pub version: String,
     pub notes: String,
     pub url: String,
-
+    /// empreinte SHA-256 attendue (liste signee de la Release)
+    pub sha256: String,
 }
 
 #[derive(Default)]
@@ -93,13 +96,37 @@ pub fn check(current: &str) -> Result<Option<UpdateInfo>, String> {
     if !is_newer(&version, current) {
         return Ok(None);
     }
-    let url = r
-        .assets
-        .iter()
-        .find(|a| a.name == ASSET)
-        .map(|a| a.browser_download_url.clone())
-        .ok_or(tr("exécutable absent de la dernière version"))?;
-    Ok(Some(UpdateInfo { version, notes: r.body, url }))
+    let asset = |name: &str| r.assets.iter().find(|a| a.name == name).map(|a| a.browser_download_url.clone());
+    let url = asset(ASSET).ok_or(tr("exécutable absent de la dernière version"))?;
+    let (Some(sums_url), Some(sig_url)) = (asset(crate::signature::SUMS_FILE), asset(crate::signature::SUMS_SIG_FILE)) else {
+        return Err(tf("la version {0} est publiée mais pas encore signée : elle sera proposée dès sa signature.", &[&version]));
+    };
+    let sums = download_text(&sums_url)?;
+    let sig = download_text(&sig_url)?;
+    let sha256 = expected_sha(&sums, &sig, &version)?;
+    Ok(Some(UpdateInfo { version, notes: r.body, url, sha256 }))
+}
+
+fn download_text(url: &str) -> Result<String, String> {
+    let out = curl().args(["-sSfL", "-m", "30"]).arg(url).output().map_err(|e| tf("curl introuvable : {0}", &[&e]))?;
+    if !out.status.success() {
+        return Err(tf("téléchargement impossible : {0}", &[&(String::from_utf8_lossy(&out.stderr).trim())]));
+    }
+    String::from_utf8(out.stdout).map_err(|e| e.to_string())
+}
+
+/// Empreinte de l'exe d'apres la liste signee ; refuse une liste non signee ou d'une autre version
+fn expected_sha(sums: &str, sig: &str, version: &str) -> Result<String, String> {
+    let invalid = || tf("la version {0} a une signature invalide : mise à jour refusée. Signale-le sur GitHub.", &[&version]);
+    let r = crate::signature::release_sums(sums, sig).ok_or_else(|| {
+        crate::log::error(&format!("mise à jour {version} : signature de {} invalide", crate::signature::SUMS_FILE));
+        invalid()
+    })?;
+    if r.version.trim_start_matches('v') != version {
+        crate::log::error(&format!("mise à jour {version} : liste signée pour la version {}", r.version));
+        return Err(invalid());
+    }
+    r.sums.get(ASSET).cloned().ok_or_else(invalid)
 }
 
 /// Telecharge et met en place la nouvelle version ; renvoie le chemin de l'executable a relancer
@@ -118,8 +145,13 @@ pub fn install(info: &UpdateInfo) -> Result<std::path::PathBuf, String> {
         let _ = std::fs::remove_file(&new);
         return Err(tf("téléchargement impossible : {0}", &[&(String::from_utf8_lossy(&out.stderr).trim())]));
     }
-    // controle : un executable Windows commence par « MZ » et pese plusieurs Mo
+    // controle : empreinte de la liste signee, puis un executable Windows (« MZ », plusieurs Mo)
     let head = std::fs::read(&new).map_err(|e| e.to_string())?;
+    if info.sha256.is_empty() || crate::signature::sha256_hex(&head) != info.sha256 {
+        let _ = std::fs::remove_file(&new);
+        crate::log::error(&format!("mise à jour {} : empreinte de l'exécutable différente de la liste signée", info.version));
+        return Err(tr("le fichier téléchargé ne correspond pas à la version signée : mise à jour annulée.").into());
+    }
     if head.len() < 1_000_000 || &head[..2] != b"MZ" {
         let _ = std::fs::remove_file(&new);
         return Err(tr("fichier téléchargé invalide").into());
@@ -221,7 +253,17 @@ pub fn start_install(app: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::is_newer;
+    use super::{expected_sha, is_newer};
+    #[test]
+    fn liste_signee() {
+        let sums = include_str!("../tests/signatures-exemple.txt");
+        let sig = include_str!("../tests/signatures-exemple.txt.sig");
+        assert_eq!(expected_sha(sums, sig, "0.0.0").as_deref(), Ok(crate::signature::sha256_hex(b"exemple").as_str()));
+        // liste signee d'une autre version (ancienne publication rejouee) : refusee
+        assert!(expected_sha(sums, sig, "1.0.0").is_err());
+        assert!(expected_sha(&sums.replace("b77a", "b77b"), sig, "0.0.0").is_err());
+        assert!(expected_sha(sums, "", "0.0.0").is_err());
+    }
     #[test]
     fn versions() {
         assert!(is_newer("1.0.0", "1.0.0-beta.5"));

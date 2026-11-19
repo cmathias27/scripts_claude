@@ -2195,4 +2195,8 @@ Installe-la depuis Paramètres > Scripts sur les NAS si ce n'est pas déjà fait
     ("Adresse d'oCIS sur le réseau de la maison (ex. https://192.168.1.53:9200) : les fichiers ne passent pas par Internet.", "oCIS address on the home network (e.g. https://192.168.1.53:9200): files don't go through the Internet."),
     ("Jeton, à créer sur la machine d'oCIS : docker exec <conteneur-ocis> ocis auth-app create --user-name=<compte> --expiration=2160h", "Token, to create on the oCIS machine: docker exec <ocis-container> ocis auth-app create --user-name=<account> --expiration=2160h"),
     ("La connexion oCIS n'est pas encore recopiée sur cette machine ({0}) : voir la carte « Connexion oCIS » ci-dessus.", "The oCIS connection is not copied to this machine yet ({0}): see the “oCIS connection” card above."),
+    ("la version {0} est publiée mais pas encore signée : elle sera proposée dès sa signature.", "version {0} is published but not signed yet: it will be offered once signed."),
+    ("la version {0} a une signature invalide : mise à jour refusée. Signale-le sur GitHub.", "version {0} has an invalid signature: update refused. Please report it on GitHub."),
+    ("le fichier téléchargé ne correspond pas à la version signée : mise à jour annulée.", "the downloaded file does not match the signed version: update cancelled."),
+    ("liste des versions des scripts sur GitHub : signature invalide, mises à jour des scripts refusées.", "script version list on GitHub: invalid signature, script updates refused."),
 ];

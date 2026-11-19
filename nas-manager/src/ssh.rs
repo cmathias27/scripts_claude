@@ -556,6 +556,8 @@ fn sudo_error(stderr: &str, h: &HostCfg) -> Option<SshError> {
     let low = stderr.to_lowercase();
     if (low.contains("sudo") && low.contains("incorrect password"))
         || low.contains("sorry, try again")
+        // sudo-rs (Ubuntu 25.10 et suivants)
+        || (low.contains("sudo") && low.contains("authentication failed"))
         || low.contains("mot de passe incorrect")
         || low.contains("désolé, essayez de nouveau")
     {
@@ -795,4 +797,22 @@ pub fn strip_ansi(s: &str) -> String {
 /// Protection d'une valeur pour le shell (entre apostrophes)
 pub fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod sudo_tests {
+    use super::{sudo_error, SshError};
+    #[test]
+    fn mot_de_passe_faux() {
+        let h = crate::config::Settings::default().omv;
+        for e in [
+            "Sorry, try again.\nsudo: 3 incorrect password attempts",
+            "Désolé, essayez de nouveau.",
+            // sudo-rs (Ubuntu 25.10 et suivants)
+            "\nsudo: Authentication failed, try again.\n\nsudo: Authentication required but not attempted\n",
+        ] {
+            assert_eq!(sudo_error(e, &h), Some(SshError::SudoPassword), "{e}");
+        }
+        assert_eq!(sudo_error("ls: impossible d'accéder", &h), None);
+    }
 }

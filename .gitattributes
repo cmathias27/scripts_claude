@@ -2,3 +2,8 @@
 *.sh text eol=lf
 *.yaml text eol=lf
 *.bat text eol=crlf
+# Fichiers signes (ed25519) : la signature porte sur le texte en fins de ligne Unix
+*.json text eol=lf
+*.sig text eol=lf
+*.pem text eol=lf
+nas-manager/tests/signatures-exemple.txt text eol=lf
