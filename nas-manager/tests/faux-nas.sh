@@ -35,6 +35,8 @@ PidFile $W/sshd.pid
 EOF
 [ -f "$W/sshd.pid" ] && kill "$(cat "$W/sshd.pid")" 2>/dev/null || true
 command -v systemctl >/dev/null && systemctl stop ssh ssh.socket 2>/dev/null || true
+# arreter le service ssh retire /run/sshd (RuntimeDirectory) : le recreer apres
+mkdir -p /run/sshd
 /usr/sbin/sshd -f "$W/sshd_config"
 
 # ---------------- comptes et cle de l'application
