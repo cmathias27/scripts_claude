@@ -11,6 +11,9 @@ Scripts nas-debian 2.7.2 et nas-synology 2.5.2.
 - **Interface texte** : `tui installer` vérifie la même signature avant d'installer le programme sur la machine.
 - Cette version-ci est la dernière installée sans vérification : les suivantes seront vérifiées.
 
+### Correction
+- Mot de passe sudo faux reconnu aussi sur les machines qui utilisent **sudo-rs** (Ubuntu 25.10 et suivants) : message clair au lieu d'une erreur générique.
+
 ## 1.7.2
 
 Scripts nas-debian 2.7.1 et nas-synology 2.5.1.
