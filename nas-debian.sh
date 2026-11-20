@@ -58,7 +58,7 @@
 # =====================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="2.7.2"
+SCRIPT_VERSION="2.7.3"
 API_VERSION=12
 
 # --------------------------- Parametres ------------------------------
@@ -2120,7 +2120,8 @@ trash_purge() {  # trash_purge <corbeille> <jours>
   while IFS= read -r d; do
     d="${d%/}"
     [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4} ]] || continue
-    [[ "${d:0:15}" < "$cut" ]] && rclone purge "$tr/$d" -q 2>/dev/null
+    # duree choisie depassee : pas de second passage par la corbeille de Google Drive
+    [[ "${d:0:15}" < "$cut" ]] && rclone purge "$tr/$d" -q --drive-use-trash=false 2>/dev/null
   done < <(rclone lsf --dirs-only "$tr" 2>/dev/null < /dev/null)
   return 0
 }
@@ -2953,6 +2954,8 @@ rt_flush() {
   RT_PEND=(); RT_MOD=(); RT_FIRST=0
   dest_wake "$R_DEST" >/dev/null || true      # destination en veille (reveil configure)
   local -a common=(--log-file "$log" --log-level INFO --retries 3)
+  # suppression directe : definitive, pas de copie dans la corbeille de Google Drive (30 jours de quota)
+  [ "$R_DEL" = directe ] && common+=(--drive-use-trash=false)
   local bw; bw=$(bw_of "$R_BW")
   [ -n "$bw" ] && common+=(--bwlimit "$bw")
   local n o f fail=0
@@ -3026,6 +3029,7 @@ rt_catchup() {  # rt_catchup <nom> [initial] [attendre]
   local log="$RT_LOG_DIR/$R_NAME.log" tmp src d tr rc=0 r jour n nd now f o=0 nc=0
   mkdir -p "$RT_LOG_DIR"; tmp=$(mktemp); jour=$(date +%Y-%m-%d_%H%M%S)
   local -a min=(--min-age 2m) common=(--log-level INFO --retries 3)
+  [ "$R_DEL" = directe ] && common+=(--drive-use-trash=false)
   # envoi complet, ou reprise confirmee : etat actuel repercute tout de suite (sans attendre 2 min)
   [ "${2:-}" = initial ] && min=()
   [ -f "$STATE_DIR/rt-$R_NAME.autorise" ] && min=()
@@ -3932,7 +3936,8 @@ restic_prep() {  # restic_prep <remote>
   restic_pass_ensure
   mkdir -p "$RESTIC_CACHE"
   export RESTIC_PASSWORD_FILE="$RESTIC_PASS" RESTIC_CACHE_DIR="$RESTIC_CACHE" RESTIC_PROGRESS_FPS=0.2
-  local a="serve restic --stdio --b2-hard-delete" bw
+  # paquets retires par prune / verrous : suppression definitive (B2 et Google Drive)
+  local a="serve restic --stdio --b2-hard-delete --drive-use-trash=false" bw
   bw=$(bw_of "${J_BW:-}")
   [ -n "$bw" ] && a="$a --bwlimit \"$bw\""
   RST=(-r "$(repo_path "$1" "$J_SUB")" -o "rclone.args=$a")
