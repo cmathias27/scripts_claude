@@ -1,9 +1,10 @@
 {
   "nas-debian": {
-    "version": "2.7.2",
+    "version": "2.7.3",
     "fichier": "nas-debian.sh",
-    "sha256": "a41fdc9fadf8a90aed653cd257d2f136766d37b551a24fa34fde2ed8aea24c01",
+    "sha256": "07c93069e1dbe04f01869089294083fbf98341097c32ab0aa55ea84f2dd5c157",
     "nouveautes": [
+      "Google Drive : les suppressions définitives (temps réel en suppression directe, corbeille du script arrivée à échéance, nettoyage des sauvegardes versionnées) ne passent plus par la corbeille de Google Drive, qui gardait ces fichiers 30 jours et occupait le quota",
       "Interface texte (tui installer) : la liste des empreintes de la publication doit être signée (clé ed25519 gardée hors de GitHub), sinon l'installation est refusée",
       "Connexion oCIS commune : NAS Manager garde une seule connexion (adresse, compte, jeton) et la recopie sur chaque machine",
       "Fichiers en parallèle au choix pour chaque sauvegarde programmée ou temps réel (par défaut : réglage de la machine), y compris pour les sauvegardes versionnées",
@@ -12,8 +13,7 @@
       "Estimation avant la première sauvegarde : volume et durée selon le débit réel vers la destination (estimer)",
       "Doublons : recherche des fichiers identiques, corbeille des doublons vidée après 30 jours (doublons)",
       "Actions depuis Home Assistant : boutons Lancer / Arrêter / Vérifier et interrupteurs pause / reprise du temps réel (suivi actions)",
-      "Nouvelles destinations : Yandex Disk, HiDrive, MEGA, Koofr, Proton Drive",
-      "Installation de NAS Manager en mode texte (tui installer)"
+      "Nouvelles destinations : Yandex Disk, HiDrive, MEGA, Koofr, Proton Drive"
     ]
   },
   "nas-synology": {
